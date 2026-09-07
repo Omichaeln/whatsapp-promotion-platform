@@ -31,7 +31,7 @@ const DEFAULT_COPY = {
   ask_identity_retry: "That doesn't look like a valid ID. Reply with numbers/letters only, or CANCEL.",
   ask_location: "Which town/city are you in? (e.g. Harare)",
   ask_location_retry: "Please reply with your town or city.",
-  consent: "By entering you agree to the Promotion Terms and our Privacy Notice (version T1/P1). Reply YES to accept, or NO to cancel.",
+  consent: "Reply YES to confirm you are 18 or older and that you agree to the current Promotion Terms and Privacy Notice, or NO to cancel.",
   consent_declined: "No problem — you're not registered. No entry was created. Reply MENU to start over.",
   registered: "You're registered! ✅",
   welcome_back: "Welcome back!",
@@ -59,19 +59,22 @@ const DEFAULT_COPY = {
 
 export function parseIntent(text) {
   const t = String(text || "").toLowerCase().trim();
-  if (["menu", "main menu", "1"].includes(t)) return "MENU";
-  if (["register", "sign up", "2"].includes(t)) return "REGISTER";
-  if (["enter", "enter promotion", "3"].includes(t)) return "ENTER";
-  if (["mechanics", "how it works", "4"].includes(t)) return "MECHANICS";
-  if (["terms", "5"].includes(t)) return "TERMS";
-  if (["prizes", "6"].includes(t)) return "PRIZES";
-  if (["winners", "7"].includes(t)) return "WINNERS";
-  if (["status", "8"].includes(t)) return "STATUS";
+  // P1-01: numbers must match the menu the participant actually sees:
+  // 1 Register  2 Enter  3 How it works  4 Terms  5 Prizes  6 Winners
+  // 7 Status  8 Help
+  if (["register", "sign up", "1"].includes(t)) return "REGISTER";
+  if (["enter", "enter promotion", "2"].includes(t)) return "ENTER";
+  if (["mechanics", "how it works", "3"].includes(t)) return "MECHANICS";
+  if (["terms", "4"].includes(t)) return "TERMS";
+  if (["prizes", "5"].includes(t)) return "PRIZES";
+  if (["winners", "6"].includes(t)) return "WINNERS";
+  if (["status", "7"].includes(t)) return "STATUS";
+  if (["menu", "main menu", "0"].includes(t)) return "MENU";
   if (["help", "9"].includes(t)) return "HELP";
   if (["back", "b"].includes(t)) return "BACK";
   if (["cancel"].includes(t)) return "CANCEL";
   if (["yes", "accept", "agree", "y"].includes(t)) return "YES";
-  if (["no", "decline", "n"].includes(t)) return "NO";
+  if (["no", "decline", "n", "skip"].includes(t)) return "NO";
   return null;
 }
 
@@ -132,7 +135,13 @@ export function createConversationService({ db, domain, receiptPipeline, outbox,
     switch (state) {
       case STATES.HOME:
         if (!participant || intent === "REGISTER") { setSession(STATES.REGISTER_NAME, {}); return send("ask_name", STATES.REGISTER_NAME); }
-        if (intent === "ENTER" || intent === "STATUS") { setSession(STATES.ENTRY_OUTLET, {}); return send("ask_outlet", STATES.ENTRY_OUTLET); }
+        if (intent === "ENTER") { setSession(STATES.ENTRY_OUTLET, {}); return send("ask_outlet", STATES.ENTRY_OUTLET); }
+        // P1-01: STATUS must return status, never start an entry.
+        if (intent === "STATUS") {
+          const pid = participant;
+          const n = pid ? domain.countWeeklyEntries(pid, campaignId) : 0;
+          return { replies: [content(campaignId, "status").replace("{count}", String(n)).replace("{ies}", n === 1 ? "y" : "ies")], state };
+        }
         if (intent === "MECHANICS") return send("mechanics", state);
         if (intent === "TERMS") return send("terms", state);
         if (intent === "PRIZES") return send("prizes", state);
@@ -148,6 +157,8 @@ export function createConversationService({ db, domain, receiptPipeline, outbox,
       }
       case STATES.REGISTER_IDENTITY: {
         const v = String(text || "").trim();
+        // P1-01: identity is OPTIONAL (D-06 open) — NO/SKIP moves on without it.
+        if (intent === "NO") { setSession(STATES.REGISTER_LOCATION, { ...ctxOf(session), identity: null }); return send("ask_location", STATES.REGISTER_LOCATION); }
         if (!/^[A-Za-z0-9-]{6,}$/.test(v)) return send("ask_identity_retry", state);
         setSession(STATES.REGISTER_LOCATION, { ...ctxOf(session), identity: v });
         return send("ask_location", STATES.REGISTER_LOCATION);
@@ -162,7 +173,11 @@ export function createConversationService({ db, domain, receiptPipeline, outbox,
         if (intent === "NO") { setSession(STATES.HOME, {}); return send("consent_declined", STATES.HOME); }
         if (intent !== "YES") return send("consent", state);
         const c = ctxOf(session);
-        const res = domain.registerParticipant({ phoneUid: pUid, firstName: c.firstName, surname: c.surname || "", identity: c.identity || null, location: c.location || null, ageConfirmed: true, termsVersion: "T1", privacyVersion: "P1" });
+        // P1-01: consent binds to the ACTIVE campaign version, not hardcoded T1/P1.
+        const v = domain.getActiveVersion(campaignId);
+        const termsVersion = v?.content_json ? (() => { try { return JSON.parse(v.content_json).terms_version; } catch { return null; } })() : null;
+        const tv = termsVersion || (v ? `V${v.version_no}` : "T1");
+        const res = domain.registerParticipant({ phoneUid: pUid, firstName: c.firstName, surname: c.surname || "", identity: c.identity || null, location: c.location || null, ageConfirmed: true, termsVersion: tv, privacyVersion: tv });
         const pid = res.participant.id;
         setSession(STATES.ENTRY_OUTLET, { participantId: pid });
         return { replies: [content(campaignId, res.created ? "registered" : "welcome_back"), content(campaignId, "ask_outlet")], state: STATES.ENTRY_OUTLET };

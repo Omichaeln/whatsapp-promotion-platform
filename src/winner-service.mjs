@@ -30,15 +30,18 @@ export function createWinnerService(db, { outbox, now = nowIso } = {}) {
 
     let output;
     try { output = JSON.parse(d.output_json || "{}"); } catch { output = {}; }
-    const seq = output.sequence || [];
+    // P0-07: only the resolved winners (respecting per_week prize counts) are
+    // materialised — never every entry. Alternates stay in output.alternates.
+    const wins = output.winners || [];
     const created = [];
-    seq.forEach((entryId, i) => {
+    wins.forEach((w, i) => {
+      const entryId = w.entryId ?? w.entry_id;
       const rank = i + 1;
       const wid = id("win");
       const entry = db.prepare(`select * from entries where id=?`).get(entryId);
       const phone = entry?.participant_id ? db.prepare(`select wa_phone_uid from participants where id=?`).get(entry.participant_id)?.wa_phone_uid || "" : "";
       insertWinner.run(
-        wid, drawId, rank, entryId, entry?.participant_id || null, "P1", "pending",
+        wid, drawId, rank, entryId, entry?.participant_id || null, w.prize_code || "P1", "pending",
         JSON.stringify({ attempts: 0, notified: false }), "[]", JSON.stringify({ draw_period: d.draw_period }),
       );
       insertClaim.run(id("clm"), wid, "awaiting_response", JSON.stringify({ created_by: "draw_publish" }), now());
@@ -46,7 +49,7 @@ export function createWinnerService(db, { outbox, now = nowIso } = {}) {
         outbox.enqueueWhatsApp({
           waPhoneUid: phone,
           kind: "text",
-          payload: `🎉 Congratulations! You're a winner in the ${d.draw_period} draw. Reply to claim your prize.`,
+          payload: `🎉 Congratulations! You're a winner in the ${d.draw_period} draw (prize ${w.prize_code || "P1"}). Reply to claim your prize.`,
           idempotencyKey: `winner:${wid}:notify`,
         });
       }
@@ -65,14 +68,14 @@ export function createWinnerService(db, { outbox, now = nowIso } = {}) {
     history.push({ from: w.status, to: status, at: now(), by: actorId || "admin", note: note || null, reason: reason || null });
     setWinnerStatus.run(status, JSON.stringify(history), w.notify_state, winnerId);
     insertClaim.run(id("clm"), winnerId, status, JSON.stringify({ note, reason, actor: actorId }), now());
-    // replacement: if replaced, materialise the next alternate as a new winner
+    // replacement: if replaced, materialise the next non-winner alternate
     if (status === "replaced") {
       const d = getDraw.get(w.draw_id);
       let output = {};
       try { output = JSON.parse(d?.output_json || "{}"); } catch { /* ignore */ }
-      const seq = output.sequence || [];
-      const idx = seq.indexOf(w.entry_id);
-      const alt = seq[idx + 1];
+      const altCandidates = output.alternates || [];
+      const alreadyWinner = new Set(db.prepare(`select entry_id from winners where draw_id=?`).all(w.draw_id).map((r) => r.entry_id));
+      const alt = altCandidates.map((a) => a.entryId ?? a.entry_id).find((id) => !alreadyWinner.has(id));
       if (alt) {
         const { winners } = materialiseAsAlternate(d, alt, w);
         return { winner: getWinner.get(winnerId), replacement: winners[0] };

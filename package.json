@@ -13,7 +13,7 @@
     		"seed": "node scripts/seed-demo.mjs",
     "start": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env src/server.js",
     "worker": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env src/worker.js",
-    "test": "node --no-warnings=ExperimentalWarning --test test/",
+    "test": "node --no-warnings=ExperimentalWarning --test test/*.test.mjs",
     "bench": "node bench/run.mjs",
     "check": "node --version >/dev/null && for f in $(find src scripts test bench -name '*.mjs' -o -name '*.js' 2>/dev/null); do node --check \"$f\" || exit 1; done && echo 'check ok'",
     "reconstruct-draw": "node --no-warnings=ExperimentalWarning scripts/reconstruct-draw.mjs"

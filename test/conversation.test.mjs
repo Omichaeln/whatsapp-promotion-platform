@@ -6,7 +6,8 @@ describe("conversation state machine (spec 6, G-03)", () => {
     const { campaign } = seedCampaign(ctx);
     const phone = "0771230450";
 
-    const s1 = await ctx.conversation.handle({ providerMessageId: "c1", phoneUid: phone, type: "message.text", text: "2" });
+    // P1-01: menu numbering — 1 = Register
+    const s1 = await ctx.conversation.handle({ providerMessageId: "c1", phoneUid: phone, type: "message.text", text: "1" });
     assert.equal(s1.state, "REGISTER_NAME");
     assert.equal(s1.replies.length, 1);
 
@@ -35,14 +36,27 @@ describe("conversation state machine (spec 6, G-03)", () => {
     assert.equal(ctx.db.prepare(`select count(*) n from entries`).get().n, 1);
   });
 
+  it("STATUS from HOME returns entry count and never starts an entry (P1-01)", async () => {
+    const ctx = buildTestApp();
+    seedCampaign(ctx);
+    const { participant } = registerParticipant(ctx, "0771230470");
+    const phone = "0771230470";
+    const s1 = await ctx.conversation.handle({ providerMessageId: "st1", phoneUid: phone, type: "message.text", text: "7" });
+    assert.equal(s1.state, "HOME", "STATUS leaves the participant at HOME");
+    assert.match(s1.replies[0], /entr/);
+    // and still at HOME — no session may be forced into ENTRY_OUTLET
+    const ses = ctx.domain.getSession(ctx.db.prepare(`select id from campaigns where status='active' limit 1`).get().id, phone);
+    assert.equal(ses?.state, undefined);
+  });
+
   it("returning participant goes straight to ENTER and a random image cannot qualify", async () => {
     const ctx = buildTestApp();
     const { campaign } = seedCampaign(ctx);
     const { participant } = registerParticipant(ctx, "0771230460");
     const phone = "0771230460";
 
-    // returning: HOME + ENTER -> outlet
-    const s1 = await ctx.conversation.handle({ providerMessageId: "r1", phoneUid: phone, type: "message.text", text: "3" });
+    // returning: HOME + ENTER (2) -> outlet
+    const s1 = await ctx.conversation.handle({ providerMessageId: "r1", phoneUid: phone, type: "message.text", text: "2" });
     assert.equal(s1.state, "ENTRY_OUTLET");
     const s2 = await ctx.conversation.handle({ providerMessageId: "r2", phoneUid: phone, type: "message.text", text: "TM-HRE-01" });
     assert.equal(s2.state, "ENTRY_RECEIPT");

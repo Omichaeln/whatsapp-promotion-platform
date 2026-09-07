@@ -28,7 +28,20 @@ export function qrSvgOf(text) {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}"><rect width="${size}" height="${size}" fill="#fff"/><g fill="#000">${rects.join("")}</g></svg>`;
 }
 
-const textOf = (m) => m.conversation || m.caption || null;
+const textOf = (m) => {
+  // Baileys v7: content lives under m.message.* (e.g. m.message.conversation,
+  // m.message.imageMessage.caption). Older flat shape (m.conversation) kept for
+  // compatibility with tests and the original desk.
+  const msg = m.message || {};
+  return msg.conversation
+    || msg.extendedTextMessage?.text
+    || msg.imageMessage?.caption
+    || msg.videoMessage?.caption
+    || msg.documentMessage?.caption
+    || m.conversation
+    || m.caption
+    || null;
+};
 
 /**
  * Linked-device WhatsApp transport (restored from the original desk's
@@ -136,7 +149,7 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
     const jid = m.key?.remoteJid || "";
     const isGroup = jid.endsWith("@g.us");
     const text = textOf(m);
-    const media = m.imageMessage || null;
+    const media = m.imageMessage || m.message?.imageMessage || null;
     if ((!text && !media) || m.key?.fromMe || jid === "status@broadcast" || jid.endsWith("@newsletter")) {
       this.state.dropped += 1;
       return;

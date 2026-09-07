@@ -26,10 +26,10 @@ export function buildTestApp() {
   return { db, domain, pipeline, outbox, duplicates, extractor, mediaStore, conversation, drawService };
 }
 
-export function seedCampaign(ctx) {
+export function seedCampaign(ctx, drawConfig = { prizes: [] }) {
   const start = "2026-09-01T00:00:00Z";
   const end = "2026-11-30T23:59:59Z";
-  const c = ctx.domain.createCampaign({ code: "TEST", name: "Test Promo", startAt: start, endAt: end });
+  const c = ctx.domain.createCampaign({ code: drawConfig.code || "TEST", name: "Test Promo", startAt: start, endAt: end, drawConfig });
   ctx.domain.setCampaignStatus(c.id, "active", "test");
   ctx.domain.upsertOutlet({ outlet_code: "OK-HRE-01", retailer: "OK Mart", branch: "Westgate", town: "Harare", province: "Harare" });
   ctx.domain.upsertOutlet({ outlet_code: "TM-HRE-01", retailer: "TM", branch: "Avondale", town: "Harare", province: "Harare" });

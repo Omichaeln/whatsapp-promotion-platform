@@ -125,12 +125,45 @@ export function createAi({ cfg, store, usage }) {
       chats.filter((c) => c.priority === "high").length ? `${chats.filter((c) => c.priority === "high").length} high-priority chat(s) need attention.` : "Nothing needs urgent attention."}`;
     const briefBody = chats.filter((c) => c.category !== "Other" || c.needs_reply).map((c) =>
       `- ${c.category}: ${c.chat_name} — ${c.summary}${c.draft ? ` [draft ready]` : ""}`).join("\n") || "- No business content in this window.";
+
+    // P0-05: when a model key exists, triage ACTUALLY calls the model with a
+    // strict JSON schema; the deterministic classifier runs only as an
+    // explicitly labelled fallback (missing key, budget cap, or model error).
+    // Provenance is always truthful — we never claim model output we did not
+    // produce.
+    if (hasKey) {
+      try {
+        if (usage) {
+          const blocked = await usage.block();
+          if (blocked) throw new Error(blocked.body.message);
+        }
+        const body = await chat([
+          { role: "system", content: `You classify WhatsApp customer messages for a promotion desk. Return STRICT JSON only:
+{"chats":[{"chat_id":"...","category":"Customers|Team|Partners and suppliers|Other","priority":"high|normal","needs_reply":true|false,"routine_report":true|false,"summary":"one line","draft":"short draft if needs_reply else empty string"}]}
+Rules: category by business intent; "routine_report" only for internal team figures; draft only when customer needs a reply; plain WhatsApp register.` },
+          { role: "user", content: JSON.stringify(rows.map((r) => ({ chat_id: r.chat_id, chat_name: r.chat_name, sender: r.sender_name, text: r.message_text, ts: r.timestamp }))) },
+        ], { temperature: 0, max_tokens: 1000 });
+        const raw = String(body?.choices?.[0]?.message?.content || "");
+        const parsed = JSON.parse(raw.replace(/^```[a-z]*\n?|\n?```$/g, "").trim());
+        const chats2 = Array.isArray(parsed.chats) ? parsed.chats : [];
+        const ppm = await usage?.log({ kind: "triage", model, route: "summarise", inputTokens: body?.usage?.prompt_tokens, outputTokens: body?.usage?.completion_tokens }) ?? null;
+        return {
+          pulse, brief_md: briefBody, chats: chats2, model, made_by: "openai",
+          usage: ppm, provider: "openai-compatible", provenance: "model",
+        };
+      } catch (e) {
+        // fall through to deterministic — labelled honestly
+        const out = { pulse, brief_md: briefBody, chats, model: "deterministic-v1", made_by: "fallback", provenance: "fallback", error: e.message };
+        return out;
+      }
+    }
     return {
       pulse,
       brief_md: briefBody,
       chats,
-      model: hasKey ? model : "deterministic-fallback",
-      made_by: hasKey ? "openai" : "fallback",
+      model: "deterministic-v1",
+      made_by: "fallback",
+      provenance: "fallback",
     };
   }
 
@@ -145,6 +178,7 @@ export function createAi({ cfg, store, usage }) {
     const ask = String(instruction || "").trim() || (current ? "Rework the draft to be tighter." : "Draft the reply this conversation is waiting for.");
     let body;
     try {
+      if (usage) { const b = await usage.block(); if (b) return { status: b.status, error: b.body.message, made_by: "blocked" }; }
       body = await chat([
         { role: "system", content: `You draft WhatsApp messages the owner will send personally. Keep it short, direct, WhatsApp register: no preamble, no quotes, no signature, no em dashes, no emojis.${current ? `\nCurrent draft:\n${current}` : ""}${context ? `\nConversation:\n${String(context).slice(0, 3000)}` : ""}` },
         { role: "user", content: ask },

@@ -59,26 +59,53 @@ export function createDrawService(db, { randomBytes = 64, now = nowIso } = {}) {
     return get.get(drawId);
   }
 
+  /** Prize allocation from the campaign's frozen draw_config (P0-07):
+   *  winners = total per_week across prize tiers; the rest of the sorted
+   *  sequence stays as alternates. Never label every entrant a winner. */
+  function prizePlan(campaignId) {
+    const camp = db.prepare(`select * from campaigns where id=?`).get(campaignId);
+    let cfg = {};
+    try { cfg = JSON.parse(camp?.draw_config_json || "{}"); } catch { /* ignore */ }
+    const tiers = Array.isArray(cfg.prizes) ? cfg.prizes : [];
+    const perTier = tiers.map((p) => Number(p.per_week) || 0);
+    const totalWinners = perTier.reduce((a, b) => a + b, 0) || 1; // default one winner
+    return { tiers, perTier, totalWinners, alternatesPerWinner: Number(cfg.alternates_per_winner) || 0 };
+  }
+  function prizeCodeFor(rank, plan) {
+    // assign prize codes tier-by-tier (e.g. P1,P1,P1 for 3x P1) matching spec
+    let cursor = 0;
+    for (let i = 0; i < plan.tiers.length; i++) {
+      cursor += plan.perTier[i];
+      if (rank <= cursor) return plan.tiers[i].code || `P${i + 1}`;
+    }
+    return plan.tiers.at(-1)?.code || "P1";
+  }
+
   function execute(drawId, operatorId) {
     const d = get.get(drawId);
     if (!d) throw new Error("draw not found");
     if (d.status !== "frozen") throw new Error(`draw not frozen (status=${d.status})`);
     const eligible = snapshotRows.all(drawId).filter((c) => c.status === "eligible");
     const orderedEntryIds = sortition(eligible.map((c) => c.entry_id), d.seed_hex);
-    const output = {
-      sequence: orderedEntryIds,
-      winners: orderedEntryIds.map((entryId, i) => ({ position: i + 1, entryId })),
-    };
+    const plan = prizePlan(d.campaign_id);
+    const winnerCount = Math.min(plan.totalWinners, orderedEntryIds.length);
+    const winners = orderedEntryIds.slice(0, winnerCount).map((entryId, i) => ({
+      position: i + 1, entryId, prize_code: prizeCodeFor(i + 1, plan),
+    }));
+    const alternates = orderedEntryIds.slice(winnerCount).map((entryId, i) => ({ position: i + 1, entryId }));
+    const output = { sequence: orderedEntryIds, winners, alternates, prize_plan: plan };
     const outputHash = sha256hex(JSON.stringify(output));
     setStatus.run("executed", drawId, "frozen");
     setExec.run(operatorId, now(), drawId);
-    setEvidence.run(JSON.stringify({ operator: operatorId, executed_at: now(), algorithm: DRAW_ALGORITHM, seed: d.seed_hex, snapshot_hash: d.snapshot_hash }), JSON.stringify(output), outputHash, drawId);
+    setEvidence.run(JSON.stringify({ operator: operatorId, executed_at: now(), algorithm: DRAW_ALGORITHM, seed: d.seed_hex, snapshot_hash: d.snapshot_hash, winner_count: winnerCount, alternates: alternates.length }), JSON.stringify(output), outputHash, drawId);
     return get.get(drawId);
   }
 
   function approve(drawId, approverId) {
     const d = get.get(drawId);
     if (!d || d.status !== "executed") throw new Error(`draw cannot be approved (status=${d?.status})`);
+    // P0-07: segregation of duties — the operator who executed cannot approve.
+    if (d.operator_id && d.operator_id === approverId) throw new Error("the draw operator cannot approve their own draw");
     setApproved.run(approverId, now(), drawId);
     setStatus.run("approved", drawId, "executed");
     return get.get(drawId);

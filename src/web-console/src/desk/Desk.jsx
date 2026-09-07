@@ -210,7 +210,7 @@ function LinkPanel({ brand }) {
         <div style={{ width: 220, height: 220, borderRadius: 12, background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
           {dead
             ? <span style={{ fontSize: 11, color: "var(--text-tertiary)", textAlign: "center", padding: 12 }}>Waiting for a code</span>
-            : <img src={apiUrl(`/api/qr?t=${tick}`)} alt="WhatsApp link code" onError={() => setDead(true)} style={{ width: 220, height: 220 }} />}
+            : <img src={apiUrl(`/api/qr?token=${encodeURIComponent(getToken())}&t=${tick}`)} alt="WhatsApp link code" onError={() => setDead(true)} style={{ width: 220, height: 220 }} />}
         </div>
       </div>
     </div>

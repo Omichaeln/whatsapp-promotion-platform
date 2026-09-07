@@ -13,6 +13,7 @@ import { createDrawService } from "./draw.mjs";
 import { createCrm } from "./crm.mjs";
 import { createAuth } from "./auth.mjs";
 import { SimulatorExtractor } from "./extract/simulator.mjs";
+import { createExtractor } from "./extract/vision.mjs";
 import { SimulatorTransport } from "./transport/simulator.mjs";
 import { CloudApiTransport } from "./transport/cloud-api.mjs";
 import { LinkedDeviceTransport } from "./transport/linked-device.mjs";
@@ -31,6 +32,11 @@ export async function createServer({ config, log = console }) {
   if (cfg.onRailway && !cfg.adminPassword) {
     throw new Error("ADMIN_PASSWORD is required on a public deployment (Railway env)");
   }
+  // P0-09: the dev identity key must never be used on a public deployment —
+  // anyone with the source and DB could decrypt stored national IDs.
+  if (cfg.onRailway && (!cfg.identityKey || cfg.identityKey === "dev-only-key")) {
+    throw new Error("IDENTITY_KEY is required on a public deployment (P0-09)");
+  }
   ensureDir(cfg.mediaDir);
   const db = openDb(cfg.database);
   migrate(db, undefined, log?.log || log || console.log);
@@ -40,7 +46,8 @@ export async function createServer({ config, log = console }) {
   const domain = createDomain(db, cfg.identityKey || "dev-only-key");
   const outbox = createOutbox(db);
   const duplicates = createDuplicateDetector({ db });
-  const extractor = new SimulatorExtractor({ minConfidence: cfg.receipt.autoQualifyMinConfidence });
+  // P0-04: honour RECEIPT_EXTRACTOR — no longer hard-wired to the simulator.
+  const extractor = createExtractor(cfg);
   const auth = createAuth(db, {
     secret: cfg.webhookToken || sha256hex(String(Date.now())),
     bootstrap: cfg.adminEmail && cfg.adminPassword ? { email: cfg.adminEmail, password: cfg.adminPassword } : null,
@@ -59,16 +66,20 @@ export async function createServer({ config, log = console }) {
 
   // ---- transport --------------------------------------------------------
   const activity = (kind, summary, detail) => { try { desk.activity(kind, summary, detail); } catch { /* non-fatal */ } };
-  const phoneInbound = async (ev) => {
-    if (!conversation) return;
+  /** Shared durable inbound dispatcher for EVERY transport (P0-01): runs the
+   *  conversation state machine and enqueues every participant-visible reply
+   *  to the outbox, so Cloud API, linked-device and simulator all behave the
+   *  same. Returns { res, replies, alreadySeen }. */
+  const dispatchInbound = async (ev) => {
+    if (!conversation) return { res: null, replies: [], alreadySeen: false };
     const res = await conversation.handle({ providerMessageId: ev.providerMessageId, phoneUid: ev.phoneUid, type: ev.type, text: ev.text || "", mediaBytes: ev.mediaBytes, mime: ev.mime });
-    if (res?.replies) {
-      for (const reply of res.replies) {
-        outbox.enqueueWhatsApp({ waPhoneUid: ev.phoneUid, kind: "text", payload: reply, idempotencyKey: `conv:${ev.providerMessageId}:${reply.slice(0, 16)}` });
-      }
+    const replies = res?.replies || [];
+    for (const reply of replies) {
+      outbox.enqueueWhatsApp({ waPhoneUid: ev.phoneUid, kind: "text", payload: reply, idempotencyKey: `conv:${ev.providerMessageId}:${reply.slice(0, 16)}` });
     }
-    return res;
+    return { res, replies, alreadySeen: !!res?.alreadySeen };
   };
+  const phoneInbound = (ev) => dispatchInbound(ev).then((r) => r.res);
   let transport;
   if (cfg.whatsappTransport === "cloud-api") {
     transport = new CloudApiTransport({ meta: cfg.meta, publicBaseUrl: cfg.publicBaseUrl, webhookToken: cfg.webhookToken });
@@ -167,8 +178,8 @@ export async function createServer({ config, log = console }) {
             }
             catch { mediaBytes = null; }
           }
-          const res = await conversation.handle({ providerMessageId: ev.providerMessageId, phoneUid: ev.phoneUid, type: ev.type, text: ev.text, mediaBytes, mime });
-          if (res.alreadySeen) seen += 1;
+          const d = await dispatchInbound({ providerMessageId: ev.providerMessageId, phoneUid: ev.phoneUid, type: ev.type, text: ev.text, mediaBytes, mime });
+          if (d.alreadySeen) seen += 1;
         }
         return send(res, 200, { received: events.length, deduped: seen });
       }
@@ -211,11 +222,17 @@ export async function createServer({ config, log = console }) {
         });
       }
       // Original desk parity: /api/qr returns the SVG (for <img>), /api/qr/raw
-      // returns the pairing string for client-side rendering.
+      // returns the pairing string. P0-03: BOTH require admin auth — the pairing
+      // credential is sensitive. `token=` query form is accepted so the console
+      // <img> can authenticate (original desk pattern) — never public.
       if (p === "/api/qr" || p === "/api/qr/raw") {
+        const bearer = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+        const token = bearer || url.searchParams.get("token") || "";
+        const qrSession = token ? auth.authenticate(token) : null;
+        if (!qrSession || !auth.hasRole(qrSession.user, "platform_admin")) return send(res, 401, { error: "unauthorized" });
         const raw = typeof transport.currentQr === "function" ? transport.currentQr() : null;
         if (!raw) return send(res, 404, { error: "no QR pending" });
-        if (p === "/api/qr/raw") return send(res, 200, { qr: raw });
+        if (p === "/api/qr/raw") return send(res, 200, { qr: raw, ttl: 30 });
         const svg = typeof transport.qrSvg === "function" ? transport.qrSvg() : null;
         if (svg) { res.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "no-store" }); return res.end(svg); }
         return send(res, 404, { error: "no QR pending" });
@@ -446,9 +463,9 @@ export async function createServer({ config, log = console }) {
           scope, generated_at: new Date().toISOString(), exported_by: user.email, watermark: true, count: rows.length, rows,
         };
         activity("export", `Exported ${rows.length} ${scope} by ${user.email}`, { scope, count: rows.length });
-        db.prepare(`insert into audit_events (actor_type, actor_id, action, target_type, target_id, reason, request_id, prev_hash, entry_hash, payload_json, created_at)
-          values (?,?,?,?,?,?,?,?,?,?,?)`)
-          .run("admin", user.id, "export", "report", scope, `${rows.length} ${scope}`, null, "", "", JSON.stringify({ scope, count: rows.length }), nowIso());
+        // P0-08: every audit append goes through the chained audit service —
+        // the export must never insert rows that break prev/entry hash links.
+        domain.audit({ actorType: "admin", actorId: user.id, action: "export", targetType: "report", targetId: scope, reason: `${rows.length} ${scope}`, requestId: null, payload: { scope, count: rows.length } });
         return send(res, 200, payload);
       }
 
@@ -610,7 +627,7 @@ export async function createServer({ config, log = console }) {
         if (out.status) return send(res, out.status, out);
         return send(res, 200, out);
       }
-      if (p === "/api/desk/transcribe" && req.method === "POST") {
+      if ((p === "/api/desk/transcribe" || p === "/api/transcribe") && req.method === "POST") {
         // multipart/form-data with an "audio" part -> ai.transcribe
         const m = (req.headers["content-type"] || "").match(/multipart\/form-data;\s*boundary=([^;]+)/);
         if (!m) return send(res, 400, { error: "multipart audio required" });
@@ -650,6 +667,11 @@ export async function createServer({ config, log = console }) {
         }
         let data = null, reply = parsed.reply;
         try {
+          // P0-06: natural-language mutations must respect the same role matrix
+          // as the button/API routes they mirror — no silent bypass.
+          const requireRole = (role, what) => {
+            if (!auth.hasRole(user, role)) throw new Error(`${what} requires role "${role}"`);
+          };
           switch (parsed.action) {
             case "dashboard": data = await metricsPayload(); break;
             case "status": {
@@ -664,6 +686,7 @@ export async function createServer({ config, log = console }) {
             case "campaigns": data = { campaigns: domain.listCampaigns() }; break;
             case "winners": data = { winners: db.prepare(`select * from winners order by rank limit 50`).all() }; reply = `${data.winners.length} winner(s) recorded.`; break;
             case "draw": {
+              requireRole("draw_officer", "running a draw");
               const camp = activeCampaign();
               const period = parsed.params.period || db.prepare(`select draw_period from entries where status='active' order by created_at desc limit 1`).get()?.draw_period;
               if (!camp || !period) { reply = "No active campaign or entries to draw from yet."; break; }
@@ -676,6 +699,7 @@ export async function createServer({ config, log = console }) {
               break;
             }
             case "send": {
+              if (!auth.hasRole(user, "winner_ops") && !auth.hasRole(user, "support")) throw new Error("sending outbound messages requires role winner_ops or support");
               if (!parsed.params?.phone) reply = "Who should I message? e.g. \"send: thanks to 263771234567\""; else {
                 const msgId = await outbox.enqueueWhatsApp({ waPhoneUid: parsed.params.phone, kind: "text", payload: parsed.params.text, idempotencyKey: `nl:${Date.now()}:${parsed.params.phone}` });
                 data = { queued: msgId }; reply = `Queued: "${parsed.params.text.slice(0, 60)}" to ${parsed.params.phone.slice(-9)}.`;
@@ -702,11 +726,12 @@ export async function createServer({ config, log = console }) {
               break;
             }
             case "link": {
+              requireRole("platform_admin", "linking a device");
               const svg = typeof transport.qrSvg === "function" ? transport.qrSvg() : null;
               data = { svg, ready: transport.health?.().ready }; reply = svg ? "Scan the QR code to link your phone." : "WhatsApp is already linked.";
               break;
             }
-            case "unlink": { if (typeof transport.unlink === "function") await transport.unlink(); reply = "Device unlinked."; break; }
+            case "unlink": { requireRole("platform_admin", "unlinking a device"); if (typeof transport.unlink === "function") await transport.unlink(); reply = "Device unlinked."; break; }
             default: reply = "I didn't catch that. Type \"help\".";
           }
         } catch (e) { reply = `That didn't work: ${e.message}`; }

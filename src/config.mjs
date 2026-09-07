@@ -22,6 +22,9 @@ export function loadConfig(env = process.env) {
     // bootstrap admin — on a public deploy an explicit strong password is REQUIRED
     adminEmail: (env.ADMIN_EMAIL || "admin@example.com").toLowerCase().trim(),
     adminPassword: env.ADMIN_PASSWORD || (onRailway ? null : "change-me-now"),
+    // P0-09: production identity encryption key (env IDENTITY_KEY); the dev
+    // default must never be used on a public deployment — enforced in server.mjs.
+    identityKey: env.IDENTITY_KEY || "dev-only-key",
     // WhatsApp transport
     whatsappTransport: env.WHATSAPP_TRANSPORT || "simulator", // simulator | cloud-api | linked-device
     meta: {

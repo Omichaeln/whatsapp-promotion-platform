@@ -125,12 +125,20 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso) {
     listVersions: (cid) => listVersions.all(cid),
     getActiveVersion: (cid) => getActiveVersion.get(cid),
     activateVersion(campaignId, versionId, actor) {
-      tx(db, () => {
+      // P1-03: verify the target exists and is a draft FIRST — never retire the
+      // current active version before we know the swap can succeed.
+      const target = getVersion.get(versionId);
+      if (!target) throw new Error("version not found");
+      if (target.campaign_id !== campaignId) throw new Error("version does not belong to campaign");
+      if (target.status !== "draft") throw new Error(`only draft versions can be activated (status=${target.status})`);
+      const out = tx(db, () => {
         deactivateOthers.run(campaignId, versionId);
-        activateVersion.run(now(), actor, campaignId, versionId);
+        const changed = activateVersion.run(now(), actor, campaignId, versionId);
+        if (changed.changes === 0) throw new Error("version could not be activated");
         audit({ actorId: actor, action: "campaign.version.activate", targetType: "campaign_version", targetId: versionId, payload: { campaignId } });
+        return getVersion.get(versionId);
       });
-      return getVersion.get(versionId);
+      return out;
     },
 
     // ---- outlets & products ---------------------------------------------------

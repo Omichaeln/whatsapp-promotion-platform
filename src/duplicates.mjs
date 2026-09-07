@@ -42,11 +42,14 @@ export function createDuplicateDetector({ db, phashDistance = 12 }) {
       if (row) return { duplicate: true, kind: "receipt_fingerprint", original: row.id };
       return { duplicate: false };
     },
-    /** Probable perceptual match -> NEEDS_REVIEW, never auto-duplicate. */
-    probableSimilar(phash) {
+    /** Probable perceptual match -> NEEDS_REVIEW, never auto-duplicate.
+   *  P0-04: exclude the current asset so a legitimate receipt never matches
+   *  itself (the pipeline stores the media asset before this runs). */
+    probableSimilar(phash, excludeAssetId = null) {
       if (!phash) return { probable: false };
       const better = [];
       for (const row of db.prepare(`select id, phash from media_assets where phash is not null`).all()) {
+        if (excludeAssetId && row.id === excludeAssetId) continue;
         const d = hamming(phash, row.phash);
         if (d <= phashDistance) better.push({ assetId: row.id, distance: d });
       }

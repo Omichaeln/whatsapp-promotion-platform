@@ -107,7 +107,7 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
     if (fp.duplicate) return finalizeDuplicate(receiptId, providerMessageId, participantId, version.id, facts, extractResult, phoneUid, fp.original);
 
     // 6 - probable perceptual similarity -> review, never auto-duplicate
-    const similar = duplicates.probableSimilar(media.phash);
+    const similar = duplicates.probableSimilar(media.phash, media.assetId);
 
     // 7 - deterministic eligibility against frozen rules (G-08)
     const rules = JSON.parse(version.rules_json || "{}");
