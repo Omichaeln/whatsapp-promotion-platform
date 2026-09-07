@@ -96,9 +96,12 @@ docs/                architecture, operations, gap traceability
 | REQ-07 | controlled outlet selection from master |
 | REQ-08..12 | image intake, safe evidence extraction, deterministic rules |
 | REQ-13..14 | duplicate prevention, multiple unique receipts |
-| REQ-15,21..24 | outcome messages, auditable draws, private admin, CRM outbox |
+| REQ-15,21..24 | outcome messages, auditable draws, admin, CRM outbox |
+| REQ-20,22 | winners + claims lifecycle (materialised on publish, masked public view) |
+| Security | TOTP MFA login challenge + enrollment; login rate limit; audited exports |
 | G-01..G-20 | see `docs/TRACE.md` for gap-by-gap mapping |
 | D-01..D-20 | open client decisions — fail-closed defaults used, listed in `docs/DECISIONS.md` |
+| Gap closure | current analysis + execution plan in `docs/GAP-ANALYSIS.md` and `docs/AI-IMPLEMENTATION-PROMPT.md` |
 
 ## Operations
 

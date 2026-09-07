@@ -20,6 +20,7 @@ import { verifyInboundSignature } from "./transport/whatsapp-transport.mjs";
 import { createDeskStore } from "./desk.mjs";
 import { createAi, createUsage } from "./ai.mjs";
 import { parseCommand, HELP_TEXT } from "./nlp.mjs";
+import { createWinnerService } from "./winner-service.mjs";
 
 /**
  * HTTP surface (spec 13): provider webhook endpoints + admin/operations API.
@@ -54,6 +55,7 @@ export async function createServer({ config, log = console }) {
   let conversation;
   const drawService = createDrawService(db);
   const crm = createCrm({ db, cfg: cfg.crm });
+  const winners = createWinnerService(db, { outbox });
 
   // ---- transport --------------------------------------------------------
   const activity = (kind, summary, detail) => { try { desk.activity(kind, summary, detail); } catch { /* non-fatal */ } };
@@ -85,6 +87,20 @@ export async function createServer({ config, log = console }) {
 
   const mediaSecret = sha256hex("media:" + (cfg.webhookToken || "dev"));
   const activeCampaign = () => db.prepare(`select * from campaigns where status='active' order by created_at limit 1`).get() || null;
+
+  // ---- DEF-05: login rate limiting (per-IP sliding window) ---------------------
+  const loginAttempts = new Map(); // ip -> number[]
+  const RATE_WINDOW_MS = 60_000, RATE_MAX = 5;
+  const clientIp = (req) => (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket?.remoteAddress || "unknown";
+  const rateLimited = (req) => {
+    const ip = clientIp(req);
+    const now = Date.now();
+    const arr = (loginAttempts.get(ip) || []).filter((t) => now - t < RATE_WINDOW_MS);
+    if (arr.length >= RATE_MAX) { loginAttempts.set(ip, arr); return { limited: true, retryAfter: Math.ceil((arr[0] + RATE_WINDOW_MS - now) / 1000) }; }
+    arr.push(now); loginAttempts.set(ip, arr);
+    return { limited: false, ip };
+  };
+  const resetRateLimit = (req) => loginAttempts.delete(clientIp(req));
 
   // ---- helpers ----------------------------------------------------------
   function readBody(req, limit = 5 * 1024 * 1024) {
@@ -199,17 +215,49 @@ export async function createServer({ config, log = console }) {
         if (svg) { res.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "no-store" }); return res.end(svg); }
         return send(res, 200, { ready: transport.health?.().ready !== false });
       }
+      // Public winners view (REQ-20): disclosure fields only; no auth required.
+      if (p === "/api/winners/public" && req.method === "GET") {
+        return send(res, 200, { winners: winners.listPublic() });
+      }
 
       // ---- auth --------------------------------------------------------------
       if (p === "/api/login" && req.method === "POST") {
+        const rl = rateLimited(req);
+        if (rl.limited) {
+          res.writeHead(429, { "content-type": "application/json", "retry-after": String(rl.retryAfter) });
+          return res.end(JSON.stringify({ error: "too many login attempts, slow down", retryAfter: rl.retryAfter }));
+        }
         const body = await json(req);
         const s = auth.login({ email: body.email, password: body.password, remember: !!body.remember });
-        return s ? send(res, 200, { token: s.token, user: { id: s.user.id, name: s.user.name, email: s.user.email, roles: JSON.parse(s.user.roles) } })
-                 : send(res, 401, { error: "invalid credentials" });
+        if (s?.pendingMfa) { resetRateLimit(req); return send(res, 200, { pendingMfa: true, userId: s.userId, message: s.message }); }
+        if (s) { resetRateLimit(req); return send(res, 200, { token: s.token, user: { id: s.user.id, name: s.user.name, email: s.user.email, roles: JSON.parse(s.user.roles) } }); }
+        return send(res, 401, { error: "invalid credentials" });
+      }
+      if (p === "/api/login/mfa" && req.method === "POST") {
+        const body = await json(req);
+        const r = auth.verifyMfa({ userId: body.userId, code: body.code, remember: !!body.remember });
+        if (r?.token) return send(res, 200, { token: r.token, user: { id: r.user.id, name: r.user.name, email: r.user.email, roles: JSON.parse(r.user.roles) } });
+        return send(res, 401, { error: r?.error || "MFA verification failed" });
       }
       if (p === "/api/logout" && req.method === "POST") {
         const bearer = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
         auth.revoke(bearer); return send(res, 200, { ok: true });
+      }
+
+      // ---- MFA management (platform_admin, authenticated) ----------------------
+      if (p === "/api/mfa/enroll" && req.method === "POST") {
+        const mu = authOr403(req, res, "platform_admin"); if (!mu) return;
+        return send(res, 200, auth.enrollMfa(mu.id));
+      }
+      if (p === "/api/mfa/enable" && req.method === "POST") {
+        const mu = authOr403(req, res, "platform_admin"); if (!mu) return;
+        const b = await json(req);
+        return send(res, 200, auth.enableMfa(mu.id, b.code) || { error: "no code" });
+      }
+      if (p === "/api/mfa/disable" && req.method === "POST") {
+        const mu = authOr403(req, res, "platform_admin"); if (!mu) return;
+        const b = await json(req);
+        return send(res, 200, auth.disableMfa(mu.id, b.code) || { error: "no code" });
       }
 
       // ---- protected admin API ------------------------------------------------
@@ -316,16 +364,48 @@ export async function createServer({ config, log = console }) {
           return send(res, 201, { drawId: d.id, count: entries.length, snapshotHash: d.snapshot_hash });
         } catch (e) { return send(res, 400, { error: e.message }); }
       }
-      let dm = p.match(/^\/api\/draws\/([^/]+)\/(execute|approve|publish)$/);
+      let dm = p.match(/^\/api\/draws\/([^/]+)\/(execute|approve|publish|rerun)$/);
       if (dm && req.method === "POST") {
         const action = dm[2], did = dm[1];
         const role = action === "approve" ? "draw_approver" : "draw_officer";
         if (!auth.hasRole(user, role)) return send(res, 403, { error: "forbidden" });
         try {
-          const d = action === "execute" ? drawService.execute(did, user.id)
-            : action === "approve" ? drawService.approve(did, user.id)
-            : drawService.publish(did);
+          if (action === "rerun") {
+            const old = drawService.get(did);
+            const camp = old?.campaign_id || activeCampaign()?.id;
+            const b = await json(req);
+            const period = b?.draw_period || old?.draw_period;
+            const entries = db.prepare(`select id from entries where campaign_id=? and draw_period=? and status='active'`).all(camp, period).map((r) => r.id);
+            const d = drawService.freeze({ campaignId: camp, drawPeriod: `${period}#${Date.now().toString(36)}`, configHash: sha256hex(period + b?.reason || ""), entryIds: entries, operatorId: user.id });
+            return send(res, 200, { draw: d, supersedes: did, reason: b?.reason || null });
+          }
+          let d;
+          if (action === "execute") d = drawService.execute(did, user.id);
+          else if (action === "approve") d = drawService.approve(did, user.id);
+          else { d = drawService.publish(did); winners.materialise(did); activity("draw", `Winners published for ${d?.draw_period || did}`, { draw: did }); }
           return send(res, 200, { draw: d });
+        } catch (e) { return send(res, 400, { error: e.message }); }
+      }
+
+      // ---- winners + claims (DEF-03, REQ-20/22) --------------------------------
+      const wmatch = p.match(/^\/api\/winners(?:\/([^/]+))?$/);
+      if (wmatch && req.method === "GET") {
+        const id = wmatch[1];
+        if (id) {
+          const w = winners.get(id);
+          if (!w) return send(res, 404, { error: "winner not found" });
+          return send(res, 200, { winner: w, claims: winners.claims(id) });
+        }
+        return send(res, 200, { winners: winners.list() });
+      }
+      if (wmatch && req.method === "PATCH") {
+        if (!auth.hasRole(user, "winner_ops")) return send(res, 403, { error: "forbidden" });
+        const id = wmatch[1];
+        if (!id) return send(res, 400, { error: "winner id required" });
+        const b = await json(req);
+        try {
+          const r = winners.transition(id, { status: b.status, note: b.note, reason: b.reason, actorId: user.id });
+          return send(res, 200, { winner: r.winner, replacement: r.replacement });
         } catch (e) { return send(res, 400, { error: e.message }); }
       }
 
@@ -339,6 +419,32 @@ export async function createServer({ config, log = console }) {
       if (p === "/api/audit-events" && req.method === "GET" && auth.hasRole(user, "auditor")) {
         const rows = db.prepare(`select id, actor_type, actor_id, action, target_type, target_id, entry_hash, created_at from audit_events order by id desc limit 200`).all();
         return send(res, 200, { events: rows });
+      }
+
+      // ---- DEF-06: controlled export (auditor/admin) ----------------------------------
+      if (p === "/api/reports/export" && req.method === "GET") {
+        if (!auth.hasRole(user, "auditor")) return send(res, 403, { error: "forbidden" });
+        const scope = url.searchParams.get("scope") || "receipts";
+        const since = url.searchParams.get("since") || new Date(Date.now() - 90 * 86400_000).toISOString();
+        const cap = 50_000;
+        let rows;
+        switch (scope) {
+          case "receipts": rows = db.prepare(`select id, participant_id, campaign_id, status, reason_code, decided_at, created_at from receipts where created_at >= ? order by created_at desc limit ${cap}`).all(since); break;
+          case "entries": rows = db.prepare(`select * from entries where created_at >= ? order by created_at desc limit ${cap}`).all(since); break;
+          case "winners": rows = db.prepare(`select w.id, w.draw_id, w.rank, w.prize_code, w.status, d.draw_period from winners w left join draws d on d.id=w.draw_id order by d.draw_period desc limit ${cap}`).all(); break;
+          case "audit": rows = db.prepare(`select id, actor_type, actor_id, action, target_type, target_id, created_at from audit_events order by id desc limit ${cap}`).all(); break;
+          case "members": rows = db.prepare(`select id, first_name, surname, location, status, created_at from participants order by created_at desc limit ${cap}`).all(); break;
+          default: return send(res, 400, { error: `unknown scope "${scope}"` });
+        }
+        // watermark: never silently serve identity values in bulk
+        const payload = {
+          scope, generated_at: new Date().toISOString(), exported_by: user.email, watermark: true, count: rows.length, rows,
+        };
+        activity("export", `Exported ${rows.length} ${scope} by ${user.email}`, { scope, count: rows.length });
+        db.prepare(`insert into audit_events (actor_type, actor_id, action, target_type, target_id, reason, request_id, prev_hash, entry_hash, payload_json, created_at)
+          values (?,?,?,?,?,?,?,?,?,?,?)`)
+          .run("admin", user.id, "export", "report", scope, `${rows.length} ${scope}`, null, "", "", JSON.stringify({ scope, count: rows.length }), nowIso());
+        return send(res, 200, payload);
       }
 
       // ---- restored desk workflows: dashboard, activity, AI, NLP ------------

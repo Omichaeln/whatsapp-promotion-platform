@@ -96,7 +96,7 @@ export function createDrawService(db, { randomBytes = 64, now = nowIso } = {}) {
     return snapshotRows.all(drawId);
   }
 
-  return { freeze, execute, approve, publish, get: get.get, candidates };
+  return { freeze, execute, approve, publish, get: (id) => get.get(id), candidates };
 }
 
 export { id, sha256hex, nowIso };

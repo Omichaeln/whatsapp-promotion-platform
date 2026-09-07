@@ -177,10 +177,10 @@ export function createConversationService({ db, domain, receiptPipeline, outbox,
       }
       case STATES.ENTRY_RECEIPT: {
         const pid = session?.participant_id || participant;
-        if (type !== "message.image" && type !== "message.document") return send("need_image", state);
-        if (!mediaBytes) return send("media_missing", state);
+        if (type !== "message.image" && type !== "message.document") { console.error("[conv] ENTRY_RECEIPT not image", type); return send("need_image", state); }
+        if (!mediaBytes) { console.error("[conv] ENTRY_RECEIPT no mediaBytes"); return send("media_missing", state); }
         const version = domain.getActiveVersion(campaignId);
-        if (!version) return send("campaign_paused", STATES.ERROR);
+        if (!version) { console.error("[conv] ENTRY_RECEIPT no version"); return send("campaign_paused", STATES.ERROR); }
         setSession(STATES.PROCESSING, ctxOf(session));
         try {
           const result = await receiptPipeline.process({
@@ -191,6 +191,7 @@ export function createConversationService({ db, domain, receiptPipeline, outbox,
           setSession(st, {});
           return { replies: [content(campaignId, result.decision === "QUALIFIED" ? "qualified" : result.decision === "DUPLICATE" ? "duplicate" : result.decision === "NEEDS_REVIEW" ? "needs_review" : "not_qualified")], state: st, receiptId: result.receiptId };
         } catch (e) {
+          console.error("[conv] ENTRY_RECEIPT process error:", e.message);
           setSession(STATES.ERROR, {});
           return send("error", STATES.ERROR);
         }

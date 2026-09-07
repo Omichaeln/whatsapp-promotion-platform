@@ -48,8 +48,19 @@ orders and hashes, exits 0 only if they match (A-10 reconstruction test).
 | POST /api/draws/:id/execute | sortition | draw_officer |
 | POST /api/draws/:id/approve | approve | draw_approver |
 | POST /api/draws/:id/publish | publish winners | winner_ops |
-| GET /api/crm-sync | outbox + reconciliation | support/admin |
+| POST /api/draws/:id/rerun | create linked rerun (never mutates approved) | draw_officer |
+| GET /api/winners/public | published winners, disclosure fields only (masked) | public |
+| GET /api/winners | list all winners | winner_ops/auditor |
+| GET /api/winners/:id | winner detail + claim history | winner_ops/auditor |
+| PATCH /api/winners/:id | claim transition (verified/accepted/collected/expired/replaced) | winner_ops |
+| GET /api/reports/export | watermarked, capped, audited export (?scope=receipts\|entries\|winners\|audit\|members) | auditor |
+| GET /api/crm-sync | CRM sync + reconciliation | support/admin |
 | GET /api/audit-events | hash-chained audit | auditor |
+| POST /api/login/mfa | MFA code verification after pendingMfa login | public |
+| POST /api/mfa/enroll | generate TOTP secret + otpauth URI | platform_admin |
+| POST /api/mfa/enable | enable MFA (verifies code) | platform_admin |
+| POST /api/mfa/disable | disable MFA (verifies code) | platform_admin |
+| GET /api/metrics | dashboard metrics payload | any authenticated |
 
 All non-provider routes authenticate with `Authorization: Bearer <token>` and
 enforce roles server-side. Error responses are stable codes without PII.
