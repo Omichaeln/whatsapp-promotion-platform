@@ -136,9 +136,12 @@ export async function createServer({ config, log = console }) {
         catch { return send(res, 503, { ok: false }); }
       }
 
-      // ---- public console / landing (no auth required) -------------------------
-      // React console build (source: src/web-console; built via npm run web:build
-      // which copies dist -> src/web-console-dist; committed to the repo).
+      // ---- public console (no auth) ------------------------------------------
+      // React console build (src/web-console -> npm run web:build -> this dir).
+      // IMPORTANT: only handle root + /admin + real asset files here; any other
+      // path must fall through to the API/auth/404 chain below (API routes 404
+      // on an unauthenticated /api call, console serves its own assets). A
+      // blanket 404 in this block would swallow /api/login and all APIs.
       const CONSOLE_DIST = path.join(ROOT, "src", "web-console-dist");
       if (fs.existsSync(path.join(CONSOLE_DIST, "index.html"))) {
         if (p === "/" || p === "/admin") return serveStatic(res, path.join(CONSOLE_DIST, "index.html"), "text/html");
@@ -149,7 +152,7 @@ export async function createServer({ config, log = console }) {
           const mime = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2" }[ext] || "application/octet-stream";
           return serveStatic(res, assetFile, mime);
         }
-        return send(res, 404, { error: "not found" });
+        // not a console path -> fall through to the rest of the router
       }
 
       // ---- auth --------------------------------------------------------------
