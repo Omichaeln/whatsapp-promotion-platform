@@ -69,6 +69,10 @@ export async function createServer({ config, log = console }) {
   }
   async function json(req) { const b = await readBody(req); return b.length ? JSON.parse(b.toString("utf8")) : {}; }
   function send(res, status, obj) { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(obj)); }
+  function serveStatic(res, file, mime) {
+    res.writeHead(200, { "content-type": mime, "cache-control": "public, max-age=3600" });
+    return res.end(fs.readFileSync(file));
+  }
   function authOr403(req, res, ...roles) {
     const authHeader = req.headers.authorization || "";
     const bearer = authHeader.replace(/^Bearer\s+/i, "");
@@ -133,25 +137,17 @@ export async function createServer({ config, log = console }) {
       }
 
       // ---- public console / landing (no auth required) -------------------------
-      if (p === "/" || p === "/admin") {
-        const staticPath = path.join(ROOT, "src", "web", "index.html");
-        if (fs.existsSync(staticPath)) { res.writeHead(200, { "content-type": "text/html" }); return res.end(fs.readFileSync(staticPath)); }
-        return send(res, 200, {
-          name: "WhatsApp Promotion Platform",
-          status: "ok",
-          endpoints: ["/health/live", "/health/ready", "/webhooks/whatsapp", "/api/login", "/api/campaigns", "/api/receipts", "/api/entries", "/api/draws", "/api/crm-sync", "/api/audit-events"],
-          auth: "POST /api/login with ADMIN_EMAIL / ADMIN_PASSWORD, then Authorization: Bearer <token>",
-        });
-      }
-      // static assets for the admin console (public; no secrets inside)
-      if (p.startsWith("/web/")) {
-        const rel = p.slice("/web/".length).replace(/\.\./g, "");
-        const file = path.join(ROOT, "src", "web", rel);
-        if (fs.existsSync(file) && fs.statSync(file).isFile()) {
-          const ext = path.extname(file);
-          const mime = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" }[ext] || "application/octet-stream";
-          res.writeHead(200, { "content-type": mime });
-          return res.end(fs.readFileSync(file));
+      // React console build (source: src/web-console; built via npm run web:build
+      // which copies dist -> src/web-console-dist; committed to the repo).
+      const CONSOLE_DIST = path.join(ROOT, "src", "web-console-dist");
+      if (fs.existsSync(path.join(CONSOLE_DIST, "index.html"))) {
+        if (p === "/" || p === "/admin") return serveStatic(res, path.join(CONSOLE_DIST, "index.html"), "text/html");
+        const assetRel = p.split("?")[0].replace(/^\//, "");
+        const assetFile = path.join(CONSOLE_DIST, assetRel);
+        if (assetRel && !assetRel.includes("..") && fs.existsSync(assetFile) && fs.statSync(assetFile).isFile()) {
+          const ext = path.extname(assetFile);
+          const mime = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2" }[ext] || "application/octet-stream";
+          return serveStatic(res, assetFile, mime);
         }
         return send(res, 404, { error: "not found" });
       }

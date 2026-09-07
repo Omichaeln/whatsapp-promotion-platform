@@ -9,7 +9,8 @@
   },
   "scripts": {
     "migrate": "node src/db.js migrate",
-    "seed": "node scripts/seed-demo.mjs",
+    		"web:build": "cd src/web-console && npm install --no-audit --no-fund && npm run build && rm -rf ../web-console-dist && cp -R dist ../web-console-dist",
+    		"seed": "node scripts/seed-demo.mjs",
     "start": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env src/server.js",
     "worker": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env src/worker.js",
     "test": "node --no-warnings=ExperimentalWarning --test test/",

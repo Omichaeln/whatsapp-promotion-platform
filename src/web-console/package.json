@@ -1,0 +1,19 @@
+{
+  "name": "whatsapp-promotion-platform-console",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Promotion operations console (builds to src/web/dist, served statically; no runtime deps in the server).",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.8"
+  }
+}
