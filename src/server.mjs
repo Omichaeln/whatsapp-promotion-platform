@@ -210,10 +210,15 @@ export async function createServer({ config, log = console }) {
           transport: cfg.whatsappTransport,
         });
       }
-      if (p === "/api/qr") {
+      // Original desk parity: /api/qr returns the SVG (for <img>), /api/qr/raw
+      // returns the pairing string for client-side rendering.
+      if (p === "/api/qr" || p === "/api/qr/raw") {
+        const raw = typeof transport.currentQr === "function" ? transport.currentQr() : null;
+        if (!raw) return send(res, 404, { error: "no QR pending" });
+        if (p === "/api/qr/raw") return send(res, 200, { qr: raw });
         const svg = typeof transport.qrSvg === "function" ? transport.qrSvg() : null;
         if (svg) { res.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "no-store" }); return res.end(svg); }
-        return send(res, 200, { ready: transport.health?.().ready !== false });
+        return send(res, 404, { error: "no QR pending" });
       }
       // Public winners view (REQ-20): disclosure fields only; no auth required.
       if (p === "/api/winners/public" && req.method === "GET") {
