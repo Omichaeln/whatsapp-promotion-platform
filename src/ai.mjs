@@ -14,7 +14,7 @@ import { nowIso } from "./db.mjs";
 // ---- deterministic fallbacks -------------------------------------------------
 const CATS = [
   { key: "Customers", hint: "people asking about products, orders, prices, complaints", match: ["price", "order", "buy", "cost", "stock", "promo", "entry", "receipt"] },
-  { key: "Team", hint: "staff and day-to-day operations", match: ["team", "shift", "report", "stock levels", "opening", "closing"] },
+  { key: "Team", hint: "staff and day-to-day operations", match: ["team", "shift", "report", "stock levels", "opening", "closing", "daily", "figures", "sold", "stock"] },
   { key: "Partners and suppliers", hint: "suppliers, service providers, banks", match: ["supplier", "delivery", "invoice", "bank", "payment"] },
   { key: "Other", hint: "anything else", match: [] },
 ];
@@ -116,7 +116,7 @@ export function createAi({ cfg, store, usage }) {
         priority: pri,
         needs_reply: reply,
         confidence: 3,
-        routine_report: cat === "Team" && !reply,
+        routine_report: !reply && (cat === "Team" || /report|daily|figures|sold|inventory|units/i.test(text)),
         summary: String(text).slice(0, 180),
         draft: reply ? draftFor(text, last.chat_name) : "",
       });

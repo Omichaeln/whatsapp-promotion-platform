@@ -183,6 +183,23 @@ export async function createServer({ config, log = console }) {
         // not a console path -> fall through to the rest of the router
       }
 
+      // ---- canonical public desk routes (original API surface) -------------------
+      if (p === "/api/config") {
+        const brand = JSON.parse(fs.readFileSync(path.join(ROOT, "config", "brand.json"), "utf8"));
+        return send(res, 200, {
+          ...brand,
+          name: brand.name || "WhatsApp Promotion Platform",
+          locked: !cfg.adminPassword, // server-side login is the real gate
+          features: { ai: ai.hasKey, promotion: true },
+          transport: cfg.whatsappTransport,
+        });
+      }
+      if (p === "/api/qr") {
+        const svg = typeof transport.qrSvg === "function" ? transport.qrSvg() : null;
+        if (svg) { res.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "no-store" }); return res.end(svg); }
+        return send(res, 200, { ready: transport.health?.().ready !== false });
+      }
+
       // ---- auth --------------------------------------------------------------
       if (p === "/api/login" && req.method === "POST") {
         const body = await json(req);
@@ -352,6 +369,66 @@ export async function createServer({ config, log = console }) {
       if (p === "/api/metrics" && req.method === "GET") return send(res, 200, await metricsPayload());
       if (p === "/api/activity" && req.method === "GET") {
         return send(res, 200, { events: desk.recentActivity(Number(url.searchParams.get("limit") || 30)) });
+      }
+
+      // ---- canonical desk routes (the original console calls these) ------------
+      if (p === "/api/data" && req.method === "GET") {
+        const days = Math.min(90, Math.max(1, Number(url.searchParams.get("days") || 14)));
+        const sinceIso = new Date(Date.now() - days * 86400_000).toISOString();
+        const raw = desk.messages({ where: "where timestamp >= ?", params: [sinceIso], limit: 3000 });
+        const threads = desk.threads().map((t) => ({ ...t, needs_reply: t.needs_reply === 1, processed: undefined }));
+        const messages = raw.map((m) => ({ ...m, processed: m.processed === 1 }));
+        return send(res, 200, { messages, threads, briefs: desk.briefs(12) });
+      }
+      if (p === "/api/status" && req.method === "GET") {
+        const h = transport.health?.() || {};
+        return send(res, 200, { ...h, provider: h.provider || cfg.whatsappTransport });
+      }
+      if (p === "/api/usage" && req.method === "GET") return send(res, 200, await usage.snapshot());
+      if (p === "/api/refresh" && req.method === "POST") {
+        const body = await json(req);
+        const hours = Math.min(24 * 14, Math.max(1, Number(body.hours || 48)));
+        const cutoffIso = new Date(Date.now() - hours * 3600_000).toISOString();
+        const rows = await desk.unprocessed({ cutoffIso, limit: 800 });
+        if (!rows.length) return send(res, 200, { brief: null, message: "Nothing new since the last brief." });
+        const result = await ai.summarise(rows);
+        const brief = desk.insertBrief({ brief_md: result.brief_md, pulse: result.pulse, message_count: rows.length, direct_count: rows.filter((r) => r.chat_type === "direct").length, group_count: rows.filter((r) => r.chat_type === "group").length, model: result.model, made_by: result.made_by });
+        for (const c of result.chats) {
+          const last = rows.filter((r) => r.chat_id === c.chat_id).sort((a, b) => String(b.timestamp) < String(a.timestamp) ? -1 : 1)[0];
+          if (last) desk.upsertThread({ chat_id: c.chat_id, chat_type: c.chat_type, chat_name: c.chat_name, category: c.category, priority: c.priority, needs_reply: c.needs_reply, confidence: c.confidence, summary: c.summary, draft: c.draft, status: c.routine_report && !c.needs_reply ? "filed" : "open", last_message_at: last.timestamp, updated_at: nowIso() });
+        }
+        desk.markProcessed(rows.map((r) => r.id));
+        activity("brief", `Brief: ${rows.length} messages across ${result.chats.length} chats`, { hours });
+        return send(res, 200, { brief, pulse: result.pulse, made_by: result.made_by });
+      }
+      if (p === "/api/draft" && req.method === "POST") {
+        const body = await json(req);
+        const out = await ai.draft({ context: body.context, instruction: body.instruction, current: body.current });
+        if (out.status) return send(res, out.status, out);
+        return send(res, 200, out);
+      }
+      const thCanon = p.match(/^\/api\/threads\/(.+)$/);
+      if (thCanon && req.method === "PATCH") {
+        const b = await json(req);
+        const chatId = decodeURIComponent(thCanon[1]);
+        const t = desk.thread(chatId);
+        if (!t) return send(res, 404, { error: "thread not found" });
+        desk.upsertThread({ chat_id: chatId, chat_type: t.chat_type || "direct", chat_name: t.chat_name, category: b.category || t.category || "Other", priority: b.priority || t.priority, needs_reply: b.needs_reply ?? t.needs_reply, confidence: b.confidence ?? t.confidence, summary: b.summary ?? t.summary, draft: b.draft !== undefined ? b.draft : t.draft, status: b.status || t.status, last_message_at: t.last_message_at, updated_at: nowIso() });
+        return send(res, 200, { ...desk.thread(chatId), needs_reply: desk.thread(chatId).needs_reply === 1 });
+      }
+      if (p === "/api/send" && req.method === "POST") {
+        const b = await json(req);
+        const target = String(b.chat_id || b.target || "");
+        if (!b.text) return send(res, 400, { error: "text is required" });
+        if (target.endsWith("@g.us")) return send(res, 400, { error: "cannot send to a group from the desk; use direct chats or phones" });
+        const phone = target.split("@")[0].replace(/[^\d]/g, "");
+        outbox.enqueueWhatsApp({ waPhoneUid: phone, kind: "text", payload: String(b.text).slice(0, 4000), idempotencyKey: `send:${nowIso()}:${phone}:${String(b.text).slice(0, 16)}` });
+        activity("send", `Queued message to ${phone.slice(-9)}`, { len: String(b.text).length });
+        return send(res, 200, { ok: true, queued: true });
+      }
+      if (p === "/api/unlink" && req.method === "POST") {
+        if (typeof transport.unlink === "function") await transport.unlink();
+        return send(res, 200, { ok: true });
       }
 
       // WhatsApp link via QR (linked device)

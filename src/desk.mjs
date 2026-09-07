@@ -35,8 +35,11 @@ export function createDeskStore(db, now = nowIso) {
         String(m.message_text || "").slice(0, 4000), m.timestamp || now()).changes > 0;
     },
     messages(query = {}) {
-      const sql = `select * from desk_messages ${query.where || ""} order by timestamp desc limit ?`;
-      return db.prepare(sql).all(query.limit || 200);
+      const where = query.where || "";
+      const params = query.params || [];
+      const limit = Number(query.limit || 200);
+      if (!/^(where\s)?\w/.test(where.trim())) throw new Error("invalid where clause");
+      return db.prepare(`select * from desk_messages ${where} order by timestamp desc limit ?`).all(...params, limit);
     },
     unprocessed({ cutoffIso, limit = 800 }) {
       return db.prepare(`select * from desk_messages where processed=0 and timestamp >= ? order by timestamp limit ?`).all(cutoffIso, limit);
