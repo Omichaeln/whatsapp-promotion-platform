@@ -124,6 +124,18 @@ export async function createServer({ config, log = console }) {
         catch { return send(res, 503, { ok: false }); }
       }
 
+      // ---- public console / landing (no auth required) -------------------------
+      if (p === "/" || p === "/admin") {
+        const staticPath = path.join(ROOT, "src", "web", "index.html");
+        if (fs.existsSync(staticPath)) { res.writeHead(200, { "content-type": "text/html" }); return res.end(fs.readFileSync(staticPath)); }
+        return send(res, 200, {
+          name: "WhatsApp Promotion Platform",
+          status: "ok",
+          endpoints: ["/health/live", "/health/ready", "/webhooks/whatsapp", "/api/login", "/api/campaigns", "/api/receipts", "/api/entries", "/api/draws", "/api/crm-sync", "/api/audit-events"],
+          auth: "POST /api/login with ADMIN_EMAIL / ADMIN_PASSWORD, then Authorization: Bearer <token>",
+        });
+      }
+
       // ---- auth --------------------------------------------------------------
       if (p === "/api/login" && req.method === "POST") {
         const body = await json(req);
@@ -255,13 +267,6 @@ export async function createServer({ config, log = console }) {
       if (p === "/api/audit-events" && req.method === "GET" && auth.hasRole(user, "auditor")) {
         const rows = db.prepare(`select id, actor_type, actor_id, action, target_type, target_id, entry_hash, created_at from audit_events order by id desc limit 200`).all();
         return send(res, 200, { events: rows });
-      }
-
-      // mean-back admin shell (static) fallback
-      const staticPath = path.join(ROOT, "src", "web", "index.html");
-      if (p === "/" || p === "/admin") {
-        if (fs.existsSync(staticPath)) { res.writeHead(200, { "content-type": "text/html" }); return res.end(fs.readFileSync(staticPath)); }
-        return send(res, 200, { name: "WhatsApp Promotion Platform", status: "ok", note: "Admin UI build pending" });
       }
 
       return send(res, 404, { error: "not found" });
