@@ -112,6 +112,33 @@ and the launch gate checklist (acceptance criteria A-01..A-14).
 draw reconstruction). `npm run reconstruct-draw -- <draw_id>` independently
 recomputes a stored draw's output hash from its frozen snapshot and seed.
 
+## Deployment (Railway)
+
+Live demo: **https://whatsapp-promotion-platform-production.up.railway.app**
+
+The repo deploys as-is via Nixpacks (see `Procfile`, `railway.json`, `.nvmrc`):
+
+- `Procfile` runs `src/bootstrap.mjs`: migrate → seed demo campaign on an empty
+  DB → HTTP server + worker loop.
+- `src/config.mjs` auto-detects Railway env vars: binds `0.0.0.0`, and keeps
+  the database + receipts on the mounted **`/app/data`** volume (add one:
+  `railway volume add --mount-path /app/data`).
+- Required variables: `ADMIN_EMAIL`, `ADMIN_PASSWORD` (a public deploy fails
+  fast without an explicit password), `WHATSAPP_TRANSPORT=simulator` for UAT.
+- Meta Cloud API is the production transport: set `WHATSAPP_TRANSPORT=cloud-api`
+  plus the `META_*` vars and a custom domain once assets are approved (D-20).
+
+```bash
+railway login
+railway init --name <project>
+railway up -d -y
+railway domain              # get the public URL
+```
+
+Note: `railway.json` (Config as Code) is deprecated upstream — the `Procfile`
+is authoritative for the start command; migrate to `.railway/railway.ts` if
+you adopt Railway IaC.
+
 ## License
 
 MIT — original WhatsApp Desk is MIT-licensed; this is a clean new implementation.
