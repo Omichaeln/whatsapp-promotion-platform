@@ -47,7 +47,9 @@ export function loadConfig(env = process.env) {
     // original desk AI wrapper (optional)
     ai: {
       provider: env.AI_PROVIDER || "none",
-      apiKey: env.AI_PROVIDER_API_KEY || "",
+      openaiKey: env.OPENAI_API_KEY || env.AI_PROVIDER_API_KEY || "",
+      openaiModel: env.OPENAI_MODEL || env.AI_MODEL || "gpt-4o-mini",
+      baseUrl: env.AI_PROVIDER_BASE_URL || "https://api.openai.com/v1",
       model: env.AI_MODEL || "",
       monthlyBudgetUsd: num(env.AI_MONTHLY_BUDGET_USD, 0),
     },

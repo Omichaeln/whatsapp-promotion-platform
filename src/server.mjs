@@ -15,7 +15,11 @@ import { createAuth } from "./auth.mjs";
 import { SimulatorExtractor } from "./extract/simulator.mjs";
 import { SimulatorTransport } from "./transport/simulator.mjs";
 import { CloudApiTransport } from "./transport/cloud-api.mjs";
+import { LinkedDeviceTransport } from "./transport/linked-device.mjs";
 import { verifyInboundSignature } from "./transport/whatsapp-transport.mjs";
+import { createDeskStore } from "./desk.mjs";
+import { createAi, createUsage } from "./ai.mjs";
+import { parseCommand, HELP_TEXT } from "./nlp.mjs";
 
 /**
  * HTTP surface (spec 13): provider webhook endpoints + admin/operations API.
@@ -41,18 +45,42 @@ export async function createServer({ config, log = console }) {
     bootstrap: cfg.adminEmail && cfg.adminPassword ? { email: cfg.adminEmail, password: cfg.adminPassword } : null,
   });
   const pipeline = createReceiptPipeline({ db, mediaStore, extractor, duplicates, outbox, domain });
-  const conversation = createConversationService({ db, domain, receiptPipeline: pipeline, outbox });
+  // desk workflow (restored from the original WhatsApp Desk)
+  const desk = createDeskStore(db);
+  const usage = createUsage(desk, cfg.ai?.monthlyBudgetUsd ?? 0);
+  const ai = createAi({ cfg, store: desk, usage });
+  // late-bound: linked-device callbacks run at message time, after `conversation`
+  // is created below.
+  let conversation;
   const drawService = createDrawService(db);
   const crm = createCrm({ db, cfg: cfg.crm });
 
   // ---- transport --------------------------------------------------------
+  const activity = (kind, summary, detail) => { try { desk.activity(kind, summary, detail); } catch { /* non-fatal */ } };
+  const phoneInbound = async (ev) => {
+    if (!conversation) return;
+    const res = await conversation.handle({ providerMessageId: ev.providerMessageId, phoneUid: ev.phoneUid, type: ev.type, text: ev.text || "", mediaBytes: ev.mediaBytes, mime: ev.mime });
+    if (res?.replies) {
+      for (const reply of res.replies) {
+        outbox.enqueueWhatsApp({ waPhoneUid: ev.phoneUid, kind: "text", payload: reply, idempotencyKey: `conv:${ev.providerMessageId}:${reply.slice(0, 16)}` });
+      }
+    }
+    return res;
+  };
   let transport;
   if (cfg.whatsappTransport === "cloud-api") {
     transport = new CloudApiTransport({ meta: cfg.meta, publicBaseUrl: cfg.publicBaseUrl, webhookToken: cfg.webhookToken });
   } else if (cfg.whatsappTransport === "linked-device") {
-    throw new Error("linked-device transport requires the optional Baileys dependency; use simulator or cloud-api in this build");
+    transport = new LinkedDeviceTransport({ authDir: cfg.baileysAuthDir, deskStore: desk, onActivity: activity, log });
   } else {
     transport = new SimulatorTransport();
+  }
+
+  conversation = createConversationService({ db, domain, receiptPipeline: pipeline, outbox });
+  if (transport instanceof LinkedDeviceTransport) {
+    transport.onTextMessage = (ev) => phoneInbound({ ...ev, type: "message.text" });
+    transport.onImageMessage = (ev) => phoneInbound({ ...ev, type: "message.image" });
+    transport.start().catch((e) => log?.log?.(`[linked] start failed: ${e.message}`));
   }
 
   const mediaSecret = sha256hex("media:" + (cfg.webhookToken || "dev"));
@@ -294,6 +322,207 @@ export async function createServer({ config, log = console }) {
       if (p === "/api/audit-events" && req.method === "GET" && auth.hasRole(user, "auditor")) {
         const rows = db.prepare(`select id, actor_type, actor_id, action, target_type, target_id, entry_hash, created_at from audit_events order by id desc limit 200`).all();
         return send(res, 200, { events: rows });
+      }
+
+      // ---- restored desk workflows: dashboard, activity, AI, NLP ------------
+      const metricsPayload = async () => {
+        const campCount = db.prepare(`select count(*) n from campaigns where status='active'`).get().n;
+        const receipts = db.prepare(`select status, count(*) n from receipts group by status`).all().reduce((a, r) => { a[r.status] = r.n; return a; }, {});
+        const entriesCount = db.prepare(`select count(*) n from entries where status='active'`).get().n;
+        const draws = db.prepare(`select status, count(*) n from draws group by status`).all().reduce((a, r) => { a[r.status] = r.n; return a; }, {});
+        const participants = db.prepare(`select count(*) n from participants`).get().n;
+        const usageSnap = await usage.snapshot();
+        const transportHealth = (() => { try { return transport.health?.(); } catch { return {}; } })();
+        return {
+          campaigns: { active: campCount },
+          receipts,
+          entries: entriesCount,
+          draws,
+          participants,
+          threads: desk.threadStats(),
+          messages: desk.countMessages(),
+          usage: usageSnap,
+          transport: { provider: transportHealth.provider || cfg.whatsappTransport, ready: !!transportHealth.ready, me: transportHealth.me, qr: transportHealth.qr, lastError: transportHealth.lastError },
+          activity: desk.recentActivity(12),
+          db: { ok: true },
+        };
+      };
+
+      // Dashboard: activity + reports + system status + performance metrics
+      if (p === "/api/metrics" && req.method === "GET") return send(res, 200, await metricsPayload());
+      if (p === "/api/activity" && req.method === "GET") {
+        return send(res, 200, { events: desk.recentActivity(Number(url.searchParams.get("limit") || 30)) });
+      }
+
+      // WhatsApp link via QR (linked device)
+      if (p === "/api/desk/qr" && req.method === "GET") {
+        const svg = typeof transport.qrSvg === "function" ? transport.qrSvg() : null;
+        const health = transport.health?.() || {};
+        return send(res, 200, { svg, ready: health.ready || false, me: health.me, qr: health.qr, lastError: health.lastError });
+      }
+      if (p === "/api/desk/link" && req.method === "POST") {
+        if (typeof transport.start !== "function" || transport.constructor?.name !== "LinkedDeviceTransport") return send(res, 400, { error: "linked-device transport is not active" });
+        await transport.start();
+        return send(res, 200, { ok: true, message: "Scan the QR code with WhatsApp > Linked devices > Link a device" });
+      }
+      if (p === "/api/desk/unlink" && req.method === "POST") {
+        if (typeof transport.unlink === "function") await transport.unlink();
+        return send(res, 200, { ok: true });
+      }
+      if (p === "/api/desk/status" && req.method === "GET") {
+        const health = transport.health?.() || {};
+        const deskStats = desk.threadStats();
+        return send(res, 200, {
+          transport: health,
+          desk: { threads: deskStats, messages: desk.countMessages() },
+          usage: await usage.snapshot(),
+          ai: { provider: ai.hasKey ? (cfg.ai?.openaiModel || "gpt-4o-mini") : "deterministic-fallback" },
+        });
+      }
+
+      // desk messages + threads + briefs (data restored from the original desk)
+      if (p === "/api/desk/messages" && req.method === "GET") {
+        return send(res, 200, { messages: desk.messages({ limit: Number(url.searchParams.get("limit") || 100) }) });
+      }
+      if (p === "/api/desk/threads" && req.method === "GET") {
+        const q = url.searchParams;
+        return send(res, 200, { threads: desk.threads({ status: q.get("status") || undefined, priority: q.get("priority") || undefined, category: q.get("category") || undefined, limit: Number(q.get("limit") || 300) }) });
+      }
+      const thMatch = p.match(/^\/api\/desk\/threads\/(.+)$/);
+      if (thMatch && req.method === "PATCH") {
+        const b = await json(req);
+        const chatId = decodeURIComponent(thMatch[1]);
+        const t = desk.thread(chatId);
+        if (!t) return send(res, 404, { error: "thread not found" });
+        desk.upsertThread({ chat_id: chatId, chat_type: t.chat_type || "direct", chat_name: t.chat_name, category: b.category || t.category || "Other", priority: b.priority || t.priority, needs_reply: b.needs_reply ?? t.needs_reply, confidence: b.confidence ?? t.confidence, summary: b.summary ?? t.summary, draft: b.draft !== undefined ? b.draft : t.draft, status: b.status || t.status, last_message_at: t.last_message_at, updated_at: nowIso() });
+        return send(res, 200, { thread: desk.thread(chatId) });
+      }
+      if (p === "/api/desk/briefs" && req.method === "GET") return send(res, 200, { briefs: desk.briefs(Number(url.searchParams.get("limit") || 12)) });
+
+      // AI: brief/triage, draft, transcribe, classify
+      if (p === "/api/desk/brief" && req.method === "POST") {
+        const body = await json(req);
+        const hours = Math.min(24 * 14, Math.max(1, Number(body.hours || 48)));
+        const cutoffIso = new Date(Date.now() - hours * 3600_000).toISOString();
+        const rows = await desk.unprocessed({ cutoffIso, limit: 800 });
+        if (!rows.length) return send(res, 200, { brief: null, message: "Nothing new since the last brief." });
+        const result = await ai.summarise(rows);
+        const brief = desk.insertBrief({ brief_md: result.brief_md, pulse: result.pulse, message_count: rows.length, direct_count: rows.filter((r) => r.chat_type === "direct").length, group_count: rows.filter((r) => r.chat_type === "group").length, model: result.model, made_by: result.made_by });
+        for (const c of result.chats) {
+          const last = rows.filter((r) => r.chat_id === c.chat_id).sort((a, b) => String(b.timestamp) < String(a.timestamp) ? -1 : 1)[0];
+          if (last) desk.upsertThread({ chat_id: c.chat_id, chat_type: c.chat_type, chat_name: c.chat_name, category: c.category, priority: c.priority, needs_reply: c.needs_reply, confidence: c.confidence, summary: c.summary, draft: c.draft, status: c.routine_report && !c.needs_reply ? "filed" : "open", last_message_at: last.timestamp, updated_at: nowIso() });
+        }
+        desk.markProcessed(rows.map((r) => r.id));
+        activity("brief", `Brief: ${rows.length} messages across ${result.chats.length} chats`, { hours });
+        return send(res, 200, { brief, pulse: result.pulse, chats: result.chats, made_by: result.made_by });
+      }
+      if (p === "/api/desk/draft" && req.method === "POST") {
+        const body = await json(req);
+        const out = await ai.draft({ context: body.context, instruction: body.instruction, current: body.current });
+        if (out.status) return send(res, out.status, out);
+        return send(res, 200, out);
+      }
+      if (p === "/api/desk/transcribe" && req.method === "POST") {
+        // multipart/form-data with an "audio" part -> ai.transcribe
+        const m = (req.headers["content-type"] || "").match(/multipart\/form-data;\s*boundary=([^;]+)/);
+        if (!m) return send(res, 400, { error: "multipart audio required" });
+        const bodyBuf = await readBody(req, 25 * 1024 * 1024);
+        const boundary = `--${m[1]}`;
+        const find = (hay, needle, from = 0) => {
+          const h = Buffer.from(hay), n = Buffer.from(needle);
+          for (let i = from; i <= h.length - n.length; i++) {
+            let ok = true;
+            for (let j = 0; j < n.length; j++) if (h[i + j] !== n[j]) { ok = false; break; }
+            if (ok) return i;
+          }
+          return -1;
+        };
+        const first = find(bodyBuf, Buffer.from(boundary));
+        const partStart = first + Buffer.from(boundary).length + 2; // past \r\n
+        const headerEnd = find(bodyBuf, Buffer.from("\r\n\r\n"), partStart);
+        if (headerEnd < 0) return send(res, 400, { error: "malformed multipart" });
+        const payloadStart = headerEnd + 4;
+        const next = find(bodyBuf, Buffer.from(boundary), payloadStart);
+        const audioBytes = next > 0 ? bodyBuf.subarray(payloadStart, next - 2) : bodyBuf.subarray(payloadStart);
+        const headersText = bodyBuf.subarray(partStart, headerEnd).toString("latin1");
+        const mimeMatch = headersText.match(/content-type:\s*([^\r\n;]+)/i);
+        const mime = mimeMatch ? mimeMatch[1].trim() : "audio/webm";
+        const out = await ai.transcribe(audioBytes, mime);
+        if (out.status) return send(res, out.status, out);
+        activity("voice", `Transcribed a voice note`, { seconds: out.usage?.month_usd ?? 0 });
+        return send(res, 200, { text: out.text, usage: out.usage });
+      }
+
+      // Natural-language commands
+      if (p === "/api/nl" && req.method === "POST") {
+        const body = await json(req);
+        const parsed = parseCommand(body.text || "");
+        if (parsed.action === "help" || !parsed.action) {
+          return send(res, 200, { action: "help", reply: HELP_TEXT, available: true });
+        }
+        let data = null, reply = parsed.reply;
+        try {
+          switch (parsed.action) {
+            case "dashboard": data = await metricsPayload(); break;
+            case "status": {
+              const health = transport.health?.() || {};
+              data = { transport: health, usage: await usage.snapshot(), threads: desk.threadStats() };
+              reply = `System ${health.ready !== undefined ? (health.ready ? "ready" : "waiting") : "online"}. ${health.me ? `Linked as ${health.me}.` : ""} ${desk.countMessages()} messages filed, ${desk.threadStats().needsReply} open threads.`;
+              break;
+            }
+            case "review": data = await (async () => { const recs = db.prepare(`select id, status, reason_code, created_at from receipts where status=? order by created_at desc limit ?`).all(parsed.params.status || "NEEDS_REVIEW", parsed.params.limit || 20); return { receipts: recs }; })(); reply = `${data.receipts.length} receipt(s) in review.`; break;
+            case "entries": data = { entries: db.prepare(`select * from entries order by created_at desc limit 50`).all() }; reply = `${data.entries.length} entry(ies).`; break;
+            case "participants": data = { participants: db.prepare(`select id, first_name, surname, location, status, created_at from participants order by created_at desc limit 100`).all() }; reply = `${data.participants.length} participant(s).`; break;
+            case "campaigns": data = { campaigns: domain.listCampaigns() }; break;
+            case "winners": data = { winners: db.prepare(`select * from winners order by rank limit 50`).all() }; reply = `${data.winners.length} winner(s) recorded.`; break;
+            case "draw": {
+              const camp = activeCampaign();
+              const period = parsed.params.period || db.prepare(`select draw_period from entries where status='active' order by created_at desc limit 1`).get()?.draw_period;
+              if (!camp || !period) { reply = "No active campaign or entries to draw from yet."; break; }
+              const ids = db.prepare(`select id from entries where campaign_id=? and draw_period=? and status='active'`).all(camp.id, period).map((r) => r.id);
+              if (!ids.length) { reply = `No active entries for ${period}.`; break; }
+              const d = drawService.freeze({ campaignId: camp.id, drawPeriod: period, configHash: sha256hex(period), entryIds: ids, operatorId: user.id });
+              const ex = drawService.execute(d.id, user.id);
+              data = { draw: ex, count: ids.length };
+              reply = `Frozen and executed draw for ${period} (${ids.length} candidates). Open Draws to approve + publish.`;
+              break;
+            }
+            case "send": {
+              if (!parsed.params?.phone) reply = "Who should I message? e.g. \"send: thanks to 263771234567\""; else {
+                const msgId = await outbox.enqueueWhatsApp({ waPhoneUid: parsed.params.phone, kind: "text", payload: parsed.params.text, idempotencyKey: `nl:${Date.now()}:${parsed.params.phone}` });
+                data = { queued: msgId }; reply = `Queued: "${parsed.params.text.slice(0, 60)}" to ${parsed.params.phone.slice(-9)}.`;
+              }
+              break;
+            }
+            case "draft": {
+              const out = await ai.draft({ context: parsed.params.text || "", instruction: body.text, current: null });
+              data = out; reply = out.text || "Draft ready (set OPENAI_API_KEY for model drafts).";
+              break;
+            }
+            case "classify": {
+              const out = await ai.summarise([{ chat_id: "nl", chat_type: "direct", chat_name: "Natural language", sender_name: "operator", message_text: parsed.params.text || "", timestamp: nowIso() }]);
+              data = { classification: out.chats[0] }; reply = `Category: ${out.chats[0].category} · priority ${out.chats[0].priority}${out.chats[0].needs_reply ? " · needs reply" : ""}.`;
+              break;
+            }
+            case "brief": {
+              const hours = 48;
+              const cutoffIso = new Date(Date.now() - hours * 3600_000).toISOString();
+              const rows = await desk.unprocessed({ cutoffIso, limit: 800 });
+              if (!rows.length) { reply = "Nothing new since the last brief."; break; }
+              const result = await ai.summarise(rows);
+              data = result; reply = result.pulse;
+              break;
+            }
+            case "link": {
+              const svg = typeof transport.qrSvg === "function" ? transport.qrSvg() : null;
+              data = { svg, ready: transport.health?.().ready }; reply = svg ? "Scan the QR code to link your phone." : "WhatsApp is already linked.";
+              break;
+            }
+            case "unlink": { if (typeof transport.unlink === "function") await transport.unlink(); reply = "Device unlinked."; break; }
+            default: reply = "I didn't catch that. Type \"help\".";
+          }
+        } catch (e) { reply = `That didn't work: ${e.message}`; }
+        return send(res, 200, { action: parsed.action, confidence: parsed.confidence, reply, data });
       }
 
       return send(res, 404, { error: "not found" });

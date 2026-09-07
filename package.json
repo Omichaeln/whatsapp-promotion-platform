@@ -18,5 +18,8 @@
     "check": "node --version >/dev/null && for f in $(find src scripts test bench -name '*.mjs' -o -name '*.js' 2>/dev/null); do node --check \"$f\" || exit 1; done && echo 'check ok'",
     "reconstruct-draw": "node --no-warnings=ExperimentalWarning scripts/reconstruct-draw.mjs"
   },
-  "dependencies": {}
+  "dependencies": {
+    "baileys": "^7.0.0-rc14",
+    "qrcode": "^1.5.4"
+  }
 }
