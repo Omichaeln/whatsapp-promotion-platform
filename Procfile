@@ -1,0 +1,1 @@
+web: node --no-warnings=ExperimentalWarning src/bootstrap.mjs
