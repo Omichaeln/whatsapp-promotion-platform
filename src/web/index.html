@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WhatsApp Promotion Platform — Console</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel2: #1c2330; --border: #2d333b;
+    --fg: #e6edf3; --muted: #8b949e; --accent: #1f6f5f; --accent2: #2ea043;
+    --danger: #f85149; --warn: #d29922; --ok: #3fb950;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .who { margin-left: auto; color: var(--muted); font-size: 12px; }
+  header button { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+  header button:hover { color: var(--fg); }
+  nav { display: flex; gap: 4px; padding: 8px 20px; background: var(--panel); border-bottom: 1px solid var(--border); overflow-x: auto; }
+  nav button { background: none; border: none; color: var(--muted); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+  nav button.active { background: var(--accent); color: #fff; }
+  main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 14px; }
+  .card h2 { margin: 0 0 10px; font-size: 14px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  td.mono, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .pill.ok { background: rgba(63,185,80,.15); color: var(--ok); }
+  .pill.warn { background: rgba(210,153,34,.15); color: var(--warn); }
+  .pill.danger { background: rgba(248,81,73,.15); color: var(--danger); }
+  .pill.muted { background: rgba(139,148,158,.15); color: var(--muted); }
+  input, select, textarea { background: var(--panel2); border: 1px solid var(--border); color: var(--fg); border-radius: 6px; padding: 6px 8px; font-size: 13px; width: 100%; }
+  textarea { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 3px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 160px; }
+  button.act { background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+  button.act:hover { background: var(--accent2); }
+  button.ghost { background: none; border: 1px solid var(--border); color: var(--muted); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+  button.ghost:hover { color: var(--fg); }
+  button.small { padding: 2px 8px; font-size: 11px; }
+  .err { color: var(--danger); font-size: 13px; }
+  .okc { color: var(--ok); font-size: 13px; }
+  .muted { color: var(--muted); font-size: 12px; }
+  pre.log { background: #0a0e13; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 12px; overflow: auto; max-height: 260px; white-space: pre-wrap; }
+  #login { max-width: 360px; margin: 12vh auto; }
+  #login h1 { font-size: 18px; }
+  .hidden { display: none; }
+  .toast { position: fixed; bottom: 18px; right: 18px; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 13px; z-index: 20; max-width: 420px; box-shadow: 0 4px 16px rgba(0,0,0,.4); }
+</style>
+</head>
+<body>
+<div id="login" class="card hidden">
+  <h1>WhatsApp Promotion Platform</h1>
+  <p class="muted">Sign in to the operations console.</p>
+  <label>Email</label><input id="login-email" type="email" autocomplete="username" />
+  <label>Password</label><input id="login-pass" type="password" autocomplete="current-password" />
+  <p class="err hidden" id="login-err"></p>
+  <p style="margin-top:14px"><button class="act" id="login-btn" style="width:100%">Sign in</button></p>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>WhatsApp Promotion Platform</h1>
+    <span class="who" id="who"></span>
+    <button id="logout">Sign out</button>
+  </header>
+  <nav id="tabs">
+    <button data-tab="dashboard" class="active">Dashboard</button>
+    <button data-tab="campaigns">Campaigns</button>
+    <button data-tab="outlets">Outlets</button>
+    <button data-tab="products">Products</button>
+    <button data-tab="receipts">Receipts</button>
+    <button data-tab="entries">Entries</button>
+    <button data-tab="draws">Draws</button>
+    <button data-tab="crm">CRM</button>
+    <button data-tab="audit">Audit</button>
+    <button data-tab="webhook">Webhook Tester</button>
+  </nav>
+  <main>
+    <div id="tab-dashboard"></div>
+    <div id="tab-campaigns" class="hidden"></div>
+    <div id="tab-outlets" class="hidden"></div>
+    <div id="tab-products" class="hidden"></div>
+    <div id="tab-receipts" class="hidden"></div>
+    <div id="tab-entries" class="hidden"></div>
+    <div id="tab-draws" class="hidden"></div>
+    <div id="tab-crm" class="hidden"></div>
+    <div id="tab-audit" class="hidden"></div>
+    <div id="tab-webhook" class="hidden"></div>
+  </main>
+</div>
+<script src="/web/app.js"></script>
+</body>
+</html>

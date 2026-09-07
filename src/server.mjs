@@ -103,12 +103,20 @@ export async function createServer({ config, log = console }) {
         const events = transport.parseInbound ? transport.parseInbound(payload) : (payload.events || []);
         // Durable intake lives in conversation.handle (unique provider_message_id);
         // the webhook only routes. seen=1 when a replay returns no processing.
+        // Dev/test: payload.media = { [providerMessageId]: base64bytes } supplies
+        // receipt bytes directly (simulator transport has no real uploads).
+        const mediaMap = payload.media || {};
         let seen = 0;
         for (const ev of events) {
           // download media for image/document events
           let mediaBytes = null, mime = null;
           if (ev.type === "message.image" || ev.type === "message.document") {
-            try { mediaBytes = ev.mediaId ? await transport.downloadMedia(ev.mediaId) : null; mime = ev.type === "message.image" ? "image/jpeg" : "application/pdf"; }
+            try {
+              mediaBytes = mediaMap[ev.providerMessageId]
+                ? Buffer.from(mediaMap[ev.providerMessageId], "base64")
+                : (ev.mediaId ? await transport.downloadMedia(ev.mediaId) : null);
+              mime = ev.type === "message.image" ? "image/jpeg" : "application/pdf";
+            }
             catch { mediaBytes = null; }
           }
           const res = await conversation.handle({ providerMessageId: ev.providerMessageId, phoneUid: ev.phoneUid, type: ev.type, text: ev.text, mediaBytes, mime });
@@ -134,6 +142,18 @@ export async function createServer({ config, log = console }) {
           endpoints: ["/health/live", "/health/ready", "/webhooks/whatsapp", "/api/login", "/api/campaigns", "/api/receipts", "/api/entries", "/api/draws", "/api/crm-sync", "/api/audit-events"],
           auth: "POST /api/login with ADMIN_EMAIL / ADMIN_PASSWORD, then Authorization: Bearer <token>",
         });
+      }
+      // static assets for the admin console (public; no secrets inside)
+      if (p.startsWith("/web/")) {
+        const rel = p.slice("/web/".length).replace(/\.\./g, "");
+        const file = path.join(ROOT, "src", "web", rel);
+        if (fs.existsSync(file) && fs.statSync(file).isFile()) {
+          const ext = path.extname(file);
+          const mime = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" }[ext] || "application/octet-stream";
+          res.writeHead(200, { "content-type": mime });
+          return res.end(fs.readFileSync(file));
+        }
+        return send(res, 404, { error: "not found" });
       }
 
       // ---- auth --------------------------------------------------------------
@@ -170,6 +190,10 @@ export async function createServer({ config, log = console }) {
         const b = await json(req);
         const vid = domain.createVersion(mkVersion[1], { content: b.content || {}, rules: b.rules || {}, flags: b.flags || {} });
         return send(res, 201, { versionId: vid });
+      }
+      if (mkVersion && req.method === "GET") {
+        const versions = domain.listVersions(mkVersion[1]).map((v) => ({ id: v.id, version_no: v.version_no, status: v.status, frozen_at: v.frozen_at, config_hash: v.config_hash }));
+        return send(res, 200, { versions });
       }
       const act = p.match(/^\/api\/campaigns\/([^/]+)\/versions\/([^/]+)\/activate$/);
       if (act && req.method === "POST" && auth.hasRole(user, "campaign_manager")) {
@@ -233,6 +257,10 @@ export async function createServer({ config, log = console }) {
       }
 
       // draws
+      if (p === "/api/draws" && req.method === "GET") {
+        const rows = db.prepare(`select id, draw_period, status, snapshot_hash, output_hash, created_at from draws order by created_at desc limit 20`).all();
+        return send(res, 200, { draws: rows });
+      }
       if (p === "/api/draws" && req.method === "POST" && auth.hasRole(user, "draw_officer")) {
         const b = await json(req);
         const camp = activeCampaign() || domain.getCampaign(b.campaign_id);
