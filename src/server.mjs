@@ -23,6 +23,9 @@ import { verifyInboundSignature } from "./transport/whatsapp-transport.mjs";
  */
 export async function createServer({ config, log = console }) {
   const cfg = config || loadConfig();
+  if (cfg.onRailway && !cfg.adminPassword) {
+    throw new Error("ADMIN_PASSWORD is required on a public deployment (Railway env)");
+  }
   ensureDir(cfg.mediaDir);
   const db = openDb(cfg.database);
   migrate(db, undefined, log?.log || log || console.log);

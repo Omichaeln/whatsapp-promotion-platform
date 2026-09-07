@@ -8,15 +8,20 @@ export function loadConfig(env = process.env) {
   const abs = (p) => (path.isAbsolute(p) ? p : path.join(ROOT, p));
   const num = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : d; };
   const bool = (v) => v === "1" || v === "true" || v === true;
+  // Railway injects these env vars: bind the container's network interface and
+  // keep state on the mounted /app/data volume (ephemeral FS otherwise).
+  const onRailway = !!(env.RAILWAY_ENVIRONMENT || env.RAILWAY_ENVIRONMENT_NAME || env.RAILWAY_PROJECT_ID || env.RAILWAY_SERVICE_ID);
+  const railwayPaths = onRailway ? { database: "/app/data/promotions.db", mediaDir: "/app/data/media" } : null;
   return {
-    host: env.HOST || "127.0.0.1",
+    onRailway,
+    host: env.HOST || (onRailway ? "0.0.0.0" : "127.0.0.1"),
     port: num(env.PORT, 5191),
-    database: abs(env.DATABASE || "./data/promotions.db"),
-    mediaDir: abs(env.MEDIA_DIR || "./data/media"),
+    database: abs(env.DATABASE || railwayPaths?.database || "./data/promotions.db"),
+    mediaDir: abs(env.MEDIA_DIR || railwayPaths?.mediaDir || "./data/media"),
     logLevel: env.LOG_LEVEL || "info",
-    // bootstrap admin
+    // bootstrap admin — on a public deploy an explicit strong password is REQUIRED
     adminEmail: (env.ADMIN_EMAIL || "admin@example.com").toLowerCase().trim(),
-    adminPassword: env.ADMIN_PASSWORD || "change-me-now",
+    adminPassword: env.ADMIN_PASSWORD || (onRailway ? null : "change-me-now"),
     // WhatsApp transport
     whatsappTransport: env.WHATSAPP_TRANSPORT || "simulator", // simulator | cloud-api | linked-device
     meta: {
