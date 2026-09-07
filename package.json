@@ -1,0 +1,21 @@
+{
+  "name": "whatsapp-promotion-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end WhatsApp promotion platform: registration, consent, receipt validation, entry ledger, auditable draws, winners, claims and CRM synchronisation (spec rev 2026-09-07).",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "migrate": "node src/db.js migrate",
+    "seed": "node scripts/seed-demo.mjs",
+    "start": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env src/server.js",
+    "worker": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env src/worker.js",
+    "test": "node --no-warnings=ExperimentalWarning --test test/",
+    "bench": "node bench/run.mjs",
+    "check": "node --version >/dev/null && for f in $(find src scripts test bench -name '*.mjs' -o -name '*.js' 2>/dev/null); do node --check \"$f\" || exit 1; done && echo 'check ok'",
+    "reconstruct-draw": "node --no-warnings=ExperimentalWarning scripts/reconstruct-draw.mjs"
+  },
+  "dependencies": {}
+}

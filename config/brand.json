@@ -1,0 +1,10 @@
+{
+  "name": "PromoVault",
+  "accent": "#1f6f5f",
+  "owner": "the brand",
+  "console_title": "Promotion Operations Console",
+  "campaign_default_locale": "en",
+  "appearance": {
+    "dark": true
+  }
+}
