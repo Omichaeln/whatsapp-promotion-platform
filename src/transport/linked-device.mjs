@@ -8,20 +8,21 @@ const requireCjs = createRequire(import.meta.url);
 const pino = requireCjs("pino");
 let QRCode = null;
 
-function qrSvg(text) {
+/** Render a stable SVG QR from the qrcode BitMatrix (exported for tests). */
+export function qrSvgOf(text) {
   if (!QRCode) QRCode = requireCjs("qrcode");
   const qr = QRCode.create(text, { errorCorrectionLevel: "L", margin: 4 });
-  // qrcode v1.5 exposes modules via getModules() (2D array) or .modules.data
-  const matrix = typeof qr.getModules === "function" ? qr.getModules() : (qr.modules?.data || qr.modules);
-  const n = matrix.length;
+  // qrcode's `modules` is a BitMatrix: { size, data: Uint8Array(size*size), get(x, y) }.
+  // Iterate by its size, not the flat data length (the old code treated the
+  // buffer length as the module count and produced a 30k-px unscannable QR).
+  const mods = qr.modules;
+  const n = mods.size;
   const cell = 8, margin = 4 * cell;
   const size = n * cell + 2 * margin;
   const rects = [];
-  for (let r = 0; r < n; r++) {
-    const row = matrix[r];
-    for (let c = 0; c < n; c++) {
-      const dark = typeof row === "object" ? (row[c] ?? row.get?.(c)) : row;
-      if (dark) rects.push(`<rect x="${margin + c * cell}" y="${margin + r * cell}" width="${cell}" height="${cell}"/>`);
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      if (mods.get(y, x)) rects.push(`<rect x="${margin + x * cell}" y="${margin + y * cell}" width="${cell}" height="${cell}"/>`);
     }
   }
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}"><rect width="${size}" height="${size}" fill="#fff"/><g fill="#000">${rects.join("")}</g></svg>`;
@@ -69,7 +70,7 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
     try { this.sock?.end?.(); } catch { /* already closed */ }
   }
 
-  qrSvg() { return this.state.ready ? null : (this.lastQr ? qrSvg(this.lastQr) : null); }
+  qrSvg() { return this.state.ready ? null : (this.lastQr ? qrSvgOf(this.lastQr) : null); }
   currentQr() { return this.state.ready ? null : this.lastQr; }
 
   async connect(baileys) {
