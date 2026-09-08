@@ -171,6 +171,7 @@ function UsageLine() {
 const CONNECTION = {
   live:     { label: "WhatsApp linked",  fg: "#0d9488", bg: "rgba(13,148,136,0.10)" },
   unlinked: { label: "Scan to link",     fg: "#b45309", bg: "rgba(180,83,9,0.10)" },
+  reconnecting: { label: "Reconnecting", fg: "#b45309", bg: "rgba(180,83,9,0.10)" },
   offline:  { label: "Desk offline",     fg: "var(--text-tertiary)", bg: "rgba(100,116,139,0.08)" },
 };
 
@@ -192,19 +193,23 @@ function ConnectionControl({ link, me, onUnlink }) {
   );
 }
 
-function LinkPanel({ brand, linkError }) {
+function LinkPanel({ brand, linkError, linkedAs, lastLinkedAt, reconnecting }) {
   const [tick, setTick] = useState(0);
   const [dead, setDead] = useState(false);
   useEffect(() => {
     const t = setInterval(() => { setDead(false); setTick(n => n + 1); }, 12000);
     return () => clearInterval(t);
   }, []);
-  // QR/connection diagnosis: WhatsApp refuses linked-device WebSocket sessions
-  // from cloud/datacenter IPs (Baileys #2705) — a QR will render but the phone
-  // pairing handshake is dropped server-side. Show that instead of a silently
-  // dead code.
+  // QR/connection diagnosis. WhatsApp refuses linked-device WebSocket sessions
+  // from cloud/datacenter IPs (Baileys #2705): the QR scan itself pairs the
+  // phone, but the connection is dropped within seconds, so the desk reconnects
+  // in a loop. Never present that as "please scan again".
   const Why = (() => {
     const e = String(linkError || "");
+    if (reconnecting && linkedAs) {
+      const at = lastLinkedAt ? ` (last linked ${new Date(lastLinkedAt).toLocaleTimeString()})` : "";
+      return `Your WhatsApp is linked as ${linkedAs}${at} — the desk picked up the connection, but WhatsApp keeps dropping this cloud server's session (${e || "408"}). Phone links cannot stay connected from a cloud/datacenter IP. Run the desk from a residential connection (npm start on a home machine) or switch WHATSAPP_TRANSPORT=cloud-api with Meta credentials.`;
+    }
     if (!e) return null;
     if (/408|timedOut|connectionLost/i.test(e)) return "WhatsApp is closing this server's connection (408/timeout). Cloud/datacenter IPs are blocked for phone linking. Run the desk from a residential connection, or switch WHATSAPP_TRANSPORT=cloud-api with Meta credentials for production.";
     if (/403|forbidden/i.test(e)) return "WhatsApp refused this server's connection (403). This is usually an IP block — run linked-device from a residential host or use the Cloud API transport.";
@@ -213,18 +218,31 @@ function LinkPanel({ brand, linkError }) {
   })();
   return (
     <div className="frame" style={{ padding: "18px 20px 20px", marginBottom: 18 }}>
-      <div className="overline">Link WhatsApp</div>
+      <div className="overline">{reconnecting ? "Reconnecting WhatsApp" : "Link WhatsApp"}</div>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 20, alignItems: "center" }}>
         <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.7, color: "var(--text-secondary)" }}>
-          <li>Open WhatsApp on the phone that will feed {brand}.</li>
-          <li>Tap the menu, then <b>Linked devices</b>, then <b>Link a device</b>.</li>
-          <li>Point the phone at this code. It refreshes on its own.</li>
-          <li>When the chip reads <b>WhatsApp linked</b>, the desk is live. The phone can go back in the pocket.</li>
+          {reconnecting ? (
+            <>
+              <li>The phone is linked — WhatsApp is just dropping the server connection.</li>
+              <li>The desk reconnects automatically every few seconds.</li>
+              <li>This loop will not resolve while running on a cloud/datacenter IP.</li>
+              <li>Run <b>npm start</b> on a home machine (residential IP) or use <b>Cloud API</b>.</li>
+            </>
+          ) : (
+            <>
+              <li>Open WhatsApp on the phone that will feed {brand}.</li>
+              <li>Tap the menu, then <b>Linked devices</b>, then <b>Link a device</b>.</li>
+              <li>Point the phone at this code. It refreshes on its own.</li>
+              <li>When the chip reads <b>WhatsApp linked</b>, the desk is live. The phone can go back in the pocket.</li>
+            </>
+          )}
         </ol>
         <div style={{ width: 220, height: 220, borderRadius: 12, background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
-          {dead
-            ? <span style={{ fontSize: 11, color: "var(--text-tertiary)", textAlign: "center", padding: 12 }}>Waiting for a code</span>
-            : <img src={apiUrl(`/api/qr?token=${encodeURIComponent(getToken())}&t=${tick}`)} alt="WhatsApp link code" onError={() => setDead(true)} style={{ width: 220, height: 220 }} />}
+          {reconnecting
+            ? <span style={{ fontSize: 11, color: "var(--text-tertiary)", textAlign: "center", padding: 12 }}>Phone linked · connection being dropped by WhatsApp</span>
+            : (dead
+                ? <span style={{ fontSize: 11, color: "var(--text-tertiary)", textAlign: "center", padding: 12 }}>Waiting for a code</span>
+                : <img src={apiUrl(`/api/qr?token=${encodeURIComponent(getToken())}&t=${tick}`)} alt="WhatsApp link code" onError={() => setDead(true)} style={{ width: 220, height: 220 }} />)}
         </div>
       </div>
       {Why && <div className="notice" style={{ marginTop: 10, lineHeight: 1.55 }}>{Why}</div>}
@@ -479,6 +497,8 @@ export function Desk() {
   const [briefs, setBriefs] = useState([]);
   const [link, setLink] = useState("offline");
   const [linkError, setLinkError] = useState(null);
+  const [linkedAs, setLinkedAs] = useState(null);
+  const [lastLinkedAt, setLastLinkedAt] = useState(null);
   const [me, setMe] = useState(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -512,8 +532,12 @@ export function Desk() {
   const ping = useCallback(async () => {
     const out = await api("/api/status", { timeout: 4000 });
     if (!out.ok) { setLink("offline"); return; }
-    setLink(out.data.ready ? "live" : "unlinked");
+    // A saved/paired session that keeps dropping is "reconnecting", not a
+    // fresh "scan to link" — the phone was already linked.
+    setLink(out.data.ready ? "live" : (out.data.linkedAs || out.data.me ? "reconnecting" : "unlinked"));
     setLinkError(out.data.lastError || null);
+    setLinkedAs(out.data.linkedAs || out.data.me || null);
+    setLastLinkedAt(out.data.lastLinkedAt || null);
     setMe(out.data.me || null);
   }, []);
 
@@ -705,6 +729,7 @@ export function Desk() {
         <div>
           <SectionHead title="Chats" count={feedChats.length} action={<ConnectionControl link={link} me={me} onUnlink={unlink} />} />
           {link === "unlinked" && <LinkPanel brand={brand} linkError={linkError} />}
+          {link === "reconnecting" && <LinkPanel brand={brand} linkError={linkError} linkedAs={linkedAs} lastLinkedAt={lastLinkedAt} reconnecting />}
           {link === "offline" && <OfflinePanel />}
           <div style={{ marginBottom: 18 }}>
             <DraftComposer chats={composerChats} messagesByChat={messagesByChat} linked={link === "live"} ai={ai} />

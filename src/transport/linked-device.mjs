@@ -8,6 +8,12 @@ const requireCjs = createRequire(import.meta.url);
 const pino = requireCjs("pino");
 let QRCode = null;
 
+/** Does a saved Baileys session exist on disk? (used to distinguish a fresh
+ *  pairing from a resume of a linked session that keeps getting dropped.) */
+function hasCreds(dir) {
+  try { return fs.existsSync(path.join(dir, "creds.json")); } catch { return false; }
+}
+
 /** Render a stable SVG QR from the qrcode BitMatrix (exported for tests). */
 export function qrSvgOf(text) {
   if (!QRCode) QRCode = requireCjs("qrcode");
@@ -62,7 +68,7 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
     this.desk = opts.deskStore;
     this.onActivity = opts.onActivity;
     this.log = opts.log || console;
-    this.state = { ready: false, me: null, qr: false, received: 0, dropped: 0, startedAt: nowIso(), lastError: null };
+    this.state = { ready: false, me: null, qr: false, received: 0, dropped: 0, startedAt: nowIso(), lastError: null, linkedAs: null, lastLinkedAt: null, dropCount: 0, hasSession: hasCreds(opts.authDir) };
     this.lastQr = null;
     this.sock = null;
     this.stopping = false;
@@ -115,18 +121,29 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
 
     sock.ev.on("creds.update", saveCreds);
     sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
-      if (qr) { this.state.qr = true; this.state.ready = false; this.lastQr = qr; this.opts.onActivity?.("link", "WhatsApp waiting for a QR scan", { }); }
+      if (qr) {
+        this.state.qr = true; this.state.ready = false; this.lastQr = qr;
+        // Only tell the operator to scan when there is genuinely NO saved
+        // session. If the phone was already linked, this is a resume attempt
+        // being dropped by WhatsApp (datacenter IP block), not "please scan".
+        if (!this.state.linkedAs && !this.state.hasSession) {
+          this.opts.onActivity?.("link", "WhatsApp waiting for a QR scan", { });
+        }
+      }
       if (connection === "open") {
         this.state.ready = true; this.state.qr = false; this.state.lastError = null; this.lastQr = null;
-        this.state.me = sock.user?.name || sock.user?.id?.split(":")[0] || null;
-        this.opts.onActivity?.("link", `WhatsApp linked as ${this.state.me}`, { me: this.state.me });
-        this.log(`[linked] linked as ${this.state.me}`);
+        const me = sock.user?.id?.split(":")[0] || sock.user?.name || null;
+        this.state.me = me; this.state.linkedAs = me; this.state.lastLinkedAt = nowIso(); this.state.dropCount = 0; this.state.hasSession = true;
+        this.opts.onActivity?.("link", `WhatsApp linked as ${me}`, { me });
+        this.log(`[linked] linked as ${me}`);
       }
       if (connection === "close") {
         this.state.ready = false;
+        this.state.dropCount += 1;
         const code = lastDisconnect?.error?.output?.statusCode;
         if (code === baileys.DisconnectReason?.loggedOut) {
           this.state.lastError = "logged out";
+          this.state.linkedAs = null; this.state.hasSession = false;
           this.opts.onActivity?.("link", "WhatsApp logged out; session cleared — rescan QR", {});
           fs.rmSync(this.authDir, { recursive: true, force: true });
           setTimeout(() => this.connect(baileys).catch(() => {}), 1500);
@@ -205,6 +222,7 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
     try { this.sock?.end?.(); } catch { /* closed */ }
     fs.rmSync(this.authDir, { recursive: true, force: true });
     this.state.ready = false; this.state.me = null; this.state.qr = false; this.lastQr = null;
+    this.state.linkedAs = null; this.state.lastLinkedAt = null; this.state.dropCount = 0; this.state.hasSession = false;
     this.stopping = false;
     const baileys = this.baileys || await import("baileys");
     this.connect(baileys);
@@ -215,6 +233,11 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
   async downloadMedia() { return null; }
 
   health() {
-    return { ok: true, provider: "linked-device", ready: this.state.ready, me: this.state.me, qr: this.state.qr, lastError: this.state.lastError, received: this.state.received, dropped: this.state.dropped };
+    return {
+      ok: true, provider: "linked-device", ready: this.state.ready, me: this.state.me, qr: this.state.qr,
+      lastError: this.state.lastError, received: this.state.received, dropped: this.state.dropped,
+      linkedAs: this.state.linkedAs, lastLinkedAt: this.state.lastLinkedAt, dropCount: this.state.dropCount,
+      hasSession: hasCreds(this.authDir) || this.state.hasSession,
+    };
   }
 }
