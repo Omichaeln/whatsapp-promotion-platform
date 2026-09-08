@@ -17,6 +17,7 @@ class ErrorBoundary extends Component {
           <div style={{ fontSize: 15, fontWeight: 600, color: "#b42318" }}>The console hit an error</div>
           <div style={{ fontSize: 12.5, color: "#444", marginTop: 10, lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
             {String(this.state.err?.message || this.state.err)}
+            {this.state.err?.stack ? `\n\n${this.state.err.stack}` : ""}
           </div>
           <button style={{ marginTop: 14, padding: "8px 16px", border: "1px solid #999", background: "#fff", borderRadius: 8, cursor: "pointer" }} onClick={() => location.reload()}>Reload</button>
         </div>

@@ -112,12 +112,17 @@ function Dashboard() {
 /* ===================== campaigns ===================== */
 function Campaigns() {
   const [rows, setRows] = useState([]); const refresh = () => api("/api/campaigns").then((r) => r.ok && setRows(r.data?.campaigns || []));
-  useEffect(refresh, []);
+  useEffect(() => { refresh(); }, []);
   const [f, setF] = useState({});
+  const [note, setNote] = useState("");
   const create = async () => {
-    if (!f.code || !f.start_at || !f.end_at) return;
+    setNote("");
+    if (!f.code || !f.start_at || !f.end_at) { setNote("Code, start and end are required."); return; }
     const r = await api("/api/campaigns", { method: "POST", body: { code: f.code, name: f.name, start_at: f.start_at, end_at: f.end_at } });
-    if (r.status === 201) { const v = await api(`/api/campaigns/${r.data.id}/versions`, { method: "POST", body: { content: {}, flags: {}, rules: { products: [{ sku: "ZSB-2KG", pack_weight_kg: 2 }], min_packs: 2, min_total_qty_kg: 4 } } }); if (v.status === 201) await api(`/api/campaigns/${r.data.id}/versions/${v.data.versionId}/activate`, { method: "POST", body: {} }); refresh(); }
+    if (r.status !== 201) { setNote(r.data?.error || `Create failed (HTTP ${r.status})`); return; }
+    const v = await api(`/api/campaigns/${r.data.id}/versions`, { method: "POST", body: { content: {}, flags: {}, rules: { products: [{ sku: "ZSB-2KG", pack_weight_kg: 2 }], min_packs: 2, min_total_qty_kg: 4 } } });
+    if (v.status === 201) await api(`/api/campaigns/${r.data.id}/versions/${v.data.versionId}/activate`, { method: "POST", body: {} });
+    setF({}); refresh(); setNote("Campaign created and activated.");
   };
   return (
     <div className="promo-page">
@@ -126,6 +131,7 @@ function Campaigns() {
           {[["code", "Code", "SUGAR-2026"], ["name", "Name"], ["start_at", "Start (ISO)", "2026-09-01T00:00:00Z"], ["end_at", "End (ISO)", "2026-11-30T23:59:59Z"]].map(([k, l, ph]) =>
             <div className="col" key={k}><div className="lab">{l}</div><input className="field" value={f[k] || ""} onChange={(e) => setF({ ...f, [k]: e.target.value })} placeholder={ph} /></div>)}
         </div>
+        {note && <div className="notice" style={{ marginTop: 8 }}>{note}</div>}
         <div className="spacer" /><button className="btn" onClick={create}>Create and activate</button>
       </div>
       <div className="promo-card"><h4>All campaigns</h4>
@@ -140,7 +146,7 @@ function Campaigns() {
 /* ===================== outlets / products ===================== */
 function Outlets() {
   const [rows, setRows] = useState([]); const refresh = () => api("/api/outlets").then((r) => r.ok && setRows(r.data?.outlets || []));
-  useEffect(refresh, []);
+  useEffect(() => { refresh(); }, []);
   const [f, setF] = useState({}); const add = async () => {
     if (!f.outlet_code || !f.retailer || !f.town || !f.province) return;
     const r = await api("/api/outlets", { method: "POST", body: f }); if (r.status === 201) { setF({}); refresh(); }
@@ -164,7 +170,7 @@ function Outlets() {
 }
 function Products() {
   const [rows, setRows] = useState([]); const refresh = () => api("/api/products").then((r) => r.ok && setRows(r.data?.products || []));
-  useEffect(refresh, []);
+  useEffect(() => { refresh(); }, []);
   const [f, setF] = useState({ pack_weight_kg: 2 }); const add = async () => {
     if (!f.sku || !f.name) return;
     const r = await api("/api/products", { method: "POST", body: { ...f, pack_weight_kg: Number(f.pack_weight_kg) } }); if (r.status === 201) { setF({ pack_weight_kg: 2 }); refresh(); }
@@ -190,7 +196,7 @@ function Products() {
 /* ===================== receipts ===================== */
 function Receipts() {
   const [rows, setRows] = useState([]); const [rev, setRev] = useState(null); const refresh = () => api("/api/receipts").then((r) => r.ok && setRows(r.data?.receipts || []));
-  useEffect(refresh, []);
+  useEffect(() => { refresh(); }, []);
   const [decision, setDecision] = useState("QUALIFIED"); const [reason, setReason] = useState("reviewer_confirmed");
   if (rev) {
     const x = rev.receipt, val = rev.validation?.[0];
@@ -251,12 +257,20 @@ function Entries() {
 
 /* ===================== draws ===================== */
 function Draws() {
-  const [entries, setEntries] = useState([]); const [draws, setDraws] = useState([]); const [period, setPeriod] = useState("");
+  const [entries, setEntries] = useState([]); const [draws, setDraws] = useState([]); const [period, setPeriod] = useState(""); const [note, setNote] = useState("");
   const refresh = () => { api("/api/entries").then((r) => r.ok && setEntries(r.data?.entries || [])); api("/api/draws").then((r) => r.ok && setDraws(r.data?.draws || [])); };
-  useEffect(refresh, []);
+  useEffect(() => { refresh(); }, []);
   const periods = {}; entries.forEach((e) => { periods[e.draw_period] = (periods[e.draw_period] || 0) + 1; });
-  const act = async (id, action) => { const r = await api(`/api/draws/${id}/${action}`, { method: "POST", body: {} }); refresh(); };
-  const freeze = async () => { if (!period) return; await api("/api/draws", { method: "POST", body: { draw_period: period } }); refresh(); };
+  // P0-07: drawing errors (e.g. SoD approve, already-published) must surface,
+  // never be silently discarded by a blind refresh.
+  const act = async (id, action) => { setNote(""); const r = await api(`/api/draws/${id}/${action}`, { method: "POST", body: {} }); if (!r.ok) setNote(r.data?.error || `Action ${action} failed (HTTP ${r.status})`); refresh(); };
+  const freeze = async () => {
+    setNote("");
+    if (!period) { setNote("Choose a draw period first."); return; }
+    const r = await api("/api/draws", { method: "POST", body: { draw_period: period } });
+    if (!r.ok) setNote(r.data?.error || `Freeze failed (HTTP ${r.status})`); else setNote(`Frozen ${period}: snapshot ${String(r.data?.snapshotHash || "").slice(0, 10)}… — execute, then a DIFFERENT named user must approve.`);
+    refresh();
+  };
   return (
     <div className="promo-page">
       <div className="promo-card"><h4>Run a draw</h4>
@@ -266,6 +280,7 @@ function Draws() {
               {Object.entries(periods).map(([p, n]) => <option key={p} value={p}>{p} ({n} entries)</option>)}</select></div>
           <button className="btn" onClick={freeze}>Freeze candidates</button>
         </div>
+        {note && <div className="notice" style={{ marginTop: 8 }}>{note}</div>}
       </div>
       <div className="promo-card"><h4>Draws ({draws.length})</h4>
         <table className="promo-table"><thead><tr><th>Period</th><th>Status</th><th>Snapshot</th><th>Output</th><th></th></tr></thead><tbody>

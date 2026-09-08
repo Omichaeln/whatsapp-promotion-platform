@@ -296,8 +296,20 @@ export async function createServer({ config, log = console }) {
       if (p === "/api/campaigns" && req.method === "POST" && auth.hasRole(user, "campaign_manager")) {
         const b = await json(req);
         if (!b.code || !b.start_at || !b.end_at) return send(res, 400, { error: "code, start_at, end_at required" });
-        const c = domain.createCampaign({ code: b.code, name: b.name || b.code, startAt: b.start_at, endAt: b.end_at, drawConfig: b.draw_config || {} });
-        return send(res, 201, c);
+        // Validate ISO-8601 dates — reject garbage before it reaches the store
+        // (P1-09: labels said "weakly validated"; this is a real acceptance bug).
+        const isoOk = (s) => typeof s === "string" && !Number.isNaN(Date.parse(s));
+        if (!isoOk(b.start_at) || !isoOk(b.end_at)) return send(res, 400, { error: "start_at and end_at must be valid ISO-8601 timestamps" });
+        if (Date.parse(b.end_at) <= Date.parse(b.start_at)) return send(res, 400, { error: "end_at must be after start_at" });
+        try {
+          const c = domain.createCampaign({ code: b.code, name: b.name || b.code, startAt: b.start_at, endAt: b.end_at, drawConfig: b.draw_config || {} });
+          return send(res, 201, c);
+        } catch (e) {
+          // UNIQUE constraint on code (and other business errors) must be a
+          // meaningful 409/400, not a bare 500 "internal error".
+          if (String(e.message).includes("UNIQUE")) return send(res, 409, { error: `campaign code "${b.code}" already exists` });
+          throw e;
+        }
       }
       const mkVersion = p.match(/^\/api\/campaigns\/([^/]+)\/versions$/);
       if (mkVersion && req.method === "POST" && auth.hasRole(user, "campaign_manager")) {
@@ -441,6 +453,42 @@ export async function createServer({ config, log = console }) {
       if (p === "/api/audit-events" && req.method === "GET" && auth.hasRole(user, "auditor")) {
         const rows = db.prepare(`select id, actor_type, actor_id, action, target_type, target_id, entry_hash, created_at from audit_events order by id desc limit 200`).all();
         return send(res, 200, { events: rows });
+      }
+
+      // P0-08 verification: does every entry's prev_hash match the previous
+      // entry_hash, and entry_hash === sha256(prev_hash || payload_json)?
+      if (p === "/api/audit/verify" && req.method === "GET" && auth.hasRole(user, "auditor", "platform_admin")) {
+        const all = db.prepare(`select id, prev_hash, entry_hash, payload_json from audit_events order by id`).all();
+        let prev = "", broken = [];
+        for (const r of all) {
+          if (r.prev_hash !== prev) broken.push({ id: r.id, what: "prev_mismatch", expected: prev?.slice(0, 16), got: r.prev_hash?.slice(0, 16) || "" });
+          const expected = sha256hex((r.prev_hash || "") + String(r.payload_json || ""));
+          if (r.entry_hash !== expected) broken.push({ id: r.id, what: "entry_mismatch" });
+          prev = r.entry_hash;
+        }
+        return send(res, 200, { ok: broken.length === 0, total: all.length, broken: broken.slice(0, 20), brokenCount: broken.length });
+      }
+      // P0-08 repair: re-link the chain from the first broken row forward,
+      // recomputing prev_hash/entry_hash from stored payloads (audited action).
+      if (p === "/api/audit/repair" && req.method === "POST" && auth.hasRole(user, "platform_admin")) {
+        const all = db.prepare(`select id, prev_hash, entry_hash, payload_json from audit_events order by id`).all();
+        let prev = "", start = null;
+        for (let i = 0; i < all.length; i++) {
+          const r = all[i];
+          if (r.prev_hash !== prev || r.entry_hash !== sha256hex((r.prev_hash || "") + String(r.payload_json || ""))) { start = i; break; }
+          prev = r.entry_hash;
+        }
+        if (start === null) return send(res, 200, { ok: true, repaired: 0, note: "chain already intact" });
+        const upd = db.prepare(`update audit_events set prev_hash=?, entry_hash=? where id=?`);
+        for (let i = start; i < all.length; i++) {
+          const r = all[i];
+          const newPrev = prev;
+          const newHash = sha256hex(newPrev + String(r.payload_json || ""));
+          if (r.prev_hash !== newPrev || r.entry_hash !== newHash) upd.run(newPrev, newHash, r.id);
+          prev = newHash;
+        }
+        domain.audit({ actorType: "admin", actorId: user.id, action: "audit.chain.repaired", targetType: "audit_events", targetId: String(start), reason: `re-linked ${all.length - start} rows`, payload: { startId: all[start].id, rows: all.length - start } });
+        return send(res, 200, { ok: true, repaired: all.length - start, fromId: all[start].id });
       }
 
       // ---- DEF-06: controlled export (auditor/admin) ----------------------------------

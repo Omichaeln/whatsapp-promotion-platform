@@ -192,13 +192,25 @@ function ConnectionControl({ link, me, onUnlink }) {
   );
 }
 
-function LinkPanel({ brand }) {
+function LinkPanel({ brand, linkError }) {
   const [tick, setTick] = useState(0);
   const [dead, setDead] = useState(false);
   useEffect(() => {
     const t = setInterval(() => { setDead(false); setTick(n => n + 1); }, 12000);
     return () => clearInterval(t);
   }, []);
+  // QR/connection diagnosis: WhatsApp refuses linked-device WebSocket sessions
+  // from cloud/datacenter IPs (Baileys #2705) — a QR will render but the phone
+  // pairing handshake is dropped server-side. Show that instead of a silently
+  // dead code.
+  const Why = (() => {
+    const e = String(linkError || "");
+    if (!e) return null;
+    if (/408|timedOut|connectionLost/i.test(e)) return "WhatsApp is closing this server's connection (408/timeout). Cloud/datacenter IPs are blocked for phone linking. Run the desk from a residential connection, or switch WHATSAPP_TRANSPORT=cloud-api with Meta credentials for production.";
+    if (/403|forbidden/i.test(e)) return "WhatsApp refused this server's connection (403). This is usually an IP block — run linked-device from a residential host or use the Cloud API transport.";
+    if (/logged out|401/i.test(e)) return "The linked session was logged out elsewhere. Cleared — scan a fresh QR from a residential connection.";
+    return `Connection issue: ${e}. Retrying automatically; this QR may not pair until the transport runs from an allowed network.`;
+  })();
   return (
     <div className="frame" style={{ padding: "18px 20px 20px", marginBottom: 18 }}>
       <div className="overline">Link WhatsApp</div>
@@ -215,6 +227,7 @@ function LinkPanel({ brand }) {
             : <img src={apiUrl(`/api/qr?token=${encodeURIComponent(getToken())}&t=${tick}`)} alt="WhatsApp link code" onError={() => setDead(true)} style={{ width: 220, height: 220 }} />}
         </div>
       </div>
+      {Why && <div className="notice" style={{ marginTop: 10, lineHeight: 1.55 }}>{Why}</div>}
     </div>
   );
 }
@@ -465,6 +478,7 @@ export function Desk() {
   const [threads, setThreads] = useState([]);
   const [briefs, setBriefs] = useState([]);
   const [link, setLink] = useState("offline");
+  const [linkError, setLinkError] = useState(null);
   const [me, setMe] = useState(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -499,6 +513,7 @@ export function Desk() {
     const out = await api("/api/status", { timeout: 4000 });
     if (!out.ok) { setLink("offline"); return; }
     setLink(out.data.ready ? "live" : "unlinked");
+    setLinkError(out.data.lastError || null);
     setMe(out.data.me || null);
   }, []);
 
@@ -689,7 +704,7 @@ export function Desk() {
 
         <div>
           <SectionHead title="Chats" count={feedChats.length} action={<ConnectionControl link={link} me={me} onUnlink={unlink} />} />
-          {link === "unlinked" && <LinkPanel brand={brand} />}
+          {link === "unlinked" && <LinkPanel brand={brand} linkError={linkError} />}
           {link === "offline" && <OfflinePanel />}
           <div style={{ marginBottom: 18 }}>
             <DraftComposer chats={composerChats} messagesByChat={messagesByChat} linked={link === "live"} ai={ai} />
