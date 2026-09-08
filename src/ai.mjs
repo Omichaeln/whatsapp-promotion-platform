@@ -55,7 +55,7 @@ function costOf({ model, inputTokens = 0, outputTokens = 0, audioSeconds = 0 }) 
 
 export function createUsage(store, capUsd) {
   return {
-    async snapshot() { const month = await store.monthUsage(); const cap = Number(capUsd) || 0; return { month_usd: Number(month ?? 0).toFixed(4), cap_usd: cap, pct: cap ? Math.min(999, Math.round((Number(month ?? 0) / cap) * 100)) : 0, blocked: cap > 0 && Number(month ?? 0) >= cap }; },
+    async snapshot() { const month = await store.monthUsage(); const cap = Number(capUsd) || 0; const used = Number(month ?? 0); return { month_usd: Number(used.toFixed(4)), cap_usd: cap, pct: cap ? Math.min(999, Math.round((used / cap) * 100)) : 0, blocked: cap > 0 && used >= cap }; },
     async block() {
       const snap = await this.snapshot();
       if (!snap.blocked) return null;

@@ -155,12 +155,14 @@ function UsageLine() {
     return () => { alive = false; clearInterval(t); };
   }, []);
   if (!snap) return null;
+  const monthUsd = Number(snap.month_usd || 0);
+  const capUsd = Number(snap.cap_usd || 0);
   const tone = snap.pct >= 100 ? "#b42318" : snap.pct >= 75 ? "#d97706" : "var(--text-tertiary)";
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "2px 2px 0" }}>
       <span style={{ fontSize: 9.5, fontWeight: 500, letterSpacing: 1.2, textTransform: "uppercase", color: "var(--text-tertiary)" }}>Model spend this month</span>
       <span className="mono" style={{ fontSize: 10.5, color: tone }}>
-        ${snap.month_usd.toFixed(2)}{snap.cap_usd ? ` of $${snap.cap_usd.toFixed(2)} (${snap.pct}%)` : ""}
+        ${monthUsd.toFixed(2)}{capUsd ? ` of $${capUsd.toFixed(2)} (${snap.pct}%)` : ""}
       </span>
     </div>
   );
