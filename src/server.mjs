@@ -560,6 +560,34 @@ export async function createServer({ config, log = console }) {
         const h = transport.health?.() || {};
         return send(res, 200, { ...h, provider: h.provider || cfg.whatsappTransport });
       }
+      // Platform diagnostics (platform_admin): runtime + network facts used to
+      // compare deployments (Node version, egress IP/ASN, WhatsApp reachability).
+      if (p === "/api/diag" && req.method === "GET" && auth.hasRole(user, "platform_admin")) {
+        const out = {
+          node: process.version,
+          process: process.title || "node",
+          cwd: process.cwd(),
+          env: { railway: !!process.env.RAILWAY, region: process.env.RAILWAY_REGION || null, project: process.env.RAILWAY_PROJECT_NAME || null, service: process.env.RAILWAY_SERVICE_NAME || null },
+          transport: cfg.whatsappTransport,
+          transportState: transport.health?.(),
+        };
+        const t0 = Date.now();
+        try {
+          const ipres = await fetch("https://api.ipify.org", { signal: AbortSignal.timeout(8000) });
+          out.egressIp = await ipres.text();
+          out.egressMs = Date.now() - t0;
+          try {
+            const ipj = await (await fetch(`https://ipinfo.io/${out.egressIp}`, { signal: AbortSignal.timeout(6000) })).json();
+            out.asn = ipj.org; out.city = ipj.city; out.country = ipj.country;
+          } catch { /* optional */ }
+        } catch (e) { out.egressError = e.message; }
+        for (const [name, url] of [["web.whatsapp.com", "https://web.whatsapp.com/"], ["g.whatsapp.net", "https://g.whatsapp.net/"]] ) {
+          const s = Date.now();
+          try { const r = await fetch(url, { signal: AbortSignal.timeout(8000), redirect: "manual" }); out[`reach_${name}`] = { status: r.status, ms: Date.now() - s }; }
+          catch (e) { out[`reach_${name}`] = { error: e.message.slice(0, 160), ms: Date.now() - s }; }
+        }
+        return send(res, 200, out);
+      }
       if (p === "/api/usage" && req.method === "GET") return send(res, 200, await usage.snapshot());
       if (p === "/api/refresh" && req.method === "POST") {
         const body = await json(req);
