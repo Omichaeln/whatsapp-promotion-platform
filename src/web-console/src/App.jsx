@@ -12,11 +12,51 @@ function Chip({ s }) { const t = OWN[s] || "m"; const c = { ok: ["#0d9488", "rgb
 
 /* ===================== login ===================== */
 function Login({ onAuthed }) {
-  const [email, setEmail] = useState(""); const [pw, setPw] = useState(""); const [bad, setBad] = useState(false);
+  const [email, setEmail] = useState(""); const [pw, setPw] = useState("");
+  const [mfa, setMfa] = useState(null); const [code, setCode] = useState("");
+  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+
+  // P1-04: two-step MFA — password first, then the 6-digit code when the
+  // account has MFA enabled (server replies pendingMfa + userId, and
+  // /api/login/mfa completes the session). The old gate only handled the
+  // one-step {token} response and showed "Sign-in failed" for MFA accounts.
   const submit = async () => {
-    const r = await api("/api/login", { method: "POST", body: { email, password: pw }, auth: false });
-    if (r.ok && r.data?.token) { setToken(r.data.token); onAuthed(); } else setBad(true);
+    setErr(""); setBusy(true);
+    try {
+      const r = await api("/api/login", { method: "POST", body: { email, password: pw }, auth: false });
+      if (r.data?.pendingMfa) { setMfa(r.data); return; }
+      if (r.ok && r.data?.token) { setToken(r.data.token); onAuthed(); }
+      else setErr(r.data?.error || "Sign-in failed.");
+    } finally { setBusy(false); }
   };
+  const submitCode = async () => {
+    setErr("");
+    if (!code.trim()) { setErr("Enter the 6-digit code from your authenticator app."); return; }
+    setBusy(true);
+    try {
+      const r = await api("/api/login/mfa", { method: "POST", body: { userId: mfa.userId, code: code.trim() }, auth: false });
+      if (r.ok && r.data?.token) { setToken(r.data.token); onAuthed(); }
+      else setErr(r.data?.error || "That code wasn't accepted.");
+    } finally { setBusy(false); }
+  };
+  const cancelMfa = () => { setMfa(null); setCode(""); setErr(""); };
+
+  if (mfa) return (
+    <div className="gate">
+      <div className="gate-card frame">
+        <div className="overline">WhatsApp Promotion Platform</div>
+        <div style={{ fontSize: 12.5, color: "var(--text-secondary)", marginBottom: 12, lineHeight: 1.6 }}>
+          Two-factor authentication. {mfa.message || "Enter the 6-digit code from your authenticator app."}
+        </div>
+        <input className="field" value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitCode()} placeholder="6-digit code" inputMode="numeric" autoFocus style={{ width: "100%" }} />
+        {err && <div className="notice" style={{ marginTop: 8 }}>{err}</div>}
+        <div style={{ marginTop: 14 }}>
+          <button className="btn primary" onClick={submitCode} disabled={!code.trim() || busy}>Verify code</button>
+          <button className="btn ghost" style={{ marginLeft: 8 }} onClick={cancelMfa} disabled={busy}>Back</button>
+        </div>
+      </div>
+    </div>
+  );
   return (
     <div className="gate">
       <div className="gate-card frame">
@@ -24,8 +64,8 @@ function Login({ onAuthed }) {
         <div style={{ fontSize: 12.5, color: "var(--text-secondary)", marginBottom: 12, lineHeight: 1.6 }}>Sign in with your operator account.</div>
         <input className="field" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" autoFocus style={{ width: "100%" }} />
         <input className="field" type="password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} placeholder="Password" style={{ width: "100%", marginTop: 6 }} />
-        {bad && <div className="notice" style={{ marginTop: 8 }}>Sign-in failed.</div>}
-        <div style={{ marginTop: 14 }}><button className="btn primary" onClick={submit} disabled={!email || !pw}>Sign in</button></div>
+        {err && <div className="notice" style={{ marginTop: 8 }}>{err}</div>}
+        <div style={{ marginTop: 14 }}><button className="btn primary" onClick={submit} disabled={!email || !pw || busy}>Sign in</button></div>
       </div>
     </div>
   );
@@ -270,19 +310,45 @@ function AuditView() {
 /* ===================== test a customer ===================== */
 function TestCustomer() {
   const [phone, setPhone] = useState("263771234567"); const [fn, setFn] = useState("Tapiwa"); const [sn, setSn] = useState("Moyo"); const [outlet, setOutlet] = useState("OK-HRE-01");
-  const [log, setLog] = useState([]); const push = (l) => setLog([l, ...log].slice(0, 20));
+  const [log, setLog] = useState([]);
+  // P1-06: functional state update — the old closure captured `log` from the
+  // FIRST render and replaced it, so the event log only ever showed (and
+  // clobbered) the latest event. This appends with a bounded window.
+  const push = (l) => setLog((prev) => [`[${new Date().toLocaleTimeString()}] ${l}`, ...prev].slice(0, 25));
   const jid = () => "w" + Date.now() % 1000000 + Math.floor(Math.random() * 9999);
   const facts = (no) => ({ outlet, date: new Date().toISOString(), receiptNo: no, total: 12.5, currency: "USD", _confidence: 0.95, lineItems: [{ description: "ZimSweet Brown Sugar 2kg", quantity: 2, amount: 5 }] });
   const marker = (no) => `WPP_RECEIVED:${btoa(unescape(encodeURIComponent(JSON.stringify(facts(no)))))}:`;
   async function send(events, media) {
-    const r = await api("/webhooks/whatsapp", { method: "POST", body: { events, ...(media || {}) }, auth: false });
-    push(`${events.map((e) => e.type).join(",")} → ${r.status} ${JSON.stringify(r.data || {})}`);
+    // P1-06: media must sit under the server's `media` map — the server reads
+    // payload.media[providerMessageId]. Spreading it into the body top-level
+    // produced a 200 but the receipt had no bytes (zero confidence -> review),
+    // which is exactly the false confidence this tool used to give.
+    const r = await api("/webhooks/whatsapp", { method: "POST", body: { events, media: media || {} }, auth: false });
+    push(`${events.map((e) => e.type).join(",")} → HTTP ${r.status} ${JSON.stringify(r.data || {})}`);
+    return r;
   }
-  const journey = async () => {
-    for (const t of ["2", `${fn} ${sn}`, "63-1234567F12", "Harare", "yes", outlet]) await send([{ providerMessageId: jid(), phoneUid: phone, type: "message.text", text: t }]);
-    const id = jid(); await send([{ providerMessageId: id, phoneUid: phone, type: "message.image", text: "" }], { [id]: btoa(marker("R-" + Math.floor(1000 + Math.random() * 9000))) });
+  // P1-06: verify the ACTUAL outcome from the API (receipt status + entry),
+  // not just the webhook's HTTP 200.
+  const verify = async (label) => {
+    const r = await api("/api/receipts");
+    const r2 = await api("/api/entries");
+    const rec = (r.data?.receipts || [])[0];
+    const ent = rec ? (r2.data?.entries || []).find((e) => e.receipt_id === rec.id) : null;
+    push(`${label}: receipt ${rec ? `${rec.status}${rec.reason_code ? ` · ${rec.reason_code}` : ""}` : "(none still)"}${ent ? ` → entry ${short(ent.id, 8)} created` : (rec && rec.status === "QUALIFIED" ? " ⚠ entry missing" : "")}`);
   };
-  const dup = async () => { const a = jid(), b = jid(), bytes = btoa(marker("R-DUP")); await send([{ providerMessageId: a, phoneUid: phone, type: "message.image", text: "" }], { [a]: bytes }); await send([{ providerMessageId: b, phoneUid: phone, type: "message.image", text: "" }], { [b]: bytes }); };
+  const journey = async () => {
+    // P1-01: menu numbering — 1 = Register (the old leading "2" is now ENTER).
+    for (const t of ["1", `${fn} ${sn}`, "63-1234567F12", "Harare", "yes", outlet]) await send([{ providerMessageId: jid(), phoneUid: phone, type: "message.text", text: t }]);
+    const id = jid();
+    await send([{ providerMessageId: id, phoneUid: phone, type: "message.image", text: "" }], { [id]: btoa(marker("R-" + Math.floor(1000 + Math.random() * 9000))) });
+    await verify("journey result");
+  };
+  const dup = async () => {
+    const a = jid(), b = jid(), bytes = btoa(marker("R-DUP"));
+    await send([{ providerMessageId: a, phoneUid: phone, type: "message.image", text: "" }], { [a]: bytes });
+    await send([{ providerMessageId: b, phoneUid: phone, type: "message.image", text: "" }], { [b]: bytes });
+    await verify("duplicate check");
+  };
   return (
     <div className="promo-page">
       <div className="promo-card"><h4>Simulate a WhatsApp customer</h4>
@@ -321,7 +387,7 @@ export function App() {
       <div className="promo-tabs">
         {TABS.map(([k, l]) => <button key={k} className={tab === k ? "active" : ""} onClick={() => setTab(k)}>{l}</button>)}
         <span style={{ flex: 1 }} />
-        <button onClick={() => { setToken(""); setMe(null); }}>Sign out</button>
+        <button onClick={() => { api("/api/logout", { method: "POST" }); setToken(""); setMe(null); }}>Sign out</button>
       </div>
       {tab === "desk" ? <Desk /> : <div className="promo"><View /></div>}
     </div>
