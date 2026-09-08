@@ -107,7 +107,7 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
       printQRInTerminal: false,
       syncFullHistory: false,
       markOnlineOnConnect: false,
-      browser: ["Chrome", "Windows", "1.0"],
+      browser: ["Desk", "Chrome", "1.0"], // match the original WhatsApp Desk fingerprint exactly
     });
     this.sock = sock;
 
