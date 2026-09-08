@@ -26,6 +26,7 @@ function Login({ onAuthed }) {
       const r = await api("/api/login", { method: "POST", body: { email, password: pw }, auth: false });
       if (r.data?.pendingMfa) { setMfa(r.data); return; }
       if (r.ok && r.data?.token) { setToken(r.data.token); onAuthed(); }
+      else if (r.status === 429) setErr(`Too many attempts — try again in ${r.data?.retryAfter || 30}s.`);
       else setErr(r.data?.error || "Sign-in failed.");
     } finally { setBusy(false); }
   };
@@ -47,6 +48,7 @@ function Login({ onAuthed }) {
         <div className="overline">WhatsApp Promotion Platform</div>
         <div style={{ fontSize: 12.5, color: "var(--text-secondary)", marginBottom: 12, lineHeight: 1.6 }}>
           Two-factor authentication. {mfa.message || "Enter the 6-digit code from your authenticator app."}
+          <span style={{ opacity: 0.75 }}> The code expires in about 5 minutes.</span>
         </div>
         <input className="field" value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitCode()} placeholder="6-digit code" inputMode="numeric" autoFocus style={{ width: "100%" }} />
         {err && <div className="notice" style={{ marginTop: 8 }}>{err}</div>}
@@ -376,11 +378,22 @@ const VIEWS = { dash: Dashboard, campaigns: Campaigns, outlets: Outlets, product
 export function App() {
   const [me, setMe] = useState(null);
   const [tab, setTab] = useState("desk");
+  // onAuthed: after a successful login, resolve /api/whoami with retry so a
+  // transient failure never strands a valid session on the login screen.
+  const authed = () => {
+    const tryWhoami = async (n) => {
+      const r = await api("/api/whoami");
+      if (r.ok) { setMe(r.data); return; }
+      if (n < 3) { await new Promise((s) => setTimeout(s, 600 * (n + 1))); return tryWhoami(n + 1); }
+      setToken("");
+    };
+    tryWhoami(0);
+  };
   useEffect(() => {
     if (!getToken()) return;
     api("/api/whoami").then((r) => { if (r.ok) setMe(r.data); else setToken(""); });
   }, []);
-  if (!me) return <Login onAuthed={() => api("/api/whoami").then((r) => r.ok && setMe(r.data))} />;
+  if (!me) return <Login onAuthed={authed} />;
   const View = VIEWS[tab];
   return (
     <div className="promo">
