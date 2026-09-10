@@ -1,0 +1,56 @@
+{
+  "startedAt": "2026-09-10T19:34:54.258Z",
+  "source": {
+    "db": "/home/user/whatsapp-promotion-platform/data/promotions.db",
+    "media": "/home/user/whatsapp-promotion-platform/data/media"
+  },
+  "backup": {
+    "dir": "/home/user/whatsapp-promotion-platform/data/backups/2026-09-10T19-34-54-257Z",
+    "ms": 41,
+    "dbBytes": 3268608,
+    "lastWriteBefore": "2026-09-10T19:34:36.391Z",
+    "backupAt": "2026-09-10T19:34:54.299Z"
+  },
+  "restore": {
+    "dir": "/home/user/whatsapp-promotion-platform/data/restore-test/2026-09-10T19-34-54-257Z",
+    "ms": 33
+  },
+  "checks": [
+    {
+      "name": "restored db opens + integrity_check",
+      "pass": true
+    },
+    {
+      "name": "audit chain intact",
+      "pass": true,
+      "detail": "140 rows, broken=0"
+    },
+    {
+      "name": "no double-credited canonical receipt",
+      "pass": true
+    },
+    {
+      "name": "no orphan entries",
+      "pass": true
+    },
+    {
+      "name": "executed draws recompute",
+      "pass": true,
+      "detail": "1 draws"
+    },
+    {
+      "name": "media files present",
+      "pass": true,
+      "detail": "24 assets, 0 missing"
+    },
+    {
+      "name": "outstanding work identified for replay",
+      "pass": true,
+      "detail": "jobs=0 outbound=0 (replay via worker; leases expire; no consumer is contacted twice thanks to idempotency keys)"
+    }
+  ],
+  "rto_seconds": 0.07,
+  "rpo_note": "backup is point-in-time (VACUUM INTO); data-loss window = writes after backupAt. For production, schedule backups at <=15 min intervals (D-22 / release doc).",
+  "ok": true,
+  "finishedAt": "2026-09-10T19:34:54.332Z"
+}

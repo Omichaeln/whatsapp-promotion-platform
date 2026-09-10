@@ -1,0 +1,354 @@
+
+> whatsapp-promotion-platform@0.1.0 test
+> node --no-warnings=ExperimentalWarning --test --test-concurrency=1 test/*.test.mjs
+
+TAP version 13
+# Subtest: CRM integration and reliability
+    # Subtest: T-26: registration, entry and winner events reach the CRM with stable keys, no identity numbers, and are confirmed by read-back
+    ok 1 - T-26: registration, entry and winner events reach the CRM with stable keys, no identity numbers, and are confirmed by read-back
+      ---
+      duration_ms: 372.646776
+      type: 'test'
+      ...
+    # Subtest: T-27: CRM down -> entries unaffected, events retry and survive; timeout-after-write -> unknown outcome reconciled without a duplicate; older version never regresses
+    ok 2 - T-27: CRM down -> entries unaffected, events retry and survive; timeout-after-write -> unknown outcome reconciled without a duplicate; older version never regresses
+      ---
+      duration_ms: 1997.950952
+      type: 'test'
+      ...
+    # Subtest: not_configured provider: events queue visibly and nothing is marked delivered
+    ok 3 - not_configured provider: events queue visibly and nothing is marked delivered
+      ---
+      duration_ms: 498.672361
+      type: 'test'
+      ...
+    # Subtest: T-13: a worker crash mid-extraction leaves a lease that expires; the job resumes and awards exactly once; replayed webhooks are deduped
+    ok 4 - T-13: a worker crash mid-extraction leaves a lease that expires; the job resumes and awards exactly once; replayed webhooks are deduped
+      ---
+      duration_ms: 295.93096
+      type: 'test'
+      ...
+    # Subtest: T-28: WhatsApp send failures — retryable backoff, permanent failure, unknown outcome never blindly retried; delivery callbacks update state; extractor outage delays rather than rejects
+    ok 5 - T-28: WhatsApp send failures — retryable backoff, permanent failure, unknown outcome never blindly retried; delivery callbacks update state; extractor outage delays rather than rejects
+      ---
+      duration_ms: 294.083649
+      type: 'test'
+      ...
+    # Subtest: T-28: forged Cloud API webhooks are rejected; valid ones are parsed into distinct message and status events
+    ok 6 - T-28: forged Cloud API webhooks are rejected; valid ones are parsed into distinct message and status events
+      ---
+      duration_ms: 88.549065
+      type: 'test'
+      ...
+    1..6
+ok 1 - CRM integration and reliability
+  ---
+  duration_ms: 4032.458228
+  type: 'suite'
+  ...
+# Subtest: desk workflow (restored)
+    # Subtest: files messages, triages them, writes threads + brief, marks processed
+    ok 1 - files messages, triages them, writes threads + brief, marks processed
+      ---
+      duration_ms: 43.010049
+      type: 'test'
+      ...
+    # Subtest: usage metering records trailing costs
+    ok 2 - usage metering records trailing costs
+      ---
+      duration_ms: 39.762124
+      type: 'test'
+      ...
+    1..2
+ok 2 - desk workflow (restored)
+  ---
+  duration_ms: 83.936387
+  type: 'suite'
+  ...
+# Subtest: draws, winners and publication
+    # Subtest: pure selection: equal chance per entry, one prize per participant, deterministic for a seed, unbiased ordering
+    ok 1 - pure selection: equal chance per entry, one prize per participant, deterministic for a seed, unbiased ordering
+      ---
+      duration_ms: 3.677717
+      type: 'test'
+      ...
+    # Subtest: T-19: freeze is blocked while the period is open or on-time submissions are unresolved; boundary is half-open
+    ok 2 - T-19: freeze is blocked while the period is open or on-time submissions are unresolved; boundary is half-open
+      ---
+      duration_ms: 242.65157
+      type: 'test'
+      ...
+    # Subtest: T-20/T-21: freeze commits randomness before execution; execute is crash-safe and idempotent; approver must differ; approval verifies the hash
+    ok 3 - T-20/T-21: freeze commits randomness before execution; execute is crash-safe and idempotent; approver must differ; approval verifies the hash
+      ---
+      duration_ms: 4.980722
+      type: 'test'
+      ...
+    # Subtest: T-22: the exported bundle verifies independently and fails when tampered
+    ok 4 - T-22: the exported bundle verifies independently and fails when tampered
+      ---
+      duration_ms: 440.037956
+      type: 'test'
+      ...
+    # Subtest: T-23/T-24/T-25: publish materialises winners; notify is queued only after approval; claim lifecycle; alternates; publication is separate and safe
+    ok 5 - T-23/T-24/T-25: publish materialises winners; notify is queued only after approval; claim lifecycle; alternates; publication is separate and safe
+      ---
+      duration_ms: 41.978087
+      type: 'test'
+      ...
+    # Subtest: void + rerun: an approved draw is never edited; a replacement is a new linked draw with a different approver
+    ok 6 - void + rerun: an approved draw is never edited; a replacement is a new linked draw with a different approver
+      ---
+      duration_ms: 1.746819
+      type: 'test'
+      ...
+    # Subtest: disqualification of an entry in a frozen draw needs independent approval and preserves the award history
+    ok 7 - disqualification of an entry in a frozen draw needs independent approval and preserves the award history
+      ---
+      duration_ms: 1.161907
+      type: 'test'
+      ...
+    1..7
+ok 3 - draws, winners and publication
+  ---
+  duration_ms: 3231.99851
+  type: 'suite'
+  ...
+# Subtest: participant journeys (T-01, T-02, T-03, T-05, T-06, T-13, T-16)
+    # Subtest: T-01: a greeting from a new phone returns the campaign menu (no registration prompt)
+    ok 1 - T-01: a greeting from a new phone returns the campaign menu (no registration prompt)
+      ---
+      duration_ms: 8.891827
+      type: 'test'
+      ...
+    # Subtest: T-16: an unregistered participant can read mechanics, terms, prizes and winners
+    ok 2 - T-16: an unregistered participant can read mechanics, terms, prizes and winners
+      ---
+      duration_ms: 26.064379
+      type: 'test'
+      ...
+    # Subtest: T-02: registration captures all five fields with confirmation, correction, terms; returning user is recognised
+    ok 3 - T-02: registration captures all five fields with confirmation, correction, terms; returning user is recognised
+      ---
+      duration_ms: 64.64459
+      type: 'test'
+      ...
+    # Subtest: T-03: outlet selection is hierarchical over all 80 branches, searchable, and always ends in a canonical id
+    ok 4 - T-03: outlet selection is hierarchical over all 80 branches, searchable, and always ends in a canonical id
+      ---
+      duration_ms: 63.654042
+      type: 'test'
+      ...
+    # Subtest: T-05/T-06/T-13: first receipt awards one entry; second unique receipt awards another without re-registration; same receipt again (same and other phone, replayed webhook) never credits twice
+    ok 5 - T-05/T-06/T-13: first receipt awards one entry; second unique receipt awards another without re-registration; same receipt again (same and other phone, replayed webhook) never credits twice
+      ---
+      duration_ms: 748.173398
+      type: 'test'
+      ...
+    # Subtest: global navigation: MENU, HELP, CANCEL, BACK from every state; unsupported input never qualifies
+    ok 6 - global navigation: MENU, HELP, CANCEL, BACK from every state; unsupported input never qualifies
+      ---
+      duration_ms: 32.692264
+      type: 'test'
+      ...
+    # Subtest: support handoff suspends automation until an operator releases it
+    ok 7 - support handoff suspends automation until an operator releases it
+      ---
+      duration_ms: 9.909199
+      type: 'test'
+      ...
+    1..7
+ok 4 - participant journeys (T-01, T-02, T-03, T-05, T-06, T-13, T-16)
+  ---
+  duration_ms: 1409.562633
+  type: 'suite'
+  ...
+# Subtest: MFA (DEF-02)
+    # Subtest: TOTP generates consistent codes and verifies within one window skew
+    ok 1 - TOTP generates consistent codes and verifies within one window skew
+      ---
+      duration_ms: 2.067652
+      type: 'test'
+      ...
+    # Subtest: generates a valid base32 secret and otpauth URI
+    ok 2 - generates a valid base32 secret and otpauth URI
+      ---
+      duration_ms: 0.311262
+      type: 'test'
+      ...
+    # Subtest: login with MFA enabled returns pending challenge; token only after valid code
+    ok 3 - login with MFA enabled returns pending challenge; token only after valid code
+      ---
+      duration_ms: 173.735998
+      type: 'test'
+      ...
+    # Subtest: login without MFA enabled still works directly
+    ok 4 - login without MFA enabled still works directly
+      ---
+      duration_ms: 119.105269
+      type: 'test'
+      ...
+    1..4
+ok 5 - MFA (DEF-02)
+  ---
+  duration_ms: 296.370754
+  type: 'suite'
+  ...
+# Subtest: natural-language commands (nlp.mjs)
+    # Subtest: parses dashboard/status/review/entries intents
+    ok 1 - parses dashboard/status/review/entries intents
+      ---
+      duration_ms: 0.968094
+      type: 'test'
+      ...
+    # Subtest: extracts a draw period from plain English
+    ok 2 - extracts a draw period from plain English
+      ---
+      duration_ms: 0.384679
+      type: 'test'
+      ...
+    # Subtest: parses send with a phone and message body
+    ok 3 - parses send with a phone and message body
+      ---
+      duration_ms: 0.579366
+      type: 'test'
+      ...
+    # Subtest: classify and help
+    ok 4 - classify and help
+      ---
+      duration_ms: 0.248561
+      type: 'test'
+      ...
+    1..4
+ok 6 - natural-language commands (nlp.mjs)
+  ---
+  duration_ms: 3.226817
+  type: 'suite'
+  ...
+# Subtest: QR renderer (linked-device)
+    # Subtest: produces a scannable-size SVG with sane module count (no 30k-px bug)
+    ok 1 - produces a scannable-size SVG with sane module count (no 30k-px bug)
+      ---
+      duration_ms: 24.312728
+      type: 'test'
+      ...
+    # Subtest: renders different inputs differently (not a blank/stub)
+    ok 2 - renders different inputs differently (not a blank/stub)
+      ---
+      duration_ms: 3.046384
+      type: 'test'
+      ...
+    1..2
+ok 7 - QR renderer (linked-device)
+  ---
+  duration_ms: 28.730868
+  type: 'suite'
+  ...
+# Subtest: real OCR receipt processing
+    # Subtest: T-04: a new valid two-pack image is read from pixels, qualifies, and awards exactly one entry with the right message
+    ok 1 - T-04: a new valid two-pack image is read from pixels, qualifies, and awards exactly one entry with the right message
+      ---
+      duration_ms: 1365.047462
+      type: 'test'
+      ...
+    # Subtest: T-10: quantity rules — one pack rejected with reason, three packs still one award, 2KG text is not a quantity, void lines excluded, wrong SKU rejected, alt sizes need the combination rule
+    ok 2 - T-10: quantity rules — one pack rejected with reason, three packs still one award, 2KG text is not a quantity, void lines excluded, wrong SKU rejected, alt sizes need the combination rule
+      ---
+      duration_ms: 6189.398167
+      type: 'test'
+      ...
+    # Subtest: T-11: dates and outlets — outside window rejected, ambiguous date reviewed, merchant mismatch reviewed, cropped header reviewed
+    ok 3 - T-11: dates and outlets — outside window rejected, ambiguous date reviewed, merchant mismatch reviewed, cropped header reviewed
+      ---
+      duration_ms: 4211.995644
+      type: 'test'
+      ...
+    # Subtest: T-08/T-09: random photo, instruction-laden paper, blur and darkness never qualify; re-upload guidance given; bounded processing
+    ok 4 - T-08/T-09: random photo, instruction-laden paper, blur and darkness never qualify; re-upload guidance given; bounded processing
+      ---
+      duration_ms: 31214.810954
+      type: 'test'
+      ...
+    # Subtest: T-07/T-14: re-photographed, cropped, rotated and recompressed copies of a credited receipt are blocked; a different phone cannot re-use it; a clearer re-upload of an unreadable attempt stays possible
+    ok 5 - T-07/T-14: re-photographed, cropped, rotated and recompressed copies of a credited receipt are blocked; a different phone cannot re-use it; a clearer re-upload of an unreadable attempt stays possible
+      ---
+      duration_ms: 9699.89615
+      type: 'test'
+      ...
+    # Subtest: T-12: the same purchase submitted concurrently by two participants credits at most once; the loser gets a stable duplicate outcome
+    ok 6 - T-12: the same purchase submitted concurrently by two participants credits at most once; the loser gets a stable duplicate outcome
+      ---
+      duration_ms: 1687.464107
+      type: 'test'
+      ...
+    # Subtest: reviewer resolves an uncertain receipt through the same integrity path and the participant is told
+    ok 7 - reviewer resolves an uncertain receipt through the same integrity path and the participant is told
+      ---
+      duration_ms: 6.133909
+      type: 'test'
+      ...
+    1..7
+ok 8 - real OCR receipt processing
+  ---
+  duration_ms: 54947.399343
+  type: 'suite'
+  ...
+# Subtest: security, RBAC, privacy, audit
+    # Subtest: T-29: unauthenticated and under-privileged calls are denied server-side; technical admin cannot run or approve draws
+    ok 1 - T-29: unauthenticated and under-privileged calls are denied server-side; technical admin cannot run or approve draws
+      ---
+      duration_ms: 161.100998
+      type: 'test'
+      ...
+    # Subtest: T-30: signed media links expire and are role-gated; identity numbers are masked everywhere and reveal is audited
+    ok 2 - T-30: signed media links expire and are role-gated; identity numbers are masked everywhere and reveal is audited
+      ---
+      duration_ms: 19.155732
+      type: 'test'
+      ...
+    # Subtest: audit chain stays intact across all writers and verifies; checkpoints sign the head
+    ok 3 - audit chain stays intact across all writers and verifies; checkpoints sign the head
+      ---
+      duration_ms: 5.677579
+      type: 'test'
+      ...
+    # Subtest: T-15: concurrent reviewer decisions — stale version conflicts; only one credit
+    ok 4 - T-15: concurrent reviewer decisions — stale version conflicts; only one credit
+      ---
+      duration_ms: 261.907563
+      type: 'test'
+      ...
+    # Subtest: T-31: withdrawal and anonymisation remove personal data but keep ledger references
+    ok 5 - T-31: withdrawal and anonymisation remove personal data but keep ledger references
+      ---
+      duration_ms: 4.181708
+      type: 'test'
+      ...
+    # Subtest: T-36: production activation preflight fails precisely on sample configuration and open decisions; non-production is unaffected
+    ok 6 - T-36: production activation preflight fails precisely on sample configuration and open decisions; non-production is unaffected
+      ---
+      duration_ms: 8.291418
+      type: 'test'
+      ...
+    # Subtest: login rate limiting and temporary-password gate
+    ok 7 - login rate limiting and temporary-password gate
+      ---
+      duration_ms: 228.981327
+      type: 'test'
+      ...
+    1..7
+ok 9 - security, RBAC, privacy, audit
+  ---
+  duration_ms: 2401.788058
+  type: 'suite'
+  ...
+1..9
+# tests 46
+# suites 9
+# pass 46
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 67896.787123
+exit=0

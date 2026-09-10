@@ -1,246 +1,161 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import zlib from "node:zlib";
-import { execFile } from "node:child_process";
+import sharp from "sharp";
 import { id, sha256hex, nowIso, addMinutes } from "./db.mjs";
 
-// ---------------------------------------------------------------------------
-// Minimal PNG encoder/decoder (8-bit, color types 0/2/3/4/6) - zero deps.
-// JPEG pixel access falls back to `sips` on macOS when present (documented dev
-// convenience; production media arrives via the Cloud API and is stored as-is).
-// ---------------------------------------------------------------------------
+/**
+ * Image handling + private media store (spec §10 steps 2-3, §11 duplicate
+ * signals, §17 private media). Built on `sharp` (libvips): content type is
+ * detected from bytes, not the provider's declared MIME; the original is
+ * kept unmodified; a normalised working image (auto-rotated, greyscale,
+ * bounded size) is produced for OCR and hashing.
+ *
+ * Perceptual hashes: aHash (8x8 mean) and dHash (9x8 gradient) over the
+ * normalised image. They are SEARCH signals for duplicate candidates, never
+ * proof on their own (§11).
+ */
 
-const PNG_SIG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+export const ALLOWED_FORMATS = new Set(["jpeg", "png", "webp", "heif", "gif", "tiff"]);
+export const MAX_BYTES = 10 * 1024 * 1024;
+export const MAX_PIXELS = 40_000_000;      // 40 MP: bounded decode work
+export const PROBABLE_DUPLICATE_DIST = 6;    // Hamming distance on 64-bit hashes (reviewer search signal only)
 
-// Standard CRC-32 (ISO 3309), table-based - PNG chunk integrity requires it.
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = (c & 1) ? 0xedb88320 ^ (c >> 1) : c >> 1;
-    t[n] = c;
-  }
-  return t;
-})();
-
-export function crc32(buf) {
-  let c = 0xffffffff;
-  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >> 8);
-  return c ^ 0xffffffff;
+export async function inspectImage(bytes) {
+  if (!Buffer.isBuffer(bytes)) bytes = Buffer.from(bytes);
+  if (bytes.length === 0) throw Object.assign(new Error("empty upload"), { code: "EMPTY" });
+  if (bytes.length > MAX_BYTES) throw Object.assign(new Error("image too large"), { code: "TOO_LARGE" });
+  let meta;
+  try { meta = await sharp(bytes, { limitInputPixels: MAX_PIXELS }).metadata(); }
+  catch (e) { throw Object.assign(new Error("unsupported or malformed image"), { code: "BAD_TYPE", cause: e.message }); }
+  if (!meta.format || !ALLOWED_FORMATS.has(meta.format)) throw Object.assign(new Error(`unsupported image format ${meta.format || "unknown"}`), { code: "BAD_TYPE" });
+  if ((meta.width || 0) * (meta.height || 0) > MAX_PIXELS) throw Object.assign(new Error("image dimensions too large"), { code: "TOO_LARGE" });
+  if ((meta.width || 0) < 64 || (meta.height || 0) < 64) throw Object.assign(new Error("image too small to be a receipt"), { code: "TOO_SMALL" });
+  const mime = { jpeg: "image/jpeg", png: "image/png", webp: "image/webp", heif: "image/heic", gif: "image/gif", tiff: "image/tiff" }[meta.format];
+  return { format: meta.format, mime, width: meta.width, height: meta.height, orientation: meta.orientation || 1, pages: meta.pages || 1 };
 }
 
-function chunk(type, data) {
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length);
-  const body = Buffer.concat([Buffer.from(type), data]);
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(body));
-  return Buffer.concat([len, body, crc]);
+/** Normalised working image (PNG): EXIF-rotated, greyscale, width-bounded. */
+export async function normaliseForOcr(bytes, { width = 1600 } = {}) {
+  return sharp(bytes, { limitInputPixels: MAX_PIXELS }).rotate().grayscale().normalise().resize({ width, withoutEnlargement: false }).png().toBuffer();
 }
 
-/** Encode raw RGBA pixels into a PNG (rows filtered with 0). */
-export function encodePng(width, height, rgba) {
-  const stride = width * 4;
-  const raw = Buffer.alloc((stride + 1) * height);
-  for (let y = 0; y < height; y++) {
-    raw[y * (stride + 1)] = 0;
-    rgba.subarray(y * stride, y * stride + stride).copy(raw, y * (stride + 1) + 1);
-  }
-  const idat = zlib.deflateSync(raw, 6);
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0);
-  ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8;  // bit depth
-  ihdr[9] = 6;  // color type RGBA
-  return Buffer.concat([PNG_SIG, chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", Buffer.alloc(0))]);
+/** Small greyscale raster used for hashing and quality signals. */
+async function smallRaster(bytes, w, h) {
+  const { data } = await sharp(bytes, { limitInputPixels: MAX_PIXELS }).rotate().grayscale().resize(w, h, { fit: "fill" }).raw().toBuffer({ resolveWithObject: true });
+  return data;
 }
 
-export function decodePng(buf) {
-  if (!Buffer.isBuffer(buf)) buf = Buffer.from(buf);
-  if (buf.length < 8 || !buf.subarray(0, 8).equals(PNG_SIG)) throw new Error("not a png");
-  let pos = 8;
-  let w, h, bitDepth, colorType;
-  const idat = [];
-  while (pos + 8 <= buf.length) {
-    const len = buf.readUInt32BE(pos);
-    const type = buf.subarray(pos + 4, pos + 8).toString("ascii");
-    const data = buf.subarray(pos + 8, pos + 8 + len);
-    pos += 12 + len;
-    if (type === "IHDR") {
-      w = data.readUInt32BE(0); h = data.readUInt32BE(4);
-      bitDepth = data[8]; colorType = data[9];
-    } else if (type === "IDAT") idat.push(data);
-    else if (type === "IEND") break;
-  }
-  if (!w || !h) throw new Error("png missing IHDR");
-  if (bitDepth !== 8) throw new Error(`png bit depth ${bitDepth} unsupported`);
-  const raw = zlib.inflateSync(Buffer.concat(idat));
-  const channels = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[colorType];
-  if (!channels) throw new Error(`png color type ${colorType} unsupported`);
-  const stride = w * channels;
-  const out = Buffer.alloc(w * h * 4);
-  const paeth = (a, b, c) => {
-    const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
-    return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
-  };
-  let prev = Buffer.alloc(stride);
-  for (let y = 0; y < h; y++) {
-    const f = raw[y * (stride + 1)];
-    const row = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
-    const cur = Buffer.alloc(stride);
-    for (let x = 0; x < stride; x++) {
-      const a = x >= channels ? cur[x - channels] : 0;
-      const b = prev[x];
-      const c = x >= channels ? prev[x - channels] : 0;
-      let v = row[x];
-      if (f === 1) v = (v + a) & 0xff;
-      else if (f === 2) v = (v + b) & 0xff;
-      else if (f === 3) v = (v + ((a + b) >> 1)) & 0xff;
-      else if (f === 4) v = (v + paeth(a, b, c)) & 0xff;
-      cur[x] = v;
-    }
-    for (let x = 0; x < w; x++) {
-      const ci = x * channels;
-      const oi = (y * w + x) * 4;
-      if (colorType === 0) { out[oi] = out[oi+1] = out[oi+2] = cur[ci]; out[oi+3] = 255; }
-      else if (colorType === 2) { out[oi]=cur[ci]; out[oi+1]=cur[ci+1]; out[oi+2]=cur[ci+2]; out[oi+3]=255; }
-      else if (colorType === 4) { out[oi]=cur[ci]; out[oi+1]=cur[ci+1]; out[oi+2]=cur[ci+1]; out[oi+3]=cur[ci+1]; }
-      else { out[oi]=cur[ci]; out[oi+1]=cur[ci+1]; out[oi+2]=cur[ci+2]; out[oi+3]=cur[ci+3]; }
-    }
-    prev = cur;
-  }
-  return { width: w, height: h, rgba: out };
-}
-
-/** Decode bytes to RGBA; PNG natively, JPEG via sips when available. */
-export async function decodeImage(buf) {
-  const head = Buffer.from(buf);
-  if (head.length > 8 && head.subarray(0, 8).equals(PNG_SIG)) return decodePng(head);
-  if (head.length > 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) {
-    const tmp = `/tmp/wpp-jpg-${process.pid}-${crypto.randomBytes(4).toString("hex")}.jpg`;
-    const out = tmp.replace(".jpg", ".png");
-    try {
-      fs.writeFileSync(tmp, buf);
-      const r = await execFile("/usr/bin/sips", ["-s", "format", "png", tmp, "--out", out]);
-      if (r.status === 0 && fs.existsSync(out)) {
-        const png = fs.readFileSync(out);
-        return decodePng(png);
-      }
-    } catch { /* fall through */ }
-    finally { fs.rmSync?.(tmp); fs.rmSync?.(out); }
-    throw new Error("jpeg decode unavailable (sips missing)");
-  }
-  throw new Error("unsupported image format");
-}
-
-// ---------------------------------------------------------------------------
-// Perceptual hash: average hash (aHash) over an 8x8 grayscale grid.
-// Hamming distance < PROBABLE_DUPLICATE_DIST => probable duplicate candidate
-// (threshold tuned against a labelled corpus; 12 is a conservative default).
-// ---------------------------------------------------------------------------
-
-export const PROBABLE_DUPLICATE_DIST = 12;
-
-export function computeAhash(rgba, width, height) {
-  const gw = 8, gh = 8;
-  const cells = Buffer.alloc(gw * gh);
-  for (let gy = 0; gy < gh; gy++) {
-    for (let gx = 0; gx < gw; gx++) {
-      let sum = 0, n = 0;
-      const x0 = Math.floor(gx * width / gw);
-      const x1 = Math.max(x0 + 1, Math.floor((gx + 1) * width / gw));
-      const y0 = Math.floor(gy * height / gh);
-      const y1 = Math.max(y0 + 1, Math.floor((gy + 1) * height / gh));
-      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
-        const i = (y * width + x) * 4;
-        sum += 0.299 * rgba[i] + 0.587 * rgba[i+1] + 0.114 * rgba[i+2];
-        n++;
-      }
-      cells[gy * gw + gx] = Math.round(sum / Math.max(n, 1));
-    }
-  }
-  let mean = 0;
-  for (let i = 0; i < 64; i++) mean += cells[i];
-  mean /= 64;
-  let hash = 0n;
-  for (let i = 0; i < 64; i++) if (cells[i] >= mean) hash |= (1n << BigInt(63 - i));
+export function ahashOf(gray64) {
+  let mean = 0; for (let i = 0; i < 64; i++) mean += gray64[i]; mean /= 64;
+  let hash = 0n; for (let i = 0; i < 64; i++) if (gray64[i] >= mean) hash |= (1n << BigInt(63 - i));
   return hash.toString(16).padStart(16, "0");
 }
-
+export function dhashOf(gray9x8) {
+  let hash = 0n, bit = 63;
+  for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) { if (gray9x8[y * 9 + x] < gray9x8[y * 9 + x + 1]) hash |= (1n << BigInt(bit)); bit--; }
+  return hash.toString(16).padStart(16, "0");
+}
 export function hamming(aHex, bHex) {
-  let a = BigInt("0x" + aHex), b = BigInt("0x" + bHex);
-  let d = 0;
-  while (a !== 0n || b !== 0n) {
-    d += Number((a ^ b) & 1n);
-    a >>= 1n; b >>= 1n;
-  }
+  if (!aHex || !bHex) return 64;
+  let x = BigInt("0x" + aHex) ^ BigInt("0x" + bHex), d = 0;
+  while (x) { d += Number(x & 1n); x >>= 1n; }
   return d;
 }
 
-export async function imageHashes(buf) {
-  const sha = sha256hex(buf);
-  let phash = null;
+/** Quality signals: sharpness (variance of Laplacian on a 256px raster), brightness, contrast. */
+export async function qualitySignals(bytes) {
+  const w = 256, h = 256;
+  const g = await smallRaster(bytes, w, h);
+  let sum = 0, sumSq = 0, lapSum = 0, lapSq = 0, n = 0;
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    const i = y * w + x;
+    const v = g[i]; sum += v; sumSq += v * v;
+    const lap = 4 * v - g[i - 1] - g[i + 1] - g[i - w] - g[i + w];
+    lapSum += lap; lapSq += lap * lap; n++;
+  }
+  const mean = sum / n, variance = sumSq / n - mean * mean;
+  const lapMean = lapSum / n, lapVar = lapSq / n - lapMean * lapMean;
+  return {
+    brightness: Math.round(mean),
+    contrast: Math.round(Math.sqrt(Math.max(variance, 0))),
+    sharpness: Math.round(lapVar),
+    tooDark: mean < 45,
+    tooBright: mean > 235,
+    lowContrast: Math.sqrt(Math.max(variance, 0)) < 18,
+    blurry: lapVar < 60,
+  };
+}
+
+export async function imageHashes(bytes) {
+  const sha256 = sha256hex(bytes);
+  let phash = null, dhash = null;
   try {
-    const { width, height, rgba } = await decodeImage(buf);
-    phash = computeAhash(rgba, width, height);
-  } catch { phash = null; }
-  return { sha256: sha, phash };
+    const a = await smallRaster(bytes, 8, 8); phash = ahashOf(a);
+    const d = await smallRaster(bytes, 9, 8); dhash = dhashOf(d);
+  } catch { /* unreadable image: hashes stay null; classification handles it */ }
+  return { sha256, phash, dhash };
 }
 
 // ---------------------------------------------------------------------------
-// Private media asset storage - never exposed through a public object URL
-// (spec 12.1 media_assets, 10.4 invariant: raw receipt media stays private).
+// Private media store: never exposed through a public URL; reviewer access is
+// via short-lived HMAC-signed links checked server-side (§17).
 // ---------------------------------------------------------------------------
-
-const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "image/gif", "image/bmp"]);
-const MAX_BYTES = 10 * 1024 * 1024;
-
-export function createMediaStore({ dir, db, now = nowIso }) {
+export function createMediaStore({ dir, db, now = nowIso, retentionDays = 90 }) {
   fs.mkdirSync(dir, { recursive: true });
-  const put = db.prepare(`insert or replace into media_assets
-    (id, object_key, mime, size_bytes, sha256, phash, provider_media_id, campaign_id, status, created_at, expires_at)
-    values (?,?,?,?,?,?,?,?,?,?,?)`);
+  const put = db.prepare(`insert into media_assets
+    (id, object_key, mime, size_bytes, sha256, phash, dhash, width, height, normalized_key, quality_json, provider_media_id, campaign_id, status, created_at, expires_at)
+    values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   const getById = db.prepare(`select * from media_assets where id = ?`);
   const bySha = db.prepare(`select * from media_assets where sha256 = ? limit 1`);
 
   return {
-    allowedMime(m) { return IMAGE_MIMES.has((m || "").toLowerCase()); },
     maxBytes() { return MAX_BYTES; },
-    async store({ bytes, mime, providerMediaId, campaignId }) {
-      if (bytes.length > MAX_BYTES) throw Object.assign(new Error("image too large"), { code: "TOO_LARGE" });
-      if (!this.allowedMime(mime)) throw Object.assign(new Error("unsupported media type"), { code: "BAD_TYPE" });
-      const { sha256, phash } = await imageHashes(bytes);
+    /** Validate, hash, persist original + normalised working image. */
+    async store({ bytes, providerMediaId, campaignId }) {
+      const info = await inspectImage(bytes);
+      const { sha256, phash, dhash } = await imageHashes(bytes);
       const existing = bySha.get(sha256);
-      if (existing) return { assetId: existing.id, sha256, phash, existing: true };
+      if (existing) return { assetId: existing.id, sha256, phash: existing.phash, dhash: existing.dhash, existing: true, info, quality: JSON.parse(existing.quality_json || "null") };
+      const quality = await qualitySignals(bytes);
+      const normalised = await normaliseForOcr(bytes);
       const assetId = id("med");
-      const key = `${campaignId || "shared"}/${sha256}.bin`;
-      const abs = path.join(dir, key);
-      fs.mkdirSync(path.dirname(abs), { recursive: true });
-      fs.writeFileSync(abs, bytes);
-      put.run(assetId, key, mime, bytes.length, sha256, phash, providerMediaId || null, campaignId || null, "stored", now(), addMinutes(now(), 60 * 24 * 30));
-      return { assetId, sha256, phash, existing: false };
+      const key = `${campaignId || "shared"}/${sha256}.${info.format}`;
+      const nkey = `${campaignId || "shared"}/${sha256}.norm.png`;
+      for (const [k, b] of [[key, bytes], [nkey, normalised]]) {
+        const abs = path.join(dir, k); fs.mkdirSync(path.dirname(abs), { recursive: true }); fs.writeFileSync(abs, b);
+      }
+      put.run(assetId, key, info.mime, bytes.length, sha256, phash, dhash, info.width, info.height, nkey, JSON.stringify(quality), providerMediaId || null, campaignId || null, "stored", now(), addMinutes(now(), 60 * 24 * retentionDays));
+      return { assetId, sha256, phash, dhash, existing: false, info, quality, normalised };
     },
-    get(obj) { return getById.get(obj); },
-    readBytes(obj) {
+    get(assetId) { return getById.get(assetId); },
+    readBytes(obj, { normalised = false } = {}) {
       const a = typeof obj === "string" ? getById.get(obj) : obj;
       if (!a) return null;
-      const abs = path.join(dir, a.object_key);
+      const abs = path.join(dir, normalised ? (a.normalized_key || a.object_key) : a.object_key);
       return fs.existsSync(abs) ? fs.readFileSync(abs) : null;
+    },
+    /** Retention: delete stored bytes past expiry; keep the metadata row (status=purged). */
+    purgeExpired(limit = 200) {
+      const rows = db.prepare(`select * from media_assets where status='stored' and expires_at < ? limit ?`).all(now(), limit);
+      for (const a of rows) {
+        for (const k of [a.object_key, a.normalized_key]) { if (k) fs.rmSync(path.join(dir, k), { force: true }); }
+        db.prepare(`update media_assets set status='purged' where id=?`).run(a.id);
+      }
+      return rows.length;
     },
   };
 }
 
-// Signed short-lived reviewer URL (spec 11.4: never a long-lived receipt URL)
+// Signed short-lived reviewer URL (never a long-lived receipt URL).
 export function signMediaUrl(assetId, secret, ttlMinutes = 30) {
   const exp = String(Date.now() + ttlMinutes * 60_000);
-  const sig = crypto.createHmac("sha256", secret).update(`${assetId}:${exp}`).digest().toString("hex");
+  const sig = crypto.createHmac("sha256", secret).update(`${assetId}:${exp}`).digest("hex");
   return { url: `/api/media/${assetId}?exp=${exp}&sig=${sig}`, expiresAt: new Date(Number(exp)).toISOString() };
 }
-
 export function verifyMediaSig(assetId, exp, sig, secret) {
-  if (!assetId || !exp || !sig) return false;
+  if (!assetId || !exp || !sig || !/^[0-9a-f]{64}$/.test(String(sig))) return false;
   if (Number(exp) < Date.now()) return false;
-  const expected = crypto.createHmac("sha256", secret).update(`${assetId}:${exp}`).digest().toString("hex");
+  const expected = crypto.createHmac("sha256", secret).update(`${assetId}:${exp}`).digest("hex");
   return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(sig, "hex"));
 }

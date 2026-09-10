@@ -182,7 +182,7 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
       let mediaBytes = null;
       try { mediaBytes = await sock.downloadMedia(m); } catch { mediaBytes = null; }
       this.state.received += 1;
-      await this.onImageMessage?.({ phoneUid, providerMessageId: `ld_${m.key?.id}`, mediaBytes, mime: media.mimetype || "image/jpeg", caption: text || "" });
+      await this.onImageMessage?.({ phoneUid, providerMessageId: `ld_${m.key?.id}`, inlineMediaB64: mediaBytes ? Buffer.from(mediaBytes).toString("base64") : null, mime: media.mimetype || "image/jpeg", text: text || "" });
       this.opts?.onActivity?.("message", `Receipt image from ${sender || phoneUid}`, { chat: jid });
       return;
     }
@@ -213,7 +213,7 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
     if (!body) throw new Error("text is required");
     const sent = await this.sock.sendMessage(jid, { text: body });
     this.opts.onActivity?.("send", `Sent reply to ${jid.split("@")[0]}`, { jid });
-    return sent?.key?.id || null;
+    return { providerMessageId: sent?.key?.id || null };
   }
 
   async unlink() {
@@ -230,11 +230,12 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
     return true;
   }
 
-  async downloadMedia() { return null; }
+  get requiresTemplateOutsideWindow() { return false; }
+  async downloadMedia() { const e = new Error("linked-device media is delivered inline"); e.permanent = true; throw e; }
 
   health() {
     return {
-      ok: true, provider: "linked-device", ready: this.state.ready, me: this.state.me, qr: this.state.qr,
+      ok: this.state.ready, mode: "dev-only", provider: "linked-device", ready: this.state.ready, me: this.state.me, qr: this.state.qr,
       lastError: this.state.lastError, received: this.state.received, dropped: this.state.dropped,
       linkedAs: this.state.linkedAs, lastLinkedAt: this.state.lastLinkedAt, dropCount: this.state.dropCount,
       hasSession: hasCreds(this.authDir) || this.state.hasSession,

@@ -1,423 +1,396 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { api, getToken, setToken } from "./api.js";
 import { Desk } from "./desk/Desk.jsx";
 import "./styles.css";
 
-/* ===================== tiny helpers ===================== */
-const sc = String;
+/* ===================== helpers ===================== */
 const fmt = (i) => (i ? new Date(i).toLocaleString() : "—");
 const short = (id, n = 12) => (id ? `${String(id).slice(0, n)}…` : "—");
-const OWN = { QUALIFIED: "ok", NOT_QUALIFIED: "x", DUPLICATE: "x", NEEDS_REVIEW: "w", ERROR: "x", active: "ok", paused: "w", draft: "m", published: "ok", approved: "ok", executed: "w", frozen: "m", delivered: "ok", dead: "x", pending: "w" };
-function Chip({ s }) { const t = OWN[s] || "m"; const c = { ok: ["#0d9488", "rgba(13,148,136,.12)"], w: ["#b45309", "rgba(180,83,9,.12)"], x: ["#b42318", "rgba(180,35,24,.12)"], m: ["#888", "rgba(100,116,139,.12)"] }[t]; return <span className="chip" style={{ color: c[0], background: c[1] }}>{s}</span>; }
+const TONE = { QUALIFIED: "ok", NOT_QUALIFIED: "x", DUPLICATE: "x", REVIEW_REQUIRED: "w", REUPLOAD_REQUIRED: "w", received: "m", processing: "m", delayed: "w", active: "ok", paused: "w", draft: "m", closed: "m", archived: "m", published: "ok", approved: "ok", executed: "w", frozen: "m", executing: "w", voided: "x", delivered: "ok", sent: "ok", read: "ok", pending: "w", retryable_failure: "w", permanent_failure: "x", unknown_outcome: "x", reconciled: "ok", dead: "x", failed: "x", processed: "ok", selected: "m", notified: "w", verified: "ok", accepted: "ok", collected: "ok", expired: "x", replaced: "x", ineligible: "x", declined: "x", disputed: "w", unreachable: "w", open: "w", assigned: "w", decided: "ok", excluded: "x", scheduled: "m", drawn: "ok", critical: "x", warning: "w", info: "m", real: "ok", simulated: "w", configured: "ok", not_configured: "w", unconfigured: "x" };
+function Chip({ s }) { const t = TONE[s] || "m"; const c = { ok: ["#0d9488", "rgba(13,148,136,.12)"], w: ["#b45309", "rgba(180,83,9,.12)"], x: ["#b42318", "rgba(180,35,24,.12)"], m: ["#666", "rgba(100,116,139,.12)"] }[t]; return <span className="chip" style={{ color: c[0], background: c[1] }}>{String(s ?? "—")}</span>; }
+function useApi(path, deps = []) {
+  const [state, set] = useState({ loading: true, data: null, error: null });
+  const load = useCallback(() => { set((s) => ({ ...s, loading: true })); api(path).then((r) => set({ loading: false, data: r.ok ? r.data : null, error: r.ok ? null : (r.data?.error?.message || `HTTP ${r.status}`) })); }, [path, ...deps]);
+  useEffect(() => { let alive = true; api(path).then((r) => { if (alive) set({ loading: false, data: r.ok ? r.data : null, error: r.ok ? null : (r.data?.error?.message || `HTTP ${r.status}`) }); }); return () => { alive = false; }; }, [path, ...deps]);
+  return [state, load];
+}
+const Card = ({ title, children, right }) => <div className="promo-card"><div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><h4>{title}</h4>{right}</div>{children}</div>;
+const Empty = ({ children }) => <div className="empty">{children}</div>;
+const Loading = () => <div className="empty">Loading…</div>;
+const Err = ({ e }) => (e ? <div className="notice">{String(e)}</div> : null);
+const Field = ({ label, children }) => <div className="col"><span className="lab">{label}</span>{children}</div>;
+const Input = (p) => <input className="field" {...p} />;
+const Btn = ({ children, ghost, small, danger, ...p }) => <button className={`btn ${ghost ? "ghost" : ""} ${small ? "small" : ""} ${danger ? "danger" : ""}`} {...p}>{children}</button>;
+function useAction() { const [busy, setBusy] = useState(false); const [msg, setMsg] = useState(null); const run = async (fn, { confirm: c } = {}) => { if (c && !window.confirm(c)) return null; setBusy(true); setMsg(null); try { const r = await fn(); if (r && r.ok === false) setMsg({ err: r.data?.error?.message || `HTTP ${r.status}`, detail: r.data?.error }); else setMsg({ ok: true }); return r; } catch (e) { setMsg({ err: e.message }); return null; } finally { setBusy(false); } }; return { busy, msg, run, Msg: () => msg?.err ? <div className="notice">{msg.err}{msg.detail?.failures ? <ul>{msg.detail.failures.map((f) => <li key={f.code}>{f.code}: {f.message}</li>)}</ul> : null}{msg.detail?.blockers ? <ul>{msg.detail.blockers.map((b, i) => <li key={i}>{b.code} {b.detail ? JSON.stringify(b.detail) : ""}</li>)}</ul> : null}</div> : null }; }
+const Table = ({ cols, rows, render, empty = "Nothing here yet." }) => <div className="tbl-wrap"><table className="promo-table"><thead><tr>{cols.map((c) => <th key={c}>{c}</th>)}</tr></thead><tbody>{rows?.length ? rows.map(render) : <tr><td colSpan={cols.length}><Empty>{empty}</Empty></td></tr>}</tbody></table></div>;
+const Pager = ({ next, onMore }) => (next != null ? <div style={{ marginTop: 8 }}><Btn ghost small onClick={onMore}>Load more</Btn></div> : null);
 
 /* ===================== login ===================== */
 function Login({ onAuthed }) {
-  const [email, setEmail] = useState(""); const [pw, setPw] = useState("");
-  const [mfa, setMfa] = useState(null); const [code, setCode] = useState("");
-  const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
-
-  // P1-04: two-step MFA — password first, then the 6-digit code when the
-  // account has MFA enabled (server replies pendingMfa + userId, and
-  // /api/login/mfa completes the session). The old gate only handled the
-  // one-step {token} response and showed "Sign-in failed" for MFA accounts.
-  const submit = async () => {
-    setErr(""); setBusy(true);
-    try {
-      const r = await api("/api/login", { method: "POST", body: { email, password: pw }, auth: false });
-      if (r.data?.pendingMfa) { setMfa(r.data); return; }
-      if (r.ok && r.data?.token) { setToken(r.data.token); onAuthed(); }
-      else if (r.status === 429) setErr(`Too many attempts — try again in ${r.data?.retryAfter || 30}s.`);
-      else setErr(r.data?.error || "Sign-in failed.");
-    } finally { setBusy(false); }
-  };
-  const submitCode = async () => {
-    setErr("");
-    if (!code.trim()) { setErr("Enter the 6-digit code from your authenticator app."); return; }
-    setBusy(true);
-    try {
-      const r = await api("/api/login/mfa", { method: "POST", body: { userId: mfa.userId, code: code.trim() }, auth: false });
-      if (r.ok && r.data?.token) { setToken(r.data.token); onAuthed(); }
-      else setErr(r.data?.error || "That code wasn't accepted.");
-    } finally { setBusy(false); }
-  };
-  const cancelMfa = () => { setMfa(null); setCode(""); setErr(""); };
-
-  if (mfa) return (
-    <div className="gate">
-      <div className="gate-card frame">
-        <div className="overline">WhatsApp Promotion Platform</div>
-        <div style={{ fontSize: 12.5, color: "var(--text-secondary)", marginBottom: 12, lineHeight: 1.6 }}>
-          Two-factor authentication. {mfa.message || "Enter the 6-digit code from your authenticator app."}
-          <span style={{ opacity: 0.75 }}> The code expires in about 5 minutes.</span>
-        </div>
-        <input className="field" value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitCode()} placeholder="6-digit code" inputMode="numeric" autoFocus style={{ width: "100%" }} />
-        {err && <div className="notice" style={{ marginTop: 8 }}>{err}</div>}
-        <div style={{ marginTop: 14 }}>
-          <button className="btn primary" onClick={submitCode} disabled={!code.trim() || busy}>Verify code</button>
-          <button className="btn ghost" style={{ marginLeft: 8 }} onClick={cancelMfa} disabled={busy}>Back</button>
-        </div>
-      </div>
-    </div>
-  );
+  const [email, setEmail] = useState(""); const [pw, setPw] = useState(""); const [mfa, setMfa] = useState(null); const [code, setCode] = useState(""); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
+  const submit = async () => { setErr(""); setBusy(true); try { const r = await api("/api/login", { method: "POST", body: { email, password: pw }, auth: false }); if (r.data?.pendingMfa) { setMfa(r.data); return; } if (r.ok && r.data?.token) { setToken(r.data.token); onAuthed(); } else if (r.status === 429) setErr(`Too many attempts — try again in ${r.data?.error?.retryAfter || 30}s.`); else setErr(r.data?.error?.message || "Sign-in failed."); } finally { setBusy(false); } };
+  const submitCode = async () => { setErr(""); setBusy(true); try { const r = await api("/api/login/mfa", { method: "POST", body: { userId: mfa.userId, code: code.trim() }, auth: false }); if (r.ok && r.data?.token) { setToken(r.data.token); onAuthed(); } else setErr(r.data?.error?.message || "That code wasn't accepted."); } finally { setBusy(false); } };
   return (
-    <div className="gate">
-      <div className="gate-card frame">
-        <div className="overline">WhatsApp Promotion Platform</div>
-        <div style={{ fontSize: 12.5, color: "var(--text-secondary)", marginBottom: 12, lineHeight: 1.6 }}>Sign in with your operator account.</div>
-        <input className="field" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" autoFocus style={{ width: "100%" }} />
-        <input className="field" type="password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} placeholder="Password" style={{ width: "100%", marginTop: 6 }} />
-        {err && <div className="notice" style={{ marginTop: 8 }}>{err}</div>}
-        <div style={{ marginTop: 14 }}><button className="btn primary" onClick={submit} disabled={!email || !pw || busy}>Sign in</button></div>
-      </div>
-    </div>
+    <div className="gate"><div className="gate-card frame">
+      <div className="overline">Promotion Operations Console</div>
+      {mfa ? <>
+        <div className="note">Enter the 6-digit code from your authenticator app.</div>
+        <Input value={code} onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitCode()} placeholder="6-digit code" inputMode="numeric" autoFocus />
+        <Err e={err} /><div style={{ marginTop: 14 }}><Btn onClick={submitCode} disabled={!code.trim() || busy}>Verify code</Btn> <Btn ghost onClick={() => setMfa(null)}>Back</Btn></div>
+      </> : <>
+        <div className="note">Sign in with your named staff account.</div>
+        <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" autoFocus autoComplete="username" />
+        <Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} placeholder="Password" autoComplete="current-password" style={{ marginTop: 6 }} />
+        <Err e={err} /><div style={{ marginTop: 14 }}><Btn onClick={submit} disabled={!email || !pw || busy}>Sign in</Btn></div>
+      </>}
+    </div></div>
   );
 }
+function ChangePassword({ onDone }) {
+  const [cur, setCur] = useState(""); const [nw, setNw] = useState(""); const a = useAction();
+  return <div className="gate"><div className="gate-card frame"><div className="overline">Change your temporary password</div><div className="note">Your account was created with a temporary password. Choose a new one (12+ characters) to continue.</div>
+    <Input type="password" placeholder="Temporary password" value={cur} onChange={(e) => setCur(e.target.value)} autoComplete="current-password" /><Input type="password" placeholder="New password" value={nw} onChange={(e) => setNw(e.target.value)} style={{ marginTop: 6 }} autoComplete="new-password" />
+    <a.Msg /><div style={{ marginTop: 14 }}><Btn disabled={a.busy || nw.length < 12} onClick={async () => { const r = await a.run(() => api("/api/password", { method: "POST", body: { currentPassword: cur, newPassword: nw } })); if (r?.ok) { setToken(""); onDone(); } }}>Save and sign in again</Btn></div></div></div>;
+}
 
-/* ===================== dashboard ===================== */
-function Dashboard() {
-  const [m, setM] = useState(null);
-  useEffect(() => { api("/api/metrics").then((r) => r.ok && setM(r.data)); }, []);
-  if (!m) return <div className="promo-page"><div className="promo-card note">Loading…</div></div>;
-  const r = m.receipts || {};
-  const stats = [
-    [m.campaigns?.active || 0, "Active campaigns"],
-    [r.NEEDS_REVIEW || 0, "Receipts to review"],
-    [r.QUALIFIED || 0, "Qualified receipts"],
-    [r.DUPLICATE || 0, "Duplicates blocked"],
-    [m.entries || 0, "Draw entries"],
-    [m.participants || 0, "Participants"],
-  ];
-  return (
-    <div className="promo-page">
-      <div className="promo-card">
-        <div className="overline" style={{ marginBottom: 10 }}>Platform status</div>
-        <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
-          {stats.map(([v, l]) => <div key={l}><div className="mono" style={{ fontSize: 24, fontWeight: 600 }}>{v}</div><div className="label" style={{ fontSize: 10, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: 1 }}>{l}</div></div>)}
-        </div>
-        <div className="spacer" />
-        <div className="row">
-          {[["Transport", m.transport?.provider], ["Linked", m.transport?.ready ? "yes" : "no"], ["Linked as", m.transport?.me || "—"], ["Messages", m.messages || 0], ["Open threads", m.threads?.open || 0], ["Needs reply", m.threads?.needsReply || 0], ["Model spend", `$${Number(m.usage?.month_usd || 0).toFixed(2)}`]].map(([k, v]) => (
-            <div className="col" key={k}><div className="lab">{k}</div><div className="note">{v}</div></div>))}
-        </div>
+/* ===================== overview ===================== */
+function Overview({ me }) {
+  const [m] = useApi("/api/metrics"); const [rep] = useApi("/api/reports/summary"); const [al, reloadAl] = useApi("/api/alerts");
+  if (m.loading) return <Loading />;
+  const r = m.data?.receipts || {}, s = rep.data || {};
+  const stats = [[s.registrations ?? 0, "Registrations"], [s.submissions ?? 0, "Submissions"], [s.canonical_receipts ?? 0, "Distinct receipts"], [s.entries_active ?? 0, "Active entries"], [r.DUPLICATE || 0, "Duplicates blocked"], [s.review_open ?? 0, "Awaiting review"], [s.winners_selected ?? 0, "Winners selected"], [s.winners_verified ?? 0, "Winners verified"], [s.prizes_fulfilled ?? 0, "Prizes fulfilled"]];
+  return <div className="promo-page">
+    <Card title="Campaign at a glance" right={<span className="sub">Definitions: {Object.entries(s.definitions || {}).map(([k, v]) => `${k} = ${v}`).join(" · ")}</span>}>
+      <div className="stats">{stats.map(([v, l]) => <div key={l} className="stat"><div className="mono big">{v}</div><div className="lab">{l}</div></div>)}</div>
+      <div className="row" style={{ marginTop: 12 }}>
+        {[["Environment", m.data.environment], ["Transport", `${m.data.transport?.provider} (${m.data.transport?.mode || "?"})`], ["Outbound pending", m.data.outbound?.byStatus?.pending || 0], ["Outbound failed", (m.data.outbound?.byStatus?.permanent_failure || 0) + (m.data.outbound?.byStatus?.unknown_outcome || 0)], ["CRM pending", m.data.crm?.pending || 0], ["Queue events", m.data.queues?.events?.received || 0], ["Open alerts", m.data.alerts_open || 0]].map(([k, v]) => <Field key={k} label={k}><div className="note">{String(v)}</div></Field>)}
       </div>
-      <div className="promo-card"><h4 style={{ marginBottom: 6 }}>Recent activity</h4>
-        {(m.activity || []).slice(0, 8).map((a, i) => (
-          <div key={i} className="sub" style={{ padding: "3px 0" }}>[{fmt(a.created_at)}] {a.summary}</div>))}
-        {(m.activity || []).length === 0 && <div className="empty">No activity yet — run a brief or Test a Customer.</div>}
-      </div>
-    </div>
-  );
+    </Card>
+    <Card title="Not qualifying — by reason"><Table cols={["Reason", "Count"]} rows={s.not_qualified_by_reason || []} render={(x) => <tr key={x.k}><td className="mono">{x.k}</td><td>{x.n}</td></tr>} /></Card>
+    <Card title="Open alerts" right={<Btn ghost small onClick={reloadAl}>Refresh</Btn>}>
+      <Table cols={["Severity", "Kind", "Message", "Runbook", ""]} rows={al.data?.alerts || []} empty="No open alerts." render={(x) => <tr key={x.id}><td><Chip s={x.severity} /></td><td className="mono">{x.kind}</td><td>{x.message}</td><td className="sub">{x.runbook || "—"}</td><td><Btn ghost small onClick={() => api(`/api/alerts/${x.id}/ack`, { method: "POST" }).then(reloadAl)}>Acknowledge</Btn></td></tr>} />
+    </Card>
+    <Card title="Recent activity">{(m.data.activity || []).slice(0, 10).map((a, i) => <div key={i} className="sub" style={{ padding: "3px 0" }}>[{fmt(a.created_at)}] {a.summary}</div>)}{!(m.data.activity || []).length && <Empty>No activity yet.</Empty>}</Card>
+  </div>;
 }
 
 /* ===================== campaigns ===================== */
-function Campaigns() {
-  const [rows, setRows] = useState([]); const refresh = () => api("/api/campaigns").then((r) => r.ok && setRows(r.data?.campaigns || []));
-  useEffect(() => { refresh(); }, []);
-  const [f, setF] = useState({});
-  const [note, setNote] = useState("");
-  const create = async () => {
-    setNote("");
-    if (!f.code || !f.start_at || !f.end_at) { setNote("Code, start and end are required."); return; }
-    const r = await api("/api/campaigns", { method: "POST", body: { code: f.code, name: f.name, start_at: f.start_at, end_at: f.end_at } });
-    if (r.status !== 201) { setNote(r.data?.error || `Create failed (HTTP ${r.status})`); return; }
-    const v = await api(`/api/campaigns/${r.data.id}/versions`, { method: "POST", body: { content: {}, flags: {}, rules: { products: [{ sku: "ZSB-2KG", pack_weight_kg: 2 }], min_packs: 2, min_total_qty_kg: 4 } } });
-    if (v.status === 201) await api(`/api/campaigns/${r.data.id}/versions/${v.data.versionId}/activate`, { method: "POST", body: {} });
-    setF({}); refresh(); setNote("Campaign created and activated.");
-  };
-  return (
-    <div className="promo-page">
-      <div className="promo-card"><h4>New campaign</h4>
-        <div className="row">
-          {[["code", "Code", "SUGAR-2026"], ["name", "Name"], ["start_at", "Start (ISO)", "2026-09-01T00:00:00Z"], ["end_at", "End (ISO)", "2026-11-30T23:59:59Z"]].map(([k, l, ph]) =>
-            <div className="col" key={k}><div className="lab">{l}</div><input className="field" value={f[k] || ""} onChange={(e) => setF({ ...f, [k]: e.target.value })} placeholder={ph} /></div>)}
-        </div>
-        {note && <div className="notice" style={{ marginTop: 8 }}>{note}</div>}
-        <div className="spacer" /><button className="btn" onClick={create}>Create and activate</button>
-      </div>
-      <div className="promo-card"><h4>All campaigns</h4>
-        <table className="promo-table"><thead><tr><th>Code</th><th>Name</th><th>Status</th><th>Start</th><th>End</th></tr></thead><tbody>
-          {rows.map((c) => <tr key={c.id}><td className="mono">{sc(c.code)}</td><td>{sc(c.name)}</td><td><Chip s={c.status} /></td><td className="sub">{fmt(c.start_at)}</td><td className="sub">{fmt(c.end_at)}</td></tr>)}
-        </tbody></table>
-      </div>
-    </div>
-  );
+function Campaigns({ me }) {
+  const [list, reload] = useApi("/api/campaigns"); const [sel, setSel] = useState(null);
+  if (list.loading) return <Loading />;
+  if (sel) return <CampaignDetail id={sel} me={me} onBack={() => { setSel(null); reload(); }} />;
+  return <div className="promo-page">
+    <NewCampaign onCreated={reload} />
+    <Card title={`Campaigns (${list.data?.campaigns?.length || 0})`}>
+      <Table cols={["Code", "Name", "Status", "Version", "Open decisions", "Start", "End", ""]} rows={list.data?.campaigns} render={(c) => <tr key={c.id}><td className="mono">{c.code}</td><td>{c.name}</td><td><Chip s={c.status} /></td><td>{c.active_version || "—"}</td><td>{c.open_decisions}</td><td className="sub">{fmt(c.start_at)}</td><td className="sub">{fmt(c.end_at)}</td><td><Btn ghost small onClick={() => setSel(c.id)}>Open</Btn></td></tr>} />
+    </Card>
+  </div>;
+}
+function NewCampaign({ onCreated }) {
+  const [f, setF] = useState({}); const a = useAction();
+  return <Card title="New campaign (created as draft with a draft version)"><div className="row">
+    {[["code", "Code (A-Z0-9-)", "SUGAR-2027"], ["name", "Name", ""], ["start_at", "Start (ISO UTC)", "2027-01-04T00:00:00Z"], ["end_at", "End (ISO UTC)", "2027-03-01T00:00:00Z"]].map(([k, l, ph]) => <Field key={k} label={l}><Input value={f[k] || ""} onChange={(e) => setF({ ...f, [k]: e.target.value })} placeholder={ph} /></Field>)}
+    <Btn disabled={a.busy} onClick={async () => { const r = await a.run(() => api("/api/campaigns", { method: "POST", body: f })); if (r?.ok) { setF({}); onCreated(); } }}>Create draft</Btn></div><a.Msg /></Card>;
+}
+function CampaignDetail({ id, me, onBack }) {
+  const [d, reload] = useApi(`/api/campaigns/${id}`); const [tab, setTab] = useState("overview"); const a = useAction();
+  if (d.loading) return <Loading />; if (!d.data) return <Err e={d.error} />;
+  const c = d.data.campaign, v = d.data.active_version;
+  const status = (s, reason) => a.run(() => api(`/api/campaigns/${id}/status`, { method: "POST", body: { status: s, reason } }), { confirm: `Move campaign to ${s}?` }).then(reload);
+  const T = [["overview", "Overview"], ["versions", "Rules & versions"], ["content", "Content"], ["periods", "Periods"], ["outlets", "Outlets"], ["decisions", "Decisions"], ["activation", "Activation"]];
+  return <div className="promo-page">
+    <div className="row" style={{ marginBottom: 10 }}><Btn ghost small onClick={onBack}>← Campaigns</Btn><h3 style={{ margin: 0 }}>{c.name} <Chip s={c.status} /></h3><span className="sub mono">{c.code}</span></div>
+    <div className="subtabs">{T.map(([k, l]) => <button key={k} className={tab === k ? "active" : ""} onClick={() => setTab(k)}>{l}</button>)}</div>
+    <a.Msg />
+    {tab === "overview" && <>
+      <Card title="Lifecycle"><div className="row">
+        <Field label="Status"><Chip s={c.status} /></Field><Field label="Active version">{v ? `v${v.version_no} (${short(v.config_hash, 10)})` : "none"}</Field><Field label="Timezone">{c.timezone}</Field><Field label="Window">{fmt(c.start_at)} → {fmt(c.end_at)}</Field>
+        {c.status === "draft" && <Btn onClick={() => status("active")}>Activate (test env)</Btn>}{c.status === "active" && <Btn ghost onClick={() => status("paused")}>Pause</Btn>}{c.status === "paused" && <Btn onClick={() => status("active")}>Resume</Btn>}{["active", "paused"].includes(c.status) && <Btn danger onClick={() => status("closed", prompt("Reason for closing?") || "closed")}>Close</Btn>}{c.status === "closed" && <Btn ghost onClick={() => status("archived")}>Archive</Btn>}
+        <Btn ghost onClick={async () => { const code = prompt("Code for the clone?"); if (!code) return; const r = await a.run(() => api(`/api/campaigns/${id}/clone`, { method: "POST", body: { code } })); if (r?.ok) onBack(); }}>Clone</Btn>
+      </div></Card>
+      <Card title="Pause controls (separate switches)"><div className="row">{["intake", "auto_qualify", "outbound", "draws"].map((k) => <label key={k} className="check"><input type="checkbox" checked={!!d.data.pause?.[k]} onChange={(e) => a.run(() => api(`/api/campaigns/${id}/pause`, { method: "POST", body: { [k]: e.target.checked } })).then(reload)} /> pause {k.replace("_", " ")}</label>)}</div><div className="sub">Pausing intake stops new receipts; pausing auto-qualify routes every decision to review; pausing outbound holds messages; pausing draws blocks freezing.</div></Card>
+      <Card title="Edit details"><EditCampaign c={c} onSaved={reload} /></Card>
+    </>}
+    {tab === "versions" && <Versions id={id} data={d.data} onChange={reload} />}
+    {tab === "content" && <ContentEditor id={id} data={d.data} onChange={reload} />}
+    {tab === "periods" && <Periods id={id} data={d.data} onChange={reload} />}
+    {tab === "outlets" && <CampaignOutlets id={id} data={d.data} onChange={reload} />}
+    {tab === "decisions" && <Decisions id={id} data={d.data} onChange={reload} />}
+    {tab === "activation" && <Activation id={id} />}
+  </div>;
+}
+function EditCampaign({ c, onSaved }) { const [f, setF] = useState({ name: c.name, start_at: c.start_at, end_at: c.end_at, timezone: c.timezone, draw_config: JSON.stringify(c.draw_config, null, 1) }); const a = useAction(); return <><div className="row">{[["name", "Name"], ["start_at", "Start"], ["end_at", "End"], ["timezone", "Timezone"]].map(([k, l]) => <Field key={k} label={l}><Input value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></Field>)}</div><Field label="Draw config (prizes, alternates, one prize per participant)"><textarea className="area" rows={5} value={f.draw_config} onChange={(e) => setF({ ...f, draw_config: e.target.value })} /></Field><a.Msg /><div className="spacer" /><Btn disabled={a.busy} onClick={() => { let dc; try { dc = JSON.parse(f.draw_config); } catch { return alert("draw config is not valid JSON"); } a.run(() => api(`/api/campaigns/${c.id}`, { method: "PATCH", body: { ...f, draw_config: dc } })).then(onSaved); }}>Save</Btn></>; }
+function Versions({ id, data, onChange }) {
+  const [vs] = useApi(`/api/campaigns/${id}/versions`, [data]); const [draft, setDraft] = useState(null); const a = useAction();
+  const rows = vs.data?.versions || [];
+  return <>
+    <Card title="Versions (activated versions are immutable; changes are new versions)" right={<Btn small onClick={() => a.run(() => api(`/api/campaigns/${id}/versions`, { method: "POST", body: { from_active: true } })).then(onChange)}>New draft from active</Btn>}>
+      <a.Msg /><Table cols={["#", "Status", "Frozen", "Config hash", "Products", "Rule", ""]} rows={rows} render={(v) => <tr key={v.id}><td>v{v.version_no}</td><td><Chip s={v.status} /></td><td className="sub">{fmt(v.frozen_at)}</td><td className="mono sub">{short(v.config_hash, 12)}</td><td>{(v.rules.products || []).map((p) => p.code).join(", ") || "—"}</td><td className="sub">{v.rules.primary_rule ? `${v.rules.primary_rule.min_packs} × ${v.rules.primary_rule.pack_grams}g ≥ ${v.rules.primary_rule.min_total_grams}g${v.rules.allow_pack_combinations ? " (combinations allowed)" : ""}; entries/receipt ${v.rules.award?.entries_per_receipt}` : "—"}</td><td>{v.status === "draft" && <><Btn ghost small onClick={() => setDraft(v)}>Edit</Btn> <Btn small onClick={() => a.run(() => api(`/api/campaigns/${id}/versions/${v.id}/activate`, { method: "POST" }), { confirm: `Activate v${v.version_no}? This freezes it and retires the current active version.` }).then(onChange)}>Activate</Btn></>}</td></tr>} />
+    </Card>
+    {draft && <Card title={`Edit draft v${draft.version_no}`}><JsonEditor value={{ rules: draft.rules, flags: draft.flags }} onSave={(val) => a.run(() => api(`/api/campaigns/${id}/versions/${draft.id}`, { method: "PATCH", body: val })).then(() => { setDraft(null); onChange(); })} onCancel={() => setDraft(null)} help="rules: products[{code,name,aliases,pack_grams,qualifying}], primary_rule{min_packs,pack_grams,min_total_grams}, allow_pack_combinations, award{entries_per_receipt}, caps{per_participant_per_period}, date_order, outlet_match{required,min_score}, purchase_window{start,end}. flags: participant_status, registration{identity_stage: registration|winner|off}" /></Card>}
+  </>;
+}
+function JsonEditor({ value, onSave, onCancel, help }) { const [t, setT] = useState(JSON.stringify(value, null, 2)); const [err, setErr] = useState(""); return <><div className="sub" style={{ marginBottom: 6 }}>{help}</div><textarea className="area mono" rows={18} value={t} onChange={(e) => setT(e.target.value)} /><Err e={err} /><div className="spacer" /><Btn onClick={() => { try { onSave(JSON.parse(t)); } catch (e) { setErr(`Invalid JSON: ${e.message}`); } }}>Save</Btn> <Btn ghost onClick={onCancel}>Cancel</Btn></>; }
+const CONTENT_KEYS = ["terms_version", "privacy_version", "terms_url", "prizes_text", "prize_artwork_url", "winner_template_name", "menu_home", "mechanics", "terms", "prizes", "received", "qualified", "duplicate", "not_qualified", "reupload", "under_review", "delayed", "review_result_qualified", "review_result_not_qualified", "winner_contact", "winner_collect", "help", "support_handoff", "campaign_closed", "campaign_paused"];
+function ContentEditor({ id, data, onChange }) {
+  const cur = data.active_version?.content || {}; const [c, setC] = useState(cur); const [preview, setPreview] = useState("menu_home"); const a = useAction();
+  return <>
+    <Card title="Versioned content (saving creates a new draft version; activate it under Rules & versions)" right={<Btn disabled={a.busy} onClick={() => a.run(() => api(`/api/campaigns/${id}/versions`, { method: "POST", body: { from_active: true, content: c } })).then(onChange)}>Save as new draft</Btn>}>
+      <div className="sub">Variables: {"{campaign} {reference} {reason} {count_line} {first_name} {prize} {claim_ref} {deadline} {terms_version} {privacy_version} {terms_url} {min_packs} {pack_label} {product}"}. Leave a key blank to use the platform default. Every message must render as plain text on a phone.</div>
+      <a.Msg />
+      {CONTENT_KEYS.map((k) => <Field key={k} label={k}><textarea className="area" rows={k.startsWith("menu") || k === "winner_contact" ? 4 : 2} value={c[k] || ""} placeholder="(platform default)" onChange={(e) => setC({ ...c, [k]: e.target.value })} onFocus={() => setPreview(k)} /></Field>)}
+    </Card>
+    <Card title={`Phone preview — ${preview}`}><div className="phone">{(c[preview] || "(platform default — see src/copy.mjs)").split("\n").map((l, i) => <div key={i}>{l || " "}</div>)}</div></Card>
+  </>;
+}
+function Periods({ id, data, onChange }) {
+  const [f, setF] = useState({}); const a = useAction();
+  return <Card title="Draw periods (half-open UTC windows; entry time = server intake time)"><div className="row">{[["code", "Code", "W5"], ["label", "Label", "Week 5"], ["starts_at", "Starts (ISO)", ""], ["ends_at", "Ends (ISO, exclusive)", ""], ["draw_at", "Draw at (ISO)", ""]].map(([k, l, ph]) => <Field key={k} label={l}><Input value={f[k] || ""} placeholder={ph} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></Field>)}<Btn disabled={a.busy} onClick={() => a.run(() => api(`/api/campaigns/${id}/periods`, { method: "POST", body: f })).then(() => { setF({}); onChange(); })}>Add / update</Btn></div><a.Msg />
+    <Table cols={["Code", "Label", "Starts", "Ends", "Draw at", "Status", "Prize config"]} rows={data.periods} render={(p) => <tr key={p.id}><td className="mono">{p.code}</td><td>{p.label}</td><td className="sub">{fmt(p.starts_at)}</td><td className="sub">{fmt(p.ends_at)}</td><td className="sub">{fmt(p.draw_at)}</td><td><Chip s={p.status} /></td><td className="mono sub">{p.prize_config_json === "{}" ? "campaign default" : p.prize_config_json}</td></tr>} /></Card>;
+}
+function CampaignOutlets({ id, data, onChange }) {
+  const [list, reload] = useApi(`/api/campaigns/${id}/outlets`, [data]); const [csv, setCsv] = useState(""); const [res, setRes] = useState(null); const a = useAction();
+  const importCsv = async (dry) => { const r = await a.run(() => api(`/api/campaigns/${id}/outlets/import`, { method: "POST", body: { csv, dry_run: dry } })); setRes(r?.data || null); if (!dry && r?.ok) { reload(); onChange(); } };
+  return <>
+    <Card title={`Participating outlets (${list.data?.outlets?.length || 0})`} right={<a className="link-btn" href="/api/outlets/export.csv" onClick={(e) => { e.preventDefault(); api("/api/outlets/export.csv", {}).then(() => window.open(`/api/outlets/export.csv`)); }}>Export CSV</a>}>
+      <Table cols={["Code", "Retailer", "Branch", "Town", "Province", "Collection", "Active"]} rows={list.data?.outlets} render={(o) => <tr key={o.id}><td className="mono">{o.outlet_code}</td><td>{o.retailer}</td><td>{o.branch}</td><td>{o.town}</td><td>{o.province}</td><td>{o.campaign_collection_enabled ? "yes" : "no"}</td><td>{o.active ? "yes" : "no"}</td></tr>} />
+    </Card>
+    <Card title="CSV import (validated preview first; all-or-nothing)">
+      <div className="sub">Header: outlet_code,retailer,branch,town,province,collection_enabled,active_from,active_to,aliases (aliases separated by ;). Template: fixtures/outlets-import-template.csv</div>
+      <textarea className="area mono" rows={8} value={csv} onChange={(e) => setCsv(e.target.value)} placeholder="outlet_code,retailer,branch,town,province,collection_enabled,active_from,active_to,aliases" />
+      <div className="spacer" /><Btn ghost disabled={!csv || a.busy} onClick={() => importCsv(true)}>Validate (dry run)</Btn> <Btn disabled={!csv || a.busy || !res?.ok} onClick={() => importCsv(false)}>Import {res?.rows || 0} rows</Btn><a.Msg />
+      {res && <div style={{ marginTop: 8 }}>{res.ok ? <div className="note">Valid: {res.rows} rows{res.imported ? ` — imported ${res.imported}` : ""}.</div> : <Table cols={["Row", "Error"]} rows={res.errors} render={(e, i) => <tr key={i}><td>{e.row}</td><td>{e.error}</td></tr>} />}</div>}
+    </Card>
+  </>;
+}
+function Decisions({ id, data, onChange }) {
+  const a = useAction(); const [edit, setEdit] = useState(null);
+  return <Card title="Client decision register (test values are never sign-off; approve with an approved value)"><a.Msg />
+    <Table cols={["ID", "Question", "Test value", "Approved value", "Status", "Owner", ""]} rows={data.decisions} render={(d) => <tr key={d.id}><td className="mono">{d.decision_id}</td><td>{d.question}</td><td className="sub">{d.test_value}</td><td>{d.approved_value || "—"}</td><td><Chip s={d.status} /></td><td className="sub">{d.owner || "—"}</td><td><Btn ghost small onClick={() => setEdit({ ...d })}>Edit</Btn></td></tr>} />
+    {edit && <div className="frame" style={{ marginTop: 12, padding: 12 }}><div className="row"><Field label="Approved value"><Input value={edit.approved_value || ""} onChange={(e) => setEdit({ ...edit, approved_value: e.target.value })} /></Field><Field label="Status"><select className="field" value={edit.status} onChange={(e) => setEdit({ ...edit, status: e.target.value })}>{["open", "proposed", "approved", "not_required"].map((s) => <option key={s}>{s}</option>)}</select></Field><Field label="Owner"><Input value={edit.owner || ""} onChange={(e) => setEdit({ ...edit, owner: e.target.value })} /></Field><Field label="Evidence (email/document ref)"><Input value={edit.evidence || ""} onChange={(e) => setEdit({ ...edit, evidence: e.target.value })} /></Field><Btn onClick={() => a.run(() => api(`/api/campaigns/${id}/decisions/${edit.decision_id}`, { method: "PUT", body: edit })).then(() => { setEdit(null); onChange(); })}>Save</Btn><Btn ghost onClick={() => setEdit(null)}>Cancel</Btn></div></div>}
+  </Card>;
+}
+function Activation({ id }) { const [v] = useApi(`/api/campaigns/${id}/activation`); if (v.loading) return <Loading />; const d = v.data; return <Card title={`Production activation preflight — ${d.ok ? "READY" : `${d.blockingCount} blocking in ${d.environment}`}`}><div className="sub">Server-side validator; the same checks block activation in a production environment. Non-blocking rows are informational in this environment.</div><Table cols={["Code", "Message", "Blocking here"]} rows={d.failures} empty="All checks pass." render={(f) => <tr key={f.code}><td className="mono">{f.code}</td><td>{f.message}</td><td>{f.blocking ? <Chip s="critical" /> : <Chip s="info" />}</td></tr>} /></Card>; }
+
+/* ===================== master data ===================== */
+function Outlets() { const [l, reload] = useApi("/api/outlets"); const [f, setF] = useState({}); const a = useAction(); return <div className="promo-page"><Card title="Add / update outlet (master)"><div className="row">{[["outlet_code", "Code"], ["retailer", "Retailer"], ["branch", "Branch"], ["town", "Town"], ["province", "Province"]].map(([k, l2]) => <Field key={k} label={l2}><Input value={f[k] || ""} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></Field>)}<Btn disabled={a.busy} onClick={() => a.run(() => api("/api/outlets", { method: "POST", body: f })).then(() => { setF({}); reload(); })}>Save</Btn></div><a.Msg /></Card><Card title={`Outlet master (${l.data?.outlets?.length || 0})`}><Table cols={["Code", "Retailer", "Branch", "Town", "Province", "Collection", "Aliases"]} rows={l.data?.outlets} render={(o) => <tr key={o.id}><td className="mono">{o.outlet_code}</td><td>{o.retailer}</td><td>{o.branch}</td><td>{o.town}</td><td>{o.province}</td><td>{o.collection_enabled ? "yes" : "no"}</td><td className="sub">{JSON.parse(o.aliases_json || "[]").join("; ")}</td></tr>} /></Card></div>; }
+function Products() { const [l, reload] = useApi("/api/products"); const [f, setF] = useState({ pack_grams: 2000 }); const a = useAction(); return <div className="promo-page"><Card title="Add / update product"><div className="row">{[["sku", "SKU / code"], ["brand", "Brand"], ["name", "Name"], ["pack_grams", "Pack grams"], ["aliases", "Aliases (; separated)"]].map(([k, l2]) => <Field key={k} label={l2}><Input value={f[k] ?? ""} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></Field>)}<Btn disabled={a.busy} onClick={() => a.run(() => api("/api/products", { method: "POST", body: { ...f, pack_grams: Number(f.pack_grams), aliases: String(f.aliases || "").split(";").map((s) => s.trim()).filter(Boolean) } })).then(() => { setF({ pack_grams: 2000 }); reload(); })}>Save</Btn></div><a.Msg /><div className="sub">Products become qualifying only when listed in an activated campaign version's rules.</div></Card><Card title="Product master"><Table cols={["SKU", "Brand", "Name", "Pack (g)", "Aliases"]} rows={l.data?.products} render={(p) => <tr key={p.id}><td className="mono">{p.sku}</td><td>{p.brand}</td><td>{p.name}</td><td>{p.pack_grams}</td><td className="sub">{p.aliases.join("; ")}</td></tr>} /></Card></div>; }
+
+/* ===================== participants ===================== */
+function Participants({ me }) {
+  const [q, setQ] = useState(""); const [l, reload] = useApi(`/api/participants?q=${encodeURIComponent(q)}`, [q]); const [sel, setSel] = useState(null);
+  if (sel) return <ParticipantDetail id={sel} me={me} onBack={() => { setSel(null); reload(); }} />;
+  return <div className="promo-page"><Card title="Participants" right={<Input placeholder="Search name or phone" value={q} onChange={(e) => setQ(e.target.value)} style={{ maxWidth: 260 }} />}><Table cols={["Name", "Town", "Phone", "ID", "Status", "Registered", ""]} rows={l.data?.participants} render={(p) => <tr key={p.id}><td>{p.first_name} {p.surname}</td><td>{p.location}</td><td className="mono">{p.wa_phone_uid}</td><td className="mono">{p.identity_masked || "—"}</td><td><Chip s={p.status} /></td><td className="sub">{fmt(p.created_at)}</td><td><Btn ghost small onClick={() => setSel(p.id)}>Open</Btn></td></tr>} /></Card></div>;
+}
+function ParticipantDetail({ id, me, onBack }) {
+  const [d, reload] = useApi(`/api/participants/${id}`); const a = useAction(); const [edit, setEdit] = useState(null);
+  if (d.loading) return <Loading />; if (!d.data) return <Err e={d.error} />;
+  const p = d.data.participant; const can = (r) => me.roles.includes(r) || (me.roles.includes("platform_admin") && ["support", "campaign_manager", "auditor"].includes(r));
+  return <div className="promo-page"><Btn ghost small onClick={onBack}>← Participants</Btn><a.Msg />
+    <Card title={`${p.first_name} ${p.surname}`} right={<Chip s={p.status} />}><div className="row"><Field label="Phone"><span className="mono">{p.phone}</span></Field><Field label="ID (masked)"><span className="mono">{p.identity_masked || "—"}</span></Field><Field label="Town">{p.location}</Field><Field label="Registered">{fmt(p.created_at)}</Field></div>
+      <div className="row" style={{ marginTop: 10 }}>{can("support") && <Btn ghost small onClick={() => setEdit({ first_name: p.first_name, surname: p.surname, location: p.location })}>Correct details</Btn>}{(me.roles.includes("winner_ops") || me.roles.includes("auditor")) && <Btn ghost small onClick={async () => { const reason = prompt("Reason for revealing the identity number (audited)?"); if (!reason) return; const r = await a.run(() => api(`/api/participants/${id}/reveal-identity`, { method: "POST", body: { reason } })); if (r?.ok) alert(`Identity: ${r.data.identity}`); }}>Reveal ID (audited)</Btn>}{can("support") && <Btn ghost small onClick={() => a.run(() => api(`/api/participants/${id}/withdraw`, { method: "POST", body: { reason: prompt("Reason?") || "request" } }), { confirm: "Withdraw this participant from all campaigns?" }).then(reload)}>Withdraw</Btn>}{me.roles.includes("platform_admin") && <Btn danger small onClick={() => a.run(() => api(`/api/participants/${id}/anonymise`, { method: "POST", body: { reason: prompt("Deletion request reference?") || "" } }), { confirm: "Anonymise personal data? Ledger references are kept. This cannot be undone." }).then(reload)}>Anonymise (deletion)</Btn>}</div>
+      {edit && <div className="row" style={{ marginTop: 10 }}>{["first_name", "surname", "location"].map((k) => <Field key={k} label={k}><Input value={edit[k] || ""} onChange={(e) => setEdit({ ...edit, [k]: e.target.value })} /></Field>)}<Btn onClick={() => a.run(() => api(`/api/participants/${id}`, { method: "PATCH", body: { ...edit, reason: "support correction" } })).then(() => { setEdit(null); reload(); })}>Save</Btn></div>}
+    </Card>
+    <Card title="Enrollments"><Table cols={["Campaign", "Terms", "Privacy", "Marketing", "Enrolled", "Withdrawn"]} rows={d.data.enrollments} render={(e) => <tr key={e.id}><td className="mono">{e.campaign_code}</td><td>{e.terms_version}</td><td>{e.privacy_version}</td><td>{e.marketing_consent ? "yes" : "no"}</td><td className="sub">{fmt(e.enrolled_at)}</td><td className="sub">{fmt(e.withdrawn_at)}</td></tr>} /></Card>
+    <Card title="Submissions"><Table cols={["Reference", "Status", "Reason", "Period", "Submitted", "Decided"]} rows={d.data.submissions} render={(s) => <tr key={s.id}><td className="mono">{s.reference}</td><td><Chip s={s.status} /></td><td className="sub">{s.reason_code}</td><td>{s.period_code}</td><td className="sub">{fmt(s.created_at)}</td><td className="sub">{fmt(s.decided_at)}</td></tr>} /></Card>
+  </div>;
 }
 
-/* ===================== outlets / products ===================== */
-function Outlets() {
-  const [rows, setRows] = useState([]); const refresh = () => api("/api/outlets").then((r) => r.ok && setRows(r.data?.outlets || []));
-  useEffect(() => { refresh(); }, []);
-  const [f, setF] = useState({}); const add = async () => {
-    if (!f.outlet_code || !f.retailer || !f.town || !f.province) return;
-    const r = await api("/api/outlets", { method: "POST", body: f }); if (r.status === 201) { setF({}); refresh(); }
-  };
-  return (
-    <div className="promo-page">
-      <div className="promo-card"><h4>Add outlet</h4>
-        <div className="row">
-          {[["outlet_code", "Code", "OK-HRE-03"], ["retailer", "Retailer"], ["branch", "Branch"], ["town", "Town"], ["province", "Province"]].map(([k, l, ph]) =>
-            <div className="col" key={k}><div className="lab">{l}</div><input className="field" value={f[k] || ""} onChange={(e) => setF({ ...f, [k]: e.target.value })} placeholder={ph} /></div>)}
-        </div>
-        <div className="spacer" /><button className="btn" onClick={add}>Add outlet</button>
-      </div>
-      <div className="promo-card"><h4>Outlets ({rows.length})</h4>
-        <table className="promo-table"><thead><tr><th>Code</th><th>Retailer</th><th>Branch</th><th>Town</th><th>Province</th></tr></thead><tbody>
-          {rows.map((o) => <tr key={o.id}><td className="mono">{sc(o.outlet_code)}</td><td>{sc(o.retailer)}</td><td>{sc(o.branch)}</td><td>{sc(o.town)}</td><td>{sc(o.province)}</td></tr>)}
-        </tbody></table>
-      </div>
-    </div>
-  );
+/* ===================== receipts + review ===================== */
+function Receipts({ me }) {
+  const [filters, setF] = useState({ status: "REVIEW_REQUIRED" }); const qs = Object.entries(filters).filter(([, v]) => v).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+  const [l, reload] = useApi(`/api/receipts?${qs}`, [qs]); const [queue] = useApi("/api/reviews/queue", [qs]); const [sel, setSel] = useState(null);
+  if (sel) return <ReceiptDetail id={sel} me={me} onBack={() => { setSel(null); reload(); }} />;
+  const q = queue.data;
+  return <div className="promo-page">
+    {q && <Card title="Review queue"><div className="stats">{[[q.count, "Open"], [q.overdue, "Over SLA"], [q.oldest ? Math.round((Date.now() - Date.parse(q.oldest)) / 60000) + " min" : "—", "Oldest"]].map(([v, l2]) => <div className="stat" key={l2}><div className="mono big">{v}</div><div className="lab">{l2}</div></div>)}{Object.entries(q.byReason || {}).map(([k, v]) => <div className="stat" key={k}><div className="mono big">{v}</div><div className="lab">{k}</div></div>)}</div></Card>}
+    <Card title="Receipts" right={<div className="row">{[["status", ["", "REVIEW_REQUIRED", "QUALIFIED", "NOT_QUALIFIED", "DUPLICATE", "REUPLOAD_REQUIRED", "delayed", "received", "processing"]]].map(([k, opts]) => <select key={k} className="field" value={filters[k] || ""} onChange={(e) => setF({ ...filters, [k]: e.target.value })}>{opts.map((o) => <option key={o} value={o}>{o || "all statuses"}</option>)}</select>)}<Input placeholder="Reference R-…" value={filters.reference || ""} onChange={(e) => setF({ ...filters, reference: e.target.value })} style={{ maxWidth: 160 }} /><Input placeholder="Period" value={filters.period || ""} onChange={(e) => setF({ ...filters, period: e.target.value })} style={{ maxWidth: 90 }} /></div>}>
+      {l.loading ? <Loading /> : <Table cols={["Reference", "Status", "Reason", "Period", "Review", "Assignee", "Submitted", ""]} rows={l.data?.receipts} render={(x) => <tr key={x.id}><td className="mono">{x.reference}</td><td><Chip s={x.status} /></td><td className="sub">{x.reason_code}</td><td>{x.period_code}</td><td>{x.review_state ? <Chip s={x.review_state} /> : "—"}</td><td className="sub">{x.assignee ? short(x.assignee, 10) : "—"}</td><td className="sub">{fmt(x.created_at)}</td><td><Btn ghost small onClick={() => setSel(x.id)}>Open</Btn></td></tr>} />}
+    </Card>
+  </div>;
 }
-function Products() {
-  const [rows, setRows] = useState([]); const refresh = () => api("/api/products").then((r) => r.ok && setRows(r.data?.products || []));
-  useEffect(() => { refresh(); }, []);
-  const [f, setF] = useState({ pack_weight_kg: 2 }); const add = async () => {
-    if (!f.sku || !f.name) return;
-    const r = await api("/api/products", { method: "POST", body: { ...f, pack_weight_kg: Number(f.pack_weight_kg) } }); if (r.status === 201) { setF({ pack_weight_kg: 2 }); refresh(); }
-  };
-  return (
-    <div className="promo-page">
-      <div className="promo-card"><h4>Add product</h4>
-        <div className="row">
-          {[["sku", "SKU"], ["brand", "Brand"], ["name", "Name"]].map(([k, l]) => <div className="col" key={k}><div className="lab">{l}</div><input className="field" value={f[k] || ""} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></div>)}
-          <div className="col"><div className="lab">Pack weight (kg)</div><input className="field" type="number" step="0.1" value={f.pack_weight_kg} onChange={(e) => setF({ ...f, pack_weight_kg: e.target.value })} /></div>
-        </div>
-        <div className="spacer" /><button className="btn" onClick={add}>Add product</button>
-      </div>
-      <div className="promo-card"><h4>Products ({rows.length})</h4>
-        <table className="promo-table"><thead><tr><th>SKU</th><th>Brand</th><th>Name</th><th>Pack kg</th></tr></thead><tbody>
-          {rows.map((p) => <tr key={p.id}><td className="mono">{sc(p.sku)}</td><td>{sc(p.brand)}</td><td>{sc(p.name)}</td><td>{p.pack_weight_kg}</td></tr>)}
-        </tbody></table>
-      </div>
-    </div>
-  );
-}
-
-/* ===================== receipts ===================== */
-function Receipts() {
-  const [rows, setRows] = useState([]); const [rev, setRev] = useState(null); const refresh = () => api("/api/receipts").then((r) => r.ok && setRows(r.data?.receipts || []));
-  useEffect(() => { refresh(); }, []);
-  const [decision, setDecision] = useState("QUALIFIED"); const [reason, setReason] = useState("reviewer_confirmed");
-  if (rev) {
-    const x = rev.receipt, val = rev.validation?.[0];
-    const submit = async () => {
-      const r = await api(`/api/receipts/${x.id}/reviews`, { method: "POST", body: { decision, reason_code: reason, note: "console" } });
-      if (r.ok) { setRev(null); refresh(); }
-    };
-    return (
-      <div className="promo-page">
-        <div className="promo-card"><h4>Review receipt {short(x.id, 14)}</h4>
-          <div className="row">
-            <div className="col"><div className="lab">Confidence</div><div className="note">{Math.round((val?.confidence || 0) * 100)}%</div></div>
-            <div className="col"><div className="lab">Status</div><div><Chip s={x.status} /></div></div>
-            <div className="col"><div className="lab">Outlet</div><div className="mono">{sc(x.selected_outlet_id || "—")}</div></div>
-          </div>
-          <div className="spacer" />
-          <pre className="mono" style={{ fontSize: 11, background: "var(--bg)", padding: 10, borderRadius: 8, overflow: "auto" }}>{val ? JSON.stringify(JSON.parse(val.facts_json || "null"), null, 1) : "no facts"}</pre>
-          <div className="spacer" />
-          <div className="row">
-            <div className="col"><div className="lab">Decision</div>
-              <select className="field" value={decision} onChange={(e) => setDecision(e.target.value)}>
-                <option value="QUALIFIED">Qualify — create the entry</option>
-                <option value="NOT_QUALIFIED">Reject</option><option value="DUPLICATE">Duplicate</option><option value="REQUIRES_REUPLOAD">Re-upload</option>
-              </select></div>
-            <div className="col"><div className="lab">Reason code</div><input className="field" value={reason} onChange={(e) => setReason(e.target.value)} /></div>
-            <div className="spacer" />
-          </div>
-          <div className="spacer" /><button className="btn" onClick={submit}>Apply decision</button> <button className="btn ghost" onClick={() => setRev(null)}>Back</button>
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div className="promo-page">
-      <div className="promo-card"><h4>Receipts ({rows.length})</h4>
-        <table className="promo-table"><thead><tr><th>ID</th><th>Status</th><th>Reason</th><th>Created</th><th></th></tr></thead><tbody>
-          {rows.map((x) => <tr key={x.id}><td className="mono">{short(x.id, 14)}</td><td><Chip s={x.status} /></td><td className="sub">{sc(x.reason_code || "")}</td><td className="sub">{fmt(x.created_at)}</td>
-            <td className="actions">{x.status === "NEEDS_REVIEW" ? <button className="btn small ghost" onClick={() => api(`/api/receipts/${x.id}`).then((r) => r.ok && setRev(r.data))}>Review</button> : "—"}</td></tr>)}
-          {rows.length === 0 && <tr><td colSpan={5}><div className="empty">No receipts yet — Test a Customer.</div></td></tr>}
-        </tbody></table>
+function ReceiptDetail({ id, me, onBack }) {
+  const [d, reload] = useApi(`/api/receipts/${id}`); const a = useAction(); const [decision, setDecision] = useState("QUALIFIED"); const [reason, setReason] = useState(""); const [note, setNote] = useState("");
+  if (d.loading) return <Loading />; if (!d.data) return <div className="promo-page"><Btn ghost small onClick={onBack}>← Receipts</Btn><Err e={d.error} /></div>;
+  const x = d.data.receipt, v = d.data.validation?.at(-1), facts = v?.facts; const isReviewer = me.roles.includes("reviewer");
+  const act = (fn, c) => a.run(fn, c ? { confirm: c } : {}).then(reload);
+  return <div className="promo-page"><Btn ghost small onClick={onBack}>← Receipts</Btn><a.Msg />
+    <div className="split2">
+      <Card title={`Receipt ${x.reference}`} right={<Chip s={x.status} />}>
+        {d.data.media ? <div className="imgbox"><img src={d.data.media.original.url} alt="receipt (original)" /><div className="sub">Original · signed link expires {fmt(d.data.media.original.expiresAt)} · {d.data.media.width}×{d.data.media.height} {d.data.media.mime}</div><img src={d.data.media.normalised.url} alt="receipt (normalised for OCR)" style={{ marginTop: 8, filter: "grayscale(1)" }} /><div className="sub">Normalised image used for OCR</div></div> : <Empty>Image viewing requires the reviewer or auditor role.</Empty>}
+      </Card>
+      <div>
+        <Card title="Evidence"><div className="row"><Field label="Participant">{x.participant?.first_name} {x.participant?.surname} · {x.participant?.phone}</Field><Field label="Selected outlet">{x.outlet ? `${x.outlet.retailer} — ${x.outlet.branch}, ${x.outlet.town}` : "—"}</Field><Field label="Period">{x.period_code || "—"}</Field><Field label="Rules version"><span className="mono">{short(d.data.rules_version, 12)}</span></Field><Field label="Intake">{fmt(x.intake_at)}</Field><Field label="Extractor">{v ? `${v.extractor_provider} ${v.extractor_version} (${v.latency_ms} ms)` : "—"}</Field></div>
+          {facts && <div className="row" style={{ marginTop: 8 }}><Field label="Document">{facts.document?.kind} (score {facts.document?.score})</Field><Field label="Merchant text">{facts.merchant?.rawText || "—"}</Field><Field label="Receipt no">{facts.transaction?.receiptNo || "—"}</Field><Field label="Date">{facts.transaction?.date || "—"}{facts.transaction?.dateAmbiguous ? " (day/month ambiguous)" : ""}</Field><Field label="Total">{facts.transaction?.totalMinor != null ? (facts.transaction.totalMinor / 100).toFixed(2) : "—"}</Field><Field label="OCR confidence">{facts.quality?.confidence ?? "n/a"}</Field></div>}
+          {x.outlet_match?.length ? <div className="sub" style={{ marginTop: 6 }}>Outlet candidates: {x.outlet_match.map((c) => `${c.outletId} (${c.score})`).join(", ")}</div> : null}
+          {x.quality && <div className="sub">Image quality: brightness {x.quality.brightness}, contrast {x.quality.contrast}, sharpness {x.quality.sharpness}{x.quality.blurry ? " · blurry" : ""}{x.quality.tooDark ? " · dark" : ""}</div>}
+        </Card>
+        <Card title="Line items"><Table cols={["Description", "Qty", "Pack (g)", "Amount", "Voided", "Matched"]} rows={d.data.items} render={(i) => { const ev = JSON.parse(i.evidence_json || "{}"); return <tr key={i.id}><td>{i.description}</td><td>{i.quantity ?? "?"}</td><td>{ev.packGrams ?? "—"}</td><td>{i.amount ?? "—"}</td><td>{ev.voided ? "yes" : ""}</td><td className="mono">{i.sku || ""}</td></tr>; }} /></Card>
+        <Card title="Rule results"><Table cols={["Rule", "Outcome", "Reason", "Evidence"]} rows={v?.rules || []} render={(r, i) => <tr key={i}><td className="mono">{r.rule}</td><td><Chip s={r.outcome === "pass" ? "QUALIFIED" : r.outcome === "fail" ? "NOT_QUALIFIED" : "REVIEW_REQUIRED"} /></td><td className="sub">{r.reason}</td><td className="sub mono">{r.evidence ? JSON.stringify(r.evidence).slice(0, 140) : ""}</td></tr>} /></Card>
+        <Card title="Duplicate candidates"><Table cols={["Candidate", "Kind", "Score", "Candidate status", "Same participant", "Resolution", ""]} rows={d.data.duplicates} empty="No duplicate candidates." render={(c) => <tr key={c.id}><td className="mono">{c.candidate_reference}</td><td>{c.kind}</td><td>{c.score}</td><td><Chip s={c.candidate_status} /></td><td>{c.same_participant ? "yes" : "no"}</td><td><Chip s={c.resolution} /></td><td>{isReviewer && c.resolution === "open" && <><Btn ghost small onClick={() => act(() => api(`/api/duplicates/${c.id}/resolve`, { method: "POST", body: { resolution: "same_purchase" } }))}>Same purchase</Btn> <Btn ghost small onClick={() => act(() => api(`/api/duplicates/${c.id}/resolve`, { method: "POST", body: { resolution: "different_purchase" } }))}>Different</Btn></>}</td></tr>} /></Card>
+        {d.data.attempts?.length > 1 && <Card title="Related attempts"><Table cols={["Reference", "Status", "At"]} rows={d.data.attempts} render={(t) => <tr key={t.id}><td className="mono">{t.reference}</td><td><Chip s={t.status} /></td><td className="sub">{fmt(t.created_at)}</td></tr>} /></Card>}
+        {v?.ocr_text && <Card title="OCR text (evidence)"><pre className="mono ocr">{v.ocr_text}</pre></Card>}
+        {isReviewer && d.data.review && d.data.review.state !== "decided" && <Card title="Decision (audited; version-checked)">
+          <div className="row">{d.data.review.assignee !== me.id ? <Btn ghost small onClick={() => act(() => api(`/api/receipts/${id}/assign`, { method: "POST" }))}>Assign to me</Btn> : <Btn ghost small onClick={() => act(() => api(`/api/receipts/${id}/release`, { method: "POST" }))}>Release</Btn>}<span className="sub">SLA due {fmt(d.data.review.sla_due_at)} · assignee {d.data.review.assignee ? short(d.data.review.assignee, 10) : "none"}</span></div>
+          <div className="row" style={{ marginTop: 8 }}><Field label="Decision"><select className="field" value={decision} onChange={(e) => setDecision(e.target.value)}><option value="QUALIFIED">Qualify — award one entry</option><option value="NOT_QUALIFIED">Reject with reason</option><option value="DUPLICATE">Duplicate of a credited receipt</option><option value="REUPLOAD_REQUIRED">Request a clearer image</option></select></Field><Field label="Reason code"><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder={decision === "QUALIFIED" ? "(ok)" : "e.g. below_minimum_quantity"} /></Field><Field label="Note"><Input value={note} onChange={(e) => setNote(e.target.value)} /></Field></div>
+          <div className="spacer" /><Btn disabled={a.busy} onClick={() => act(() => api(`/api/receipts/${id}/review`, { method: "POST", body: { decision, reason_code: reason || undefined, note, expected_version: x.row_version } }), `Apply ${decision}? The participant will be messaged.`)}>Apply decision</Btn>
+        </Card>}
+        {(me.roles.includes("reviewer") || me.roles.includes("platform_admin")) && x.status !== "QUALIFIED" && <Card title="Operations"><Btn ghost small onClick={() => act(() => api(`/api/receipts/${id}/reprocess`, { method: "POST", body: { reason: "operator reprocess" } }), "Re-run extraction and rules for this receipt?")}>Reprocess</Btn> {me.roles.includes("support") && <Btn ghost small onClick={() => act(() => api(`/api/receipts/${id}/resend-result`, { method: "POST" }))}>Resend result to participant</Btn>}</Card>}
+        {d.data.entry && <Card title="Award"><div className="row"><Field label="Entry"><span className="mono">{d.data.entry.id}</span></Field><Field label="Status"><Chip s={d.data.entry.status} /></Field><Field label="Period">{d.data.entry.period_code}</Field></div></Card>}
       </div>
     </div>
-  );
+  </div>;
 }
 
 /* ===================== entries ===================== */
-function Entries() {
-  const [rows, setRows] = useState([]); useEffect(() => { api("/api/entries").then((r) => r.ok && setRows(r.data?.entries || [])); }, []);
-  return (
-    <div className="promo-page"><div className="promo-card"><h4>Qualified entries ({rows.length})</h4>
-      <table className="promo-table"><thead><tr><th>ID</th><th>Period</th><th>Entry #</th><th>Status</th><th>Created</th></tr></thead><tbody>
-        {rows.map((e) => <tr key={e.id}><td className="mono">{short(e.id, 12)}</td><td className="mono">{sc(e.draw_period)}</td><td>{e.entry_no}</td><td><Chip s={e.status} /></td><td className="sub">{fmt(e.created_at)}</td></tr>)}
-        {rows.length === 0 && <tr><td colSpan={5}><div className="empty">No entries yet — qualify a receipt.</div></td></tr>}
-      </tbody></table>
-    </div></div>
-  );
+function Entries({ me }) {
+  const [f, setF] = useState({}); const qs = Object.entries(f).filter(([, v]) => v).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&"); const [l, reload] = useApi(`/api/entries?${qs}`, [qs]); const [sel, setSel] = useState(null); const a = useAction();
+  const [detail] = useApi(sel ? `/api/entries/${sel}` : "/api/whoami", [sel]);
+  return <div className="promo-page"><a.Msg />
+    <Card title="Qualified entries (immutable awards; current eligibility from events)" right={<div className="row"><Input placeholder="Period" value={f.period || ""} onChange={(e) => setF({ ...f, period: e.target.value })} style={{ maxWidth: 90 }} /><select className="field" value={f.status || ""} onChange={(e) => setF({ ...f, status: e.target.value })}><option value="">all</option><option>active</option><option>excluded</option></select></div>}>
+      <Table cols={["Entry", "Receipt", "Period", "Status", "Awarded", ""]} rows={l.data?.entries} render={(e) => <tr key={e.id}><td className="mono">{short(e.id, 14)}</td><td className="mono">{e.reference}</td><td>{e.period_code}</td><td><Chip s={e.status} /></td><td className="sub">{fmt(e.created_at)}</td><td><Btn ghost small onClick={() => setSel(e.id)}>Trace</Btn></td></tr>} />
+    </Card>
+    {sel && detail.data?.entry && <Card title={`Trace ${short(sel, 14)}`} right={<Btn ghost small onClick={() => setSel(null)}>Close</Btn>}>
+      <div className="row"><Field label="Receipt">{detail.data.receipt?.id} · <Chip s={detail.data.receipt?.status} /></Field><Field label="Decided by">{detail.data.receipt?.decided_by} at {fmt(detail.data.receipt?.decided_at)}</Field><Field label="Canonical receipt"><span className="mono">{detail.data.canonical?.canonical_key}</span></Field><Field label="Rules version"><span className="mono">{short(detail.data.rules_version, 12)}</span></Field></div>
+      <Table cols={["Validation attempt", "Extractor", "Decision", "At"]} rows={detail.data.validation} render={(v, i) => <tr key={i}><td>{v.attempt_no}</td><td>{v.extractor_provider} {v.extractor_version}</td><td><Chip s={v.decision} /></td><td className="sub">{fmt(v.created_at)}</td></tr>} />
+      <Table cols={["Draw", "Period", "Draw status", "Candidate status"]} rows={detail.data.draws} empty="Not in any draw yet." render={(x) => <tr key={x.id}><td className="mono">{short(x.id, 12)}</td><td>{x.draw_period}</td><td><Chip s={x.status} /></td><td><Chip s={x.candidate_status} /></td></tr>} />
+      <Table cols={["Event", "Reason", "Actor", "Approved by", "Effective"]} rows={detail.data.events} empty="No eligibility events." render={(x) => <tr key={x.id}><td>{x.type}</td><td>{x.reason}</td><td className="sub">{short(x.actor_id, 10)}</td><td className="sub">{x.approved_by ? short(x.approved_by, 10) : "—"}</td><td className="sub">{fmt(x.effective_at)}</td></tr>} />
+      <Table cols={["Audit action", "Actor", "Reason", "At"]} rows={detail.data.audit} render={(x, i) => <tr key={i}><td className="mono">{x.action}</td><td className="sub">{short(x.actor_id, 10)}</td><td className="sub">{x.reason}</td><td className="sub">{fmt(x.created_at)}</td></tr>} />
+      {(me.roles.includes("reviewer") || me.roles.includes("campaign_manager")) && <div className="row" style={{ marginTop: 8 }}>{detail.data.entry.status === "active" ? <Btn danger small onClick={() => { const reason = prompt("Disqualification reason?"); if (!reason) return; const approved_by = prompt("Approver user id (required if the entry is in a frozen draw)") || undefined; a.run(() => api(`/api/entries/${sel}/disqualify`, { method: "POST", body: { reason, approved_by } })).then(() => { reload(); setSel(null); }); }}>Disqualify (audited)</Btn> : <Btn ghost small onClick={() => a.run(() => api(`/api/entries/${sel}/reinstate`, { method: "POST", body: { reason: prompt("Reason?") || "reinstated" } })).then(() => { reload(); setSel(null); })}>Reinstate</Btn>}</div>}
+    </Card>}
+  </div>;
 }
 
 /* ===================== draws ===================== */
-function Draws() {
-  const [entries, setEntries] = useState([]); const [draws, setDraws] = useState([]); const [period, setPeriod] = useState(""); const [note, setNote] = useState("");
-  const refresh = () => { api("/api/entries").then((r) => r.ok && setEntries(r.data?.entries || [])); api("/api/draws").then((r) => r.ok && setDraws(r.data?.draws || [])); };
-  useEffect(() => { refresh(); }, []);
-  const periods = {}; entries.forEach((e) => { periods[e.draw_period] = (periods[e.draw_period] || 0) + 1; });
-  // P0-07: drawing errors (e.g. SoD approve, already-published) must surface,
-  // never be silently discarded by a blind refresh.
-  const act = async (id, action) => { setNote(""); const r = await api(`/api/draws/${id}/${action}`, { method: "POST", body: {} }); if (!r.ok) setNote(r.data?.error || `Action ${action} failed (HTTP ${r.status})`); refresh(); };
-  const freeze = async () => {
-    setNote("");
-    if (!period) { setNote("Choose a draw period first."); return; }
-    const r = await api("/api/draws", { method: "POST", body: { draw_period: period } });
-    if (!r.ok) setNote(r.data?.error || `Freeze failed (HTTP ${r.status})`); else setNote(`Frozen ${period}: snapshot ${String(r.data?.snapshotHash || "").slice(0, 10)}… — execute, then a DIFFERENT named user must approve.`);
-    refresh();
-  };
-  return (
-    <div className="promo-page">
-      <div className="promo-card"><h4>Run a draw</h4>
-        <div className="row">
-          <div className="col"><div className="lab">Period (from entries)</div>
-            <select className="field" value={period} onChange={(e) => setPeriod(e.target.value)}><option value="">— choose —</option>
-              {Object.entries(periods).map(([p, n]) => <option key={p} value={p}>{p} ({n} entries)</option>)}</select></div>
-          <button className="btn" onClick={freeze}>Freeze candidates</button>
-        </div>
-        {note && <div className="notice" style={{ marginTop: 8 }}>{note}</div>}
-      </div>
-      <div className="promo-card"><h4>Draws ({draws.length})</h4>
-        <table className="promo-table"><thead><tr><th>Period</th><th>Status</th><th>Snapshot</th><th>Output</th><th></th></tr></thead><tbody>
-          {draws.map((d) => <tr key={d.id}><td className="mono">{sc(d.draw_period)}</td><td><Chip s={d.status} /></td><td className="mono sub">{short(d.snapshot_hash, 10)}</td><td className="mono sub">{d.output_hash ? short(d.output_hash, 10) : "—"}</td>
-            <td className="actions">
-              {d.status === "frozen" && <button className="btn small ghost" onClick={() => act(d.id, "execute")}>Execute</button>}
-              {d.status === "executed" && <button className="btn small ghost" onClick={() => act(d.id, "approve")}>Approve</button>}
-              {d.status === "approved" && <button className="btn small ghost" onClick={() => act(d.id, "publish")}>Publish winners</button>}
-            </td></tr>)}
-          {draws.length === 0 && <tr><td colSpan={5}><div className="empty">No draws yet.</div></td></tr>}
-        </tbody></table>
-      </div>
-    </div>
-  );
+function Draws({ me }) {
+  const [camps] = useApi("/api/campaigns"); const cid = camps.data?.campaigns?.find((c) => ["active", "paused", "closed"].includes(c.status))?.id;
+  const [periods] = useApi(cid ? `/api/campaigns/${cid}/periods` : "/api/whoami", [cid]); const [draws, reload] = useApi(cid ? `/api/campaigns/${cid}/draws` : "/api/whoami", [cid]); const [pid, setPid] = useState(""); const [barrier, setBarrier] = useState(null); const [sel, setSel] = useState(null); const a = useAction();
+  const check = async () => { const r = await api(`/api/campaigns/${cid}/periods/${pid}/barrier`); setBarrier(r.data); };
+  const act = (id, action, body = {}, c) => a.run(() => api(`/api/draws/${id}/${action}`, { method: "POST", body }), c ? { confirm: c } : {}).then(reload);
+  const can = (r) => me.roles.includes(r);
+  return <div className="promo-page"><a.Msg />
+    <Card title="Prepare a draw (cutoff barrier → freeze → execute → independent approval → publish)">
+      <div className="row"><Field label="Period"><select className="field" value={pid} onChange={(e) => { setPid(e.target.value); setBarrier(null); }}><option value="">— choose —</option>{(periods.data?.periods || []).map((p) => <option key={p.id} value={p.id}>{p.code} — {p.label} ({p.status})</option>)}</select></Field><Btn ghost disabled={!pid} onClick={check}>Check barrier</Btn>{can("draw_officer") && <Btn disabled={!barrier?.ok || a.busy} onClick={() => a.run(() => api("/api/draws", { method: "POST", body: { campaign_id: cid, period_id: pid } }), { confirm: "Freeze the candidate pool and commit randomness for this period?" }).then(() => { setBarrier(null); reload(); })}>Freeze candidates</Btn>}</div>
+      {barrier && <div style={{ marginTop: 10 }}><div className="row"><Field label="Eligible entries">{barrier.eligible}</Field><Field label="Distinct participants">{barrier.distinctParticipants}</Field><Field label="Excluded">{barrier.exclusions}</Field><Field label="Prize plan">{barrier.plan?.tiers?.map((t) => `${t.count} × ${t.label}`).join(", ")} · alternates {barrier.plan?.totalAlternates} · {barrier.plan?.onePrizePerParticipant ? "one prize per participant" : "multiple prizes allowed"}</Field></div>{barrier.blockers?.length ? <Table cols={["Blocker", "Detail"]} rows={barrier.blockers} render={(b, i) => <tr key={i}><td className="mono">{b.code}</td><td className="sub mono">{b.detail ? JSON.stringify(b.detail) : ""}</td></tr>} /> : <div className="note">Barrier clear — the period can be frozen.</div>}</div>}
+    </Card>
+    <Card title="Draws">
+      <Table cols={["Period", "Status", "Snapshot", "Output", "Officer", "Approver", "Created", ""]} rows={draws.data?.draws} render={(d) => <tr key={d.id}><td className="mono">{d.period_code || d.draw_period}{d.supersedes ? " (rerun)" : ""}</td><td><Chip s={d.status} /></td><td className="mono sub">{short(d.snapshot_hash, 10)}</td><td className="mono sub">{d.output_hash ? short(d.output_hash, 10) : "—"}</td><td className="sub">{short(d.operator_id, 10)}</td><td className="sub">{d.approver_id ? short(d.approver_id, 10) : "—"}</td><td className="sub">{fmt(d.created_at)}</td><td className="actions">
+        <Btn ghost small onClick={() => setSel(d.id)}>Detail</Btn>
+        {d.status === "frozen" && can("draw_officer") && <Btn small onClick={() => act(d.id, "execute", {}, "Execute the draw now? The result is derived from the committed seed and cannot be re-rolled.")}>Execute</Btn>}
+        {d.status === "executed" && can("draw_approver") && <><Btn small onClick={() => act(d.id, "approve", { expected_output_hash: d.output_hash, note: prompt("Approval note (optional)") || "" }, `Approve result ${short(d.output_hash, 12)}? You confirm you reviewed the frozen candidates and the integrity check.`)}>Approve</Btn> <Btn ghost small onClick={() => act(d.id, "reject", { reason: prompt("Rejection reason?") || "" })}>Reject</Btn></>}
+        {d.status === "approved" && can("winner_ops") && <Btn small onClick={() => act(d.id, "publish", {}, "Publish the draw and create winner records? Winners are not visible publicly until verified and individually published.")}>Publish</Btn>}
+        {["approved", "published"].includes(d.status) && can("draw_officer") && <Btn danger small onClick={() => { const reason = prompt("Reason for rerun (void + new linked draw)?"); const approved_by = prompt("Second approver user id?"); if (reason && approved_by) act(d.id, "rerun", { reason, approved_by }); }}>Void + rerun</Btn>}
+      </td></tr>} />
+    </Card>
+    {sel && <DrawDetail id={sel} me={me} onClose={() => setSel(null)} />}
+  </div>;
+}
+function DrawDetail({ id, me, onClose }) {
+  const [d] = useApi(`/api/draws/${id}`); if (d.loading) return <Loading />; const x = d.data?.draw; if (!x) return null;
+  return <Card title={`Draw ${x.period} — ${x.status}`} right={<div className="row"><Btn ghost small onClick={() => window.open(`/api/draws/${id}/bundle?token=`)}>Bundle (auditor API)</Btn><Btn ghost small onClick={onClose}>Close</Btn></div>}>
+    <div className="row"><Field label="Snapshot hash"><span className="mono">{x.snapshot_hash}</span></Field><Field label="Output hash"><span className="mono">{x.output_hash || "—"}</span></Field><Field label="Candidates">{d.data.candidates}</Field><Field label="Integrity">{x.integrity?.ok ? <Chip s="verified" /> : <Chip s="critical" />} {x.integrity?.problems?.join("; ")}</Field><Field label="Barrier at freeze"><span className="sub mono">{JSON.stringify(x.barrier?.blockers || [])}</span></Field></div>
+    {x.output && <Table cols={["Rank", "Entry", "Participant", "Prize"]} rows={x.output.winners} render={(w) => <tr key={w.entryId}><td>{w.position}</td><td className="mono">{short(w.entryId, 14)}</td><td className="mono">{short(w.participantId, 14)}</td><td>{w.prize_code}</td></tr>} />}
+    <Table cols={["Attempt", "Actor", "Outcome", "At"]} rows={d.data.attempts} render={(t, i) => <tr key={i}><td>{i + 1}</td><td className="sub">{short(t.actor_id, 10)}</td><td>{t.outcome}</td><td className="sub">{fmt(t.created_at)}</td></tr>} />
+    <div className="sub">Independent verification: download the bundle via GET /api/draws/{id}/bundle (auditor) and run <span className="mono">npm run verify:draw -- bundle.json</span>.</div>
+  </Card>;
 }
 
-/* ===================== CRM / audit ===================== */
-function Crm() {
-  const [d, setD] = useState(null); useEffect(() => { api("/api/crm-sync").then((r) => r.ok && setD(r.data)); }, []);
-  return (
-    <div className="promo-page">
-      <div className="promo-card"><h4>Reconciliation</h4>
-        {d && <div className="row">{[["pending", "Pending"], ["delivered", "Delivered"], ["dead", "Dead letters"]].map(([k, l]) => <div className="col" key={k}><div className="lab">{l}</div><div className="note" style={{ fontSize: 20 }}>{d.reconcile?.[k] || 0}</div></div>)}</div>}
-        <div className="spacer" /><table className="promo-table"><thead><tr><th>Entity</th><th>Event</th><th>Status</th><th>Attempts</th></tr></thead><tbody>
-          {(d?.jobs || []).map((j) => <tr key={j.id}><td className="mono">{sc(j.entity_type)} {short(j.entity_id, 8)}</td><td className="mono">{sc(j.event_type)}</td><td><Chip s={j.status} /></td><td>{j.attempts || 0}</td></tr>)}
-          {(d?.jobs || []).length === 0 && <tr><td colSpan={4}><div className="empty">No CRM events yet.</div></td></tr>}
-        </tbody></table>
-      </div>
-    </div>
-  );
-}
-function AuditView() {
-  const [rows, setRows] = useState([]); useEffect(() => { api("/api/audit-events").then((r) => r.ok && setRows(r.data?.events || [])); }, []);
-  return (
-    <div className="promo-page"><div className="promo-card"><h4>Audit trail (append-only, hash-chained)</h4>
-      <table className="promo-table"><thead><tr><th>Action</th><th>Actor</th><th>Target</th><th>Hash</th><th>When</th></tr></thead><tbody>
-        {rows.map((e) => <tr key={e.id}><td className="mono">{sc(e.action)}</td><td className="mono sub">{sc(e.actor_id || "")}</td><td className="mono sub">{sc(e.target_type || "")} {short(e.target_id, 8)}</td><td className="mono sub">{short(e.entry_hash, 10)}</td><td className="sub">{fmt(e.created_at)}</td></tr>)}
-        {rows.length === 0 && <tr><td colSpan={5}><div className="empty">No audit events yet.</div></td></tr>}
-      </tbody></table>
-    </div></div>
-  );
+/* ===================== winners ===================== */
+function Winners({ me }) {
+  const [l, reload] = useApi("/api/winners"); const [sel, setSel] = useState(null); const a = useAction(); const [outlets] = useApi("/api/outlets");
+  const [detail, reloadDetail] = useApi(sel ? `/api/winners/${sel}` : "/api/whoami", [sel]);
+  const can = me.roles.includes("winner_ops"); const both = () => { reload(); reloadDetail(); };
+  const tr = (id, status, extra = {}, c) => a.run(() => api(`/api/winners/${id}/transition`, { method: "POST", body: { status, ...extra } }), c ? { confirm: c } : {}).then(both);
+  return <div className="promo-page"><a.Msg />
+    <Card title="Winners, claims and publication"><Table cols={["Period", "Rank", "Name", "Phone", "Prize", "Status", "Published", "Claim by", ""]} rows={l.data?.winners} render={(w) => <tr key={w.id}><td className="mono">{w.draw_period}</td><td>{w.rank}</td><td>{w.display_name}</td><td className="mono">{w.wa_phone_uid}</td><td>{w.published_fields?.prize}</td><td><Chip s={w.status} /></td><td><Chip s={w.publication_state} /></td><td className="sub">{fmt(w.claim_expires_at)}</td><td><Btn ghost small onClick={() => setSel(w.id)}>Open</Btn></td></tr>} /></Card>
+    {sel && detail.data?.winner && (() => { const w = detail.data.winner; const collect = (outlets.data?.outlets || []).filter((o) => o.collection_enabled); return <Card title={`Winner ${w.display_name} — ${w.status}`} right={<Btn ghost small onClick={() => setSel(null)}>Close</Btn>}>
+      <div className="row"><Field label="Prize">{w.published_fields?.prize}</Field><Field label="Participant">{w.participant?.first_name} {w.participant?.surname} · {w.participant?.phone} · ID {w.participant?.identity_masked || "—"}</Field><Field label="Collection outlet">{w.collection_outlet ? `${w.collection_outlet.retailer} — ${w.collection_outlet.branch}` : "—"}</Field><Field label="Claim deadline">{fmt(w.claim_expires_at)}</Field><Field label="Fulfilled">{w.fulfilled_at ? `${fmt(w.fulfilled_at)} (${w.fulfilment_ref || "no ref"})` : "—"}</Field></div>
+      {can && <div className="row" style={{ marginTop: 10 }}>
+        {["selected", "unreachable"].includes(w.status) && <Btn onClick={() => a.run(() => api(`/api/winners/${w.id}/notify`, { method: "POST" }), { confirm: "Send the approved winner message on WhatsApp to this participant?" }).then(both)}>Notify on WhatsApp</Btn>}
+        {w.status === "notified" && <Btn onClick={() => tr(w.id, "verified", { expected_version: w.row_version, note: prompt("Verification evidence (e.g. ID checked by …)") || "" })}>Mark verified</Btn>}
+        {w.status === "verified" && <Btn onClick={() => { const oid = prompt(`Collection outlet id (${collect.slice(0, 5).map((o) => o.id).join(", ")}…)`); tr(w.id, "accepted", { expected_version: w.row_version, collection_outlet_id: oid || undefined }); }}>Accepted (assign collection)</Btn>}
+        {w.status === "accepted" && <Btn onClick={() => tr(w.id, "collected", { expected_version: w.row_version, fulfilment_ref: prompt("Fulfilment reference / slip number?") || undefined, collection_outlet_id: w.collection_outlet_id || prompt("Collection outlet id?") }, "Record prize collection? This is recorded once and cannot be undone.")}>Record collection</Btn>}
+        {!["collected", "replaced"].includes(w.status) && <><Btn ghost onClick={() => tr(w.id, "unreachable", { expected_version: w.row_version })}>Unreachable</Btn><Btn ghost onClick={() => tr(w.id, "declined", { expected_version: w.row_version })}>Declined</Btn><Btn ghost onClick={() => tr(w.id, "disputed", { expected_version: w.row_version, note: prompt("Dispute note") || "" })}>Disputed</Btn><Btn danger onClick={() => tr(w.id, "ineligible", { expected_version: w.row_version, reason: prompt("Ineligibility reason") || "" }, "Mark ineligible?")}>Ineligible</Btn><Btn danger onClick={() => tr(w.id, "replaced", { expected_version: w.row_version, reason: prompt("Replacement reason") || "" }, "Replace with the next approved alternate? This is audited and cannot be undone.")}>Replace with alternate</Btn></>}
+        {["verified", "accepted", "collected"].includes(w.status) && w.publication_state !== "published" && <Btn onClick={() => a.run(() => api(`/api/winners/${w.id}/publish`, { method: "POST" }), { confirm: "Publish this winner (name initial, town, prize, week) to the public winners list?" }).then(both)}>Publish</Btn>}
+        {w.publication_state === "published" && <Btn ghost onClick={() => a.run(() => api(`/api/winners/${w.id}/unpublish`, { method: "POST", body: { reason: prompt("Reason?") || "" } })).then(both)}>Withdraw publication</Btn>}
+      </div>}
+      <Table cols={["Claim state", "Detail", "At"]} rows={detail.data.claims} render={(c) => <tr key={c.id}><td><Chip s={c.state} /></td><td className="sub mono">{c.detail_json}</td><td className="sub">{fmt(c.transitioned_at)}</td></tr>} />
+      <Table cols={["Message", "Status", "Attempts", "Error", "Sent", "Delivered", "Read"]} rows={detail.data.messages} empty="No messages yet." render={(m) => <tr key={m.id}><td>{m.purpose}</td><td><Chip s={m.status} /></td><td>{m.attempts}</td><td className="sub">{m.error_code || m.last_error || ""}</td><td className="sub">{fmt(m.sent_at)}</td><td className="sub">{fmt(m.delivered_at)}</td><td className="sub">{fmt(m.read_at)}</td></tr>} />
+    </Card>; })()}
+  </div>;
 }
 
-/* ===================== test a customer ===================== */
-function TestCustomer() {
-  const [phone, setPhone] = useState("263771234567"); const [fn, setFn] = useState("Tapiwa"); const [sn, setSn] = useState("Moyo"); const [outlet, setOutlet] = useState("OK-HRE-01");
-  const [log, setLog] = useState([]);
-  // P1-06: functional state update — the old closure captured `log` from the
-  // FIRST render and replaced it, so the event log only ever showed (and
-  // clobbered) the latest event. This appends with a bounded window.
-  const push = (l) => setLog((prev) => [`[${new Date().toLocaleTimeString()}] ${l}`, ...prev].slice(0, 25));
-  const jid = () => "w" + Date.now() % 1000000 + Math.floor(Math.random() * 9999);
-  const facts = (no) => ({ outlet, date: new Date().toISOString(), receiptNo: no, total: 12.5, currency: "USD", _confidence: 0.95, lineItems: [{ description: "ZimSweet Brown Sugar 2kg", quantity: 2, amount: 5 }] });
-  const marker = (no) => `WPP_RECEIVED:${btoa(unescape(encodeURIComponent(JSON.stringify(facts(no)))))}:`;
-  async function send(events, media) {
-    // P1-06: media must sit under the server's `media` map — the server reads
-    // payload.media[providerMessageId]. Spreading it into the body top-level
-    // produced a 200 but the receipt had no bytes (zero confidence -> review),
-    // which is exactly the false confidence this tool used to give.
-    const r = await api("/webhooks/whatsapp", { method: "POST", body: { events, media: media || {} }, auth: false });
-    push(`${events.map((e) => e.type).join(",")} → HTTP ${r.status} ${JSON.stringify(r.data || {})}`);
-    return r;
-  }
-  // P1-06: verify the ACTUAL outcome from the API (receipt status + entry),
-  // not just the webhook's HTTP 200.
-  const verify = async (label) => {
-    const r = await api("/api/receipts");
-    const r2 = await api("/api/entries");
-    const rec = (r.data?.receipts || [])[0];
-    const ent = rec ? (r2.data?.entries || []).find((e) => e.receipt_id === rec.id) : null;
-    push(`${label}: receipt ${rec ? `${rec.status}${rec.reason_code ? ` · ${rec.reason_code}` : ""}` : "(none still)"}${ent ? ` → entry ${short(ent.id, 8)} created` : (rec && rec.status === "QUALIFIED" ? " ⚠ entry missing" : "")}`);
-  };
-  const journey = async () => {
-    // P1-01: menu numbering — 1 = Register (the old leading "2" is now ENTER).
-    for (const t of ["1", `${fn} ${sn}`, "63-1234567F12", "Harare", "yes", outlet]) await send([{ providerMessageId: jid(), phoneUid: phone, type: "message.text", text: t }]);
-    const id = jid();
-    await send([{ providerMessageId: id, phoneUid: phone, type: "message.image", text: "" }], { [id]: btoa(marker("R-" + Math.floor(1000 + Math.random() * 9000))) });
-    await verify("journey result");
-  };
-  const dup = async () => {
-    const a = jid(), b = jid(), bytes = btoa(marker("R-DUP"));
-    await send([{ providerMessageId: a, phoneUid: phone, type: "message.image", text: "" }], { [a]: bytes });
-    await send([{ providerMessageId: b, phoneUid: phone, type: "message.image", text: "" }], { [b]: bytes });
-    await verify("duplicate check");
-  };
-  return (
-    <div className="promo-page">
-      <div className="promo-card"><h4>Simulate a WhatsApp customer</h4>
-        <p className="note">Sends real webhooks to this deployment — the same state machine live customers use.</p>
-        <div className="row">
-          {[["phone", "Phone"], ["fn", "First name"], ["sn", "Surname"], ["outlet", "Outlet code"]].map(([k, l]) => <div className="col" key={k}><div className="lab">{l}</div><input className="field" value={{ phone, fn, sn, outlet }[k]} onChange={(e) => ({ phone: setPhone, fn: setFn, sn: setSn, outlet: setOutlet })[k](e.target.value)} /></div>)}
-        </div>
-        <div className="spacer" />
-        <button className="btn" onClick={journey}>Full journey: register → consent → receipt</button>
-        <button className="btn ghost" style={{ marginLeft: 8 }} onClick={() => send([{ providerMessageId: jid(), phoneUid: phone, type: "message.image", text: "" }])}>Send a random photo</button>
-        <button className="btn ghost" style={{ marginLeft: 8 }} onClick={dup}>Same receipt twice → duplicate</button>
-      </div>
-      <div className="promo-card"><h4>Event log</h4>
-        {log.map((l, i) => <div key={i} className="mono sub" style={{ padding: "3px 0", whiteSpace: "pre-wrap" }}>{l}</div>)}
-        {log.length === 0 && <div className="empty">No events yet.</div>}
-      </div>
-    </div>
-  );
+/* ===================== integrations ===================== */
+function Integrations({ me }) {
+  const [i, reload] = useApi("/api/integrations"); const [ob, reloadOb] = useApi("/api/outbound"); const [crm, reloadCrm] = useApi("/api/crm/events"); const [q, reloadQ] = useApi("/api/queue"); const [mp] = useApi("/api/crm/mapping-preview?type=entry"); const a = useAction();
+  if (i.loading) return <Loading />; const d = i.data; if (!d) return <Err e={i.error} />;
+  const Health = ({ label, h }) => <Field label={label}><Chip s={h?.mode || (h?.ok ? "ok" : "x")} /> <span className="sub">{h?.provider || ""} {h?.note || h?.error || ""}</span></Field>;
+  return <div className="promo-page"><a.Msg />
+    <Card title="Provider status" right={<Btn ghost small onClick={reload}>Refresh</Btn>}><div className="row"><Health label="WhatsApp transport" h={d.transport} /><Health label="Receipt extractor" h={d.extractor} /><Health label="CRM" h={d.crm} /><Field label="Database">{d.database.ok ? <Chip s="ok" /> : <Chip s="x" />} <span className="sub">{d.database.file}</span></Field><Field label="Storage">{d.storage.assets} assets · {d.storage.dir}</Field><Field label="Worker">{d.worker?.running ? <Chip s="ok" /> : <Chip s="x" />} last tick {fmt(d.worker?.lastTick)}</Field><Field label="Last outbound success">{fmt(d.last_outbound_success)}</Field><Field label="Last inbound">{fmt(d.last_inbound)}</Field></div>
+      <div className="sub" style={{ marginTop: 8 }}>Environment: <b>{d.environment}</b>. Simulated or unconfigured providers are labelled; "configured" means credentials present, not proven delivery.</div></Card>
+    <Card title={`Outbound messages (${JSON.stringify(d.outbound.byStatus)})`} right={<Btn ghost small onClick={reloadOb}>Refresh</Btn>}><Table cols={["Purpose", "To", "Status", "Attempts", "Error", "Created", ""]} rows={(ob.data?.messages || []).slice(0, 50)} render={(m) => <tr key={m.id}><td>{m.purpose}</td><td className="mono">{m.wa_phone_uid}</td><td><Chip s={m.status} /></td><td>{m.attempts}</td><td className="sub">{m.error_code || m.last_error || ""}</td><td className="sub">{fmt(m.created_at)}</td><td>{["retryable_failure", "permanent_failure", "unknown_outcome"].includes(m.status) && <Btn ghost small onClick={() => a.run(() => api(`/api/outbound/${m.id}/retry`, { method: "POST" }), { confirm: "Retry this message? For unknown outcomes, confirm with the provider first to avoid a duplicate." }).then(reloadOb)}>Retry</Btn>}</td></tr>} /></Card>
+    <Card title={`CRM outbox — ${d.crm_queue.provider} (${["pending", "delivered", "retryable_failure", "permanent_failure", "unknown_outcome", "reconciled"].map((k) => `${k} ${d.crm_queue[k]}`).join(" · ")})`} right={<div className="row"><Btn ghost small onClick={() => a.run(() => api("/api/crm/reconcile", { method: "POST" })).then(reloadCrm)}>Reconcile</Btn><Btn ghost small onClick={reloadCrm}>Refresh</Btn></div>}>
+      <Table cols={["Entity", "Version", "Status", "Attempts", "Error", "Read-back", ""]} rows={(crm.data?.events || []).slice(0, 50)} render={(e) => <tr key={e.id}><td className="mono">{e.entity_type}:{short(e.entity_id, 10)}</td><td>{e.entity_version}</td><td><Chip s={e.status} /></td><td>{e.attempts}</td><td className="sub">{e.last_error || ""}</td><td className="sub">{fmt(e.readback_at)}</td><td>{["retryable_failure", "permanent_failure", "unknown_outcome"].includes(e.status) && <Btn ghost small onClick={() => a.run(() => api(`/api/crm/events/${e.id}/retry`, { method: "POST" })).then(reloadCrm)}>Retry</Btn>}</td></tr>} />
+      {mp.data && <div className="sub" style={{ marginTop: 8 }}>Mapping preview ({mp.data.mapping_version}; excluded by default: {mp.data.excluded_by_default.join(", ")}): <span className="mono">{JSON.stringify(mp.data.record)}</span></div>}
+    </Card>
+    <Card title="Queues (inbound events + jobs)" right={<Btn ghost small onClick={reloadQ}>Refresh</Btn>}><div className="row"><Field label="Events">{JSON.stringify(q.data?.events || {})}</Field><Field label="Jobs">{JSON.stringify(q.data?.jobs || {})}</Field><Field label="Oldest event">{fmt(q.data?.oldestEvent)}</Field><Field label="Oldest job">{fmt(q.data?.oldestJob)}</Field></div>
+      <Table cols={["Dead/failed event", "Kind", "Error", "Attempts", ""]} rows={q.data?.dead_events} empty="No dead-lettered events." render={(e) => <tr key={e.id}><td className="mono">{short(e.id, 12)}</td><td>{e.event_kind}</td><td className="sub">{e.error}</td><td>{e.attempts}</td><td><Btn ghost small onClick={() => a.run(() => api(`/api/queue/events/${e.id}/replay`, { method: "POST" })).then(reloadQ)}>Replay</Btn></td></tr>} />
+      <Table cols={["Dead/failed job", "Kind", "Error", "Attempts", ""]} rows={q.data?.dead_jobs} empty="No dead-lettered jobs." render={(j) => <tr key={j.id}><td className="mono">{short(j.id, 12)}</td><td>{j.kind}</td><td className="sub">{j.last_error}</td><td>{j.attempts}</td><td><Btn ghost small onClick={() => a.run(() => api(`/api/queue/jobs/${j.id}/retry`, { method: "POST" })).then(reloadQ)}>Retry</Btn></td></tr>} /></Card>
+  </div>;
+}
+
+/* ===================== access ===================== */
+function Access({ me }) {
+  const [l, reload] = useApi("/api/users"); const [f, setF] = useState({ roles: [] }); const a = useAction(); const [temp, setTemp] = useState(null); const [mfa, setMfa] = useState(null); const [code, setCode] = useState("");
+  const roles = l.data?.roles || [];
+  return <div className="promo-page"><a.Msg />
+    {me.roles.includes("platform_admin") && <Card title="Create staff account (temporary password shown once; must be changed at first sign-in)"><div className="row"><Field label="Email"><Input value={f.email || ""} onChange={(e) => setF({ ...f, email: e.target.value })} /></Field><Field label="Name"><Input value={f.name || ""} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field><Field label="Roles"><div className="row">{roles.map((r) => <label key={r} className="check"><input type="checkbox" checked={f.roles.includes(r)} onChange={(e) => setF({ ...f, roles: e.target.checked ? [...f.roles, r] : f.roles.filter((x) => x !== r) })} /> {r}</label>)}</div></Field><Btn disabled={a.busy} onClick={async () => { const r = await a.run(() => api("/api/users", { method: "POST", body: f })); if (r?.ok) { setTemp(r.data); setF({ roles: [] }); reload(); } }}>Create</Btn></div>{temp && <div className="notice-ok">Created {temp.user.email}. Temporary password (share securely, shown once): <span className="mono">{temp.temporaryPassword}</span></div>}</Card>}
+    <Card title="Staff accounts"><Table cols={["Email", "Name", "Roles", "MFA", "Status", "Temp pw", "Last login", ""]} rows={l.data?.users} render={(u) => <tr key={u.id}><td>{u.email}</td><td>{u.name}</td><td className="sub">{u.roles.join(", ")}</td><td>{u.mfa_enabled ? <Chip s="ok" /> : <Chip s="warning" />}</td><td><Chip s={u.status} /></td><td>{u.must_change_password ? "yes" : ""}</td><td className="sub">{fmt(u.last_login_at)}</td><td>{me.roles.includes("platform_admin") && u.id !== me.id && <><Btn ghost small onClick={() => { const r = prompt("Roles (comma separated)", u.roles.join(",")); if (r != null) a.run(() => api(`/api/users/${u.id}`, { method: "PATCH", body: { roles: r.split(",").map((x) => x.trim()).filter(Boolean) } })).then(reload); }}>Roles</Btn> <Btn ghost small onClick={() => a.run(() => api(`/api/users/${u.id}`, { method: "PATCH", body: { status: u.status === "active" ? "disabled" : "active" } }), { confirm: `${u.status === "active" ? "Disable" : "Enable"} ${u.email}? Sessions are revoked.` }).then(reload)}>{u.status === "active" ? "Disable" : "Enable"}</Btn> <Btn ghost small onClick={async () => { const r = await a.run(() => api(`/api/users/${u.id}/reset-password`, { method: "POST" }), { confirm: `Reset password for ${u.email}?` }); if (r?.ok) setTemp({ user: u, temporaryPassword: r.data.temporaryPassword }); }}>Reset pw</Btn></>}</td></tr>} /></Card>
+    <Card title="My security"><div className="row"><Field label="MFA">{me.mfa ? <Chip s="ok" /> : <Chip s="warning" />}</Field>{!me.mfa && <Btn ghost onClick={async () => { const r = await api("/api/mfa/enroll", { method: "POST" }); setMfa(r.data); }}>Enrol authenticator app</Btn>}{mfa && <><Field label="Secret (add to your authenticator app)"><span className="mono">{mfa.secret}</span><div className="sub mono">{mfa.otpauth}</div></Field><Field label="Code"><Input value={code} onChange={(e) => setCode(e.target.value)} /></Field><Btn onClick={() => a.run(() => api("/api/mfa/enable", { method: "POST", body: { code } })).then(() => location.reload())}>Enable MFA</Btn></>}</div></Card>
+  </div>;
+}
+
+/* ===================== audit + readiness ===================== */
+function AuditView() { const [f, setF] = useState({}); const qs = Object.entries(f).filter(([, v]) => v).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&"); const [l] = useApi(`/api/audit-events?${qs}`, [qs]); const [v] = useApi("/api/audit/verify"); const a = useAction(); return <div className="promo-page"><Card title="Audit chain" right={<Btn ghost small onClick={() => a.run(() => api("/api/audit/checkpoint", { method: "POST" })).then(() => alert("Checkpoint signed"))}>Sign checkpoint</Btn>}><div className="row"><Field label="Chain">{v.data?.ok ? <Chip s="verified" /> : <Chip s="critical" />} {v.data?.total} events{v.data?.brokenCount ? ` · ${v.data.brokenCount} broken` : ""}</Field></div><a.Msg /></Card><Card title="Events" right={<div className="row"><Input placeholder="target type" value={f.target_type || ""} onChange={(e) => setF({ ...f, target_type: e.target.value })} style={{ maxWidth: 140 }} /><Input placeholder="target id" value={f.target_id || ""} onChange={(e) => setF({ ...f, target_id: e.target.value })} style={{ maxWidth: 200 }} /><Input placeholder="action" value={f.action || ""} onChange={(e) => setF({ ...f, action: e.target.value })} style={{ maxWidth: 160 }} /></div>}><Table cols={["#", "Actor", "Action", "Target", "Reason", "Hash", "At"]} rows={l.data?.events} render={(e) => <tr key={e.id}><td>{e.id}</td><td className="sub">{e.actor_type}:{short(e.actor_id, 10)}</td><td className="mono">{e.action}</td><td className="mono sub">{e.target_type}:{short(e.target_id, 12)}</td><td className="sub">{e.reason}</td><td className="mono sub">{short(e.entry_hash, 10)}</td><td className="sub">{fmt(e.created_at)}</td></tr>} /></Card><Card title="Exports (auditor; watermarked, formula-safe CSV)"><div className="row">{["receipts", "entries", "winners", "participants", "audit", "outlets"].map((s) => <Btn key={s} ghost small onClick={() => api(`/api/reports/export?scope=${s}&format=json`).then((r) => { const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: "application/json" }); const u = URL.createObjectURL(blob); const el = document.createElement("a"); el.href = u; el.download = `${s}.json`; el.click(); })}>Export {s}</Btn>)}</div></Card></div>; }
+function Readiness() { const [r] = useApi("/api/readiness"); if (r.loading) return <Loading />; const d = r.data; if (!d) return <Err e={r.error} />; const L = ({ ok, label, note }) => <div className="row" style={{ alignItems: "center" }}><Chip s={ok ? "ok" : "warning"} /><b>{label}</b><span className="sub">{note}</span></div>; return <div className="promo-page">
+  <Card title="Readiness levels (evidence-backed)"><L ok={d.levels.locally_testable} label="Locally testable" note="app, database, storage, worker, console, sample campaign and automated tests from documented commands" /><L ok={d.levels.integrated_client_testing} label="Ready for integrated client testing" note={`requires WhatsApp transport = configured Cloud API (now: ${d.providers.transport?.provider} / ${d.providers.transport?.mode}) and a real extractor (now: ${d.providers.extractor?.provider} / ${d.providers.extractor?.mode})`} /><L ok={false} label="Approved for production launch" note="requires approved decisions, live assets, client UAT sign-off, ownership and production gates (see Activation)" /></Card>
+  <Card title="Providers"><div className="row"><Field label="WhatsApp"><Chip s={d.providers.transport?.mode} /> {d.providers.transport?.provider} {d.providers.transport?.note}</Field><Field label="Extractor"><Chip s={d.providers.extractor?.mode} /> {d.providers.extractor?.provider} {d.providers.extractor?.model || ""} {d.providers.extractor?.note || ""}</Field><Field label="CRM"><Chip s={d.providers.crm?.mode} /> {d.providers.crm?.provider} {d.providers.crm?.note || ""}</Field><Field label="Environment"><b>{d.environment}</b></Field><Field label="Sample data">{d.sample_data ? <Chip s="warning" /> : <Chip s="ok" />} {d.sample_data?.note || "none"}</Field></div></Card>
+  <Card title={`Open client decisions (${d.open_decisions.length})`}><Table cols={["ID", "Question", "Test-only value in use"]} rows={d.open_decisions} empty="All decisions approved." render={(x) => <tr key={x.id}><td className="mono">{x.id}</td><td>{x.question}</td><td className="sub">{x.test_value}</td></tr>} /></Card>
+  <Card title="Evidence recorded"><Table cols={["Kind", "Recorded"]} rows={d.evidence} render={(e) => <tr key={e.kind}><td className="mono">{e.kind}</td><td className="sub">{e.value ? `${fmt(e.value.at)} by ${e.value.recordedBy}` : "not recorded"}</td></tr>} /></Card>
+  <Card title="Activation blockers"><Table cols={["Code", "Message"]} rows={d.activation?.failures || []} empty="none" render={(f) => <tr key={f.code}><td className="mono">{f.code}</td><td>{f.message}</td></tr>} /></Card>
+  <Card title="Staff"><Table cols={["Email", "Roles", "MFA", "Temp password"]} rows={d.staff} render={(s) => <tr key={s.email}><td>{s.email}</td><td className="sub">{s.roles.join(", ")}</td><td>{s.mfa ? "yes" : "no"}</td><td>{s.temp_password ? "yes" : ""}</td></tr>} /></Card>
+</div>; }
+
+/* ===================== simulator ===================== */
+function Simulator() {
+  const [phone, setPhone] = useState("263770000099"); const [text, setText] = useState("hi"); const [log, setLog] = useState([]); const [busy, setBusy] = useState(false); const [transcript, setTranscript] = useState([]);
+  const push = (l) => setLog((p) => [...p, l].slice(-60));
+  const send = async (body) => { setBusy(true); try { const r = await api("/api/simulator/inbound", { method: "POST", body: { phone, ...body }, timeout: 120000 }); if (!r.ok) push({ dir: "err", text: r.data?.error?.message || `HTTP ${r.status}` }); else { push({ dir: "in", text: body.text || "[image]" }); for (const m of r.data.replies || []) push({ dir: "out", text: m.text }); if (r.data.result?.receiptId) push({ dir: "sys", text: `receipt ${r.data.result.receiptId} submitted → the result message arrives from the worker (refresh transcript)` }); } } finally { setBusy(false); } };
+  const refresh = async () => { const r = await api(`/api/simulator/transcript/${phone}`); setTranscript(r.data?.transcript || []); };
+  const onFile = async (e) => { const f = e.target.files?.[0]; if (!f) return; const b64 = await new Promise((res) => { const rd = new FileReader(); rd.onload = () => res(String(rd.result).split(",")[1]); rd.readAsDataURL(f); }); await send({ image_b64: b64, mime: f.type }); e.target.value = ""; };
+  return <div className="promo-page"><div className="split2">
+    <Card title="Conversation simulator — TEST ONLY (same intake, state machine, real OCR pipeline and outbox as WhatsApp; not WhatsApp evidence)">
+      <div className="row"><Field label="Phone (test)"><Input value={phone} onChange={(e) => setPhone(e.target.value)} /></Field><Field label="Message"><Input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send({ text }).then(() => setText(""))} /></Field><Btn disabled={busy} onClick={() => send({ text }).then(() => setText(""))}>Send</Btn><label className="btn ghost">Upload receipt image<input type="file" accept="image/*" hidden onChange={onFile} /></label><Btn ghost onClick={refresh}>Refresh transcript</Btn></div>
+      <div className="phone" style={{ marginTop: 10, minHeight: 200 }}>{log.map((l, i) => <div key={i} className={`bubble ${l.dir}`}>{l.text.split("\n").map((x, j) => <div key={j}>{x || " "}</div>)}</div>)}{!log.length && <div className="sub">Say "hi" to start. Quick keys: 1 register · 2 enter · 3 how it works · 6 winners · 7 my entries. Fixture images: fixtures/receipts/*.jpg</div>}</div>
+    </Card>
+    <Card title="Server transcript (inbound events + outbound ledger, with delivery states)">{transcript.length ? transcript.map((t, i) => <div key={i} className={`bubble ${t.dir}`}><span className="sub">{fmt(t.at)} · {t.dir === "out" ? `${t.purpose} · ${t.status}` : t.kind}</span><div>{t.text}</div></div>) : <Empty>Refresh to load.</Empty>}</Card>
+  </div></div>;
 }
 
 /* ===================== shell ===================== */
-const TABS = [["desk", "Desk"], ["dash", "Dashboard"], ["campaigns", "Campaigns"], ["outlets", "Outlets"], ["products", "Products"], ["receipts", "Receipts"], ["entries", "Entries"], ["draws", "Draws"], ["crm", "CRM"], ["audit", "Audit"], ["test", "Test a Customer"]];
-const VIEWS = { dash: Dashboard, campaigns: Campaigns, outlets: Outlets, products: Products, receipts: Receipts, entries: Entries, draws: Draws, crm: Crm, audit: AuditView, test: TestCustomer };
-
+const TABS = [["overview", "Overview", null], ["campaigns", "Campaigns", null], ["receipts", "Receipts", null], ["entries", "Entries", null], ["draws", "Draws", null], ["winners", "Winners", null], ["participants", "Participants", null], ["outlets", "Outlets", null], ["products", "Products", null], ["integrations", "Integrations", null], ["access", "Access", null], ["audit", "Audit", null], ["readiness", "Readiness", null], ["simulator", "Test a customer", null], ["desk", "Desk (legacy)", null]];
+const VIEWS = { overview: Overview, campaigns: Campaigns, receipts: Receipts, entries: Entries, draws: Draws, winners: Winners, participants: Participants, outlets: Outlets, products: Products, integrations: Integrations, access: Access, audit: AuditView, readiness: Readiness, simulator: Simulator };
 export function App() {
-  const [me, setMe] = useState(null);
-  const [tab, setTab] = useState("desk");
-  // onAuthed: after a successful login, resolve /api/whoami with retry so a
-  // transient failure never strands a valid session on the login screen.
-  const authed = () => {
-    const tryWhoami = async (n) => {
-      const r = await api("/api/whoami");
-      if (r.ok) { setMe(r.data); return; }
-      if (n < 3) { await new Promise((s) => setTimeout(s, 600 * (n + 1))); return tryWhoami(n + 1); }
-      setToken("");
-    };
-    tryWhoami(0);
-  };
-  useEffect(() => {
-    if (!getToken()) return;
-    api("/api/whoami").then((r) => { if (r.ok) setMe(r.data); else setToken(""); });
-  }, []);
+  const [me, setMe] = useState(null); const [tab, setTab] = useState(() => { try { return localStorage.getItem("wpp_tab") || "overview"; } catch { return "overview"; } }); const [cfg, setCfg] = useState(null);
+  const authed = () => api("/api/whoami").then((r) => { if (r.ok) setMe(r.data); else setToken(""); });
+  useEffect(() => { api("/api/config", { auth: false }).then((r) => r.ok && setCfg(r.data)); if (getToken()) authed(); }, []);
+  useEffect(() => { try { localStorage.setItem("wpp_tab", tab); } catch { /* */ } }, [tab]);
   if (!me) return <Login onAuthed={authed} />;
-  const View = VIEWS[tab];
-  return (
-    <div className="promo">
-      <div className="promo-tabs">
-        {TABS.map(([k, l]) => <button key={k} className={tab === k ? "active" : ""} onClick={() => setTab(k)}>{l}</button>)}
-        <span style={{ flex: 1 }} />
-        <button onClick={() => { api("/api/logout", { method: "POST" }); setToken(""); setMe(null); }}>Sign out</button>
-      </div>
-      {tab === "desk" ? <Desk /> : <div className="promo"><View /></div>}
-    </div>
-  );
+  if (me.mustChangePassword) return <ChangePassword onDone={() => setMe(null)} />;
+  const View = VIEWS[tab] || Overview;
+  return <div className="promo">
+    {cfg?.sample_data && <div className="banner">TEST ONLY — sample promotion data is loaded in environment "{me.environment}". Nothing here is client sign-off. Transport: {cfg.transport}.</div>}
+    <div className="promo-tabs">{TABS.map(([k, l]) => <button key={k} className={tab === k ? "active" : ""} onClick={() => setTab(k)}>{l}</button>)}<span style={{ flex: 1 }} /><span className="sub">{me.email} · {me.roles.join(", ")}</span><button onClick={() => { api("/api/logout", { method: "POST" }); setToken(""); setMe(null); }}>Sign out</button></div>
+    {tab === "desk" ? <Desk /> : <View me={me} />}
+  </div>;
 }

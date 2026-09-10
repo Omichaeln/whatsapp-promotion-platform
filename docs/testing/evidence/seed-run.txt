@@ -1,0 +1,73 @@
+
+> whatsapp-promotion-platform@0.1.0 seed
+> node --no-warnings=ExperimentalWarning --env-file-if-exists=.env scripts/seed-demo.mjs
+
+.env not found. Continuing without it.
+[seed] SAMPLE-BROWN-SUGAR: 80 outlets, 4 periods, 22 decisions (TEST ONLY)
+[seed] created SAMPLE-BROWN-SUGAR
+[seed] created 7 sample staff accounts (temporary passwords printed once by scripts/seed-demo.mjs)
+[seed] staff manager@example.test (campaign_manager) temporary password: <redacted>
+[seed] staff reviewer@example.test (reviewer) temporary password: <redacted>
+[seed] staff support@example.test (support) temporary password: <redacted>
+[seed] staff draw@example.test (draw_officer) temporary password: <redacted>
+[seed] staff approver@example.test (draw_approver,auditor) temporary password: <redacted>
+[seed] staff fulfilment@example.test (winner_ops) temporary password: <redacted>
+[seed] staff auditor@example.test (auditor) temporary password: <redacted>
+[seed] registering 12 synthetic participants…
+[seed] submitting 14 fixture receipts through the real pipeline (OCR)…
+[seed] submitting 10 draw-pool receipts (real OCR)…
+{
+  "participants": 12,
+  "receipts": 28,
+  "by_status": [
+    {
+      "status": "DUPLICATE",
+      "n": 5
+    },
+    {
+      "status": "NOT_QUALIFIED",
+      "n": 3
+    },
+    {
+      "status": "QUALIFIED",
+      "n": 15
+    },
+    {
+      "status": "REUPLOAD_REQUIRED",
+      "n": 2
+    },
+    {
+      "status": "REVIEW_REQUIRED",
+      "n": 3
+    }
+  ],
+  "entries": 15,
+  "draws": [
+    {
+      "draw_period": "W-2",
+      "status": "published"
+    }
+  ],
+  "winners": [
+    {
+      "status": "collected",
+      "n": 1
+    },
+    {
+      "status": "notified",
+      "n": 1
+    },
+    {
+      "status": "replaced",
+      "n": 1
+    },
+    {
+      "status": "selected",
+      "n": 2
+    },
+    {
+      "status": "verified",
+      "n": 1
+    }
+  ]
+}

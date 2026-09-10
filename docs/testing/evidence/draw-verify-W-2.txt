@@ -1,0 +1,93 @@
+{
+  "draw": "drw_9268216f2fc3d6907570a89f",
+  "status": "published",
+  "verified": true,
+  "checks": [
+    {
+      "name": "bundle version",
+      "pass": true,
+      "detail": "draw-verifier/2"
+    },
+    {
+      "name": "snapshot digest",
+      "pass": true,
+      "detail": "fb7091fc9c2b0d15b017c3fdf5d093124a8f8da396f0fea18fd42bf9963594d8"
+    },
+    {
+      "name": "snapshot names this draw",
+      "pass": true
+    },
+    {
+      "name": "candidates unique",
+      "pass": true,
+      "detail": 8
+    },
+    {
+      "name": "seed present",
+      "pass": true
+    },
+    {
+      "name": "output digest",
+      "pass": true,
+      "detail": "a0e8aca15451269f3e8f79ce9cf3ad22d6a6e734028bc5fc439c233da25b25c2"
+    },
+    {
+      "name": "stored output equals recomputation",
+      "pass": true
+    },
+    {
+      "name": "winner count matches plan",
+      "pass": true,
+      "detail": "5/5"
+    },
+    {
+      "name": "alternate count within plan",
+      "pass": true
+    },
+    {
+      "name": "winners are eligible candidates",
+      "pass": true
+    },
+    {
+      "name": "one prize per participant",
+      "pass": true
+    },
+    {
+      "name": "prize codes valid",
+      "pass": true
+    },
+    {
+      "name": "approver recorded",
+      "pass": true
+    },
+    {
+      "name": "approver differs from operator",
+      "pass": true,
+      "detail": "adm_16918f5281d003a7664a525b / adm_ee5fa5f563318be424809651"
+    },
+    {
+      "name": "approval after execution",
+      "pass": true
+    },
+    {
+      "name": "draw audit events recompute",
+      "pass": true,
+      "detail": 4
+    },
+    {
+      "name": "audit trail has freeze+execute(+approve)",
+      "pass": true
+    },
+    {
+      "name": "audit checkpoint signature",
+      "pass": true,
+      "detail": "unsigned key (set --checkpoint-key)"
+    }
+  ]
+}
+
+== tampered copy (one winner entryId altered) ==
+    {
+      "name": "stored output equals recomputation",
+      "pass": false
+exit=1

@@ -8,5 +8,8 @@ data/
 .DS_Store
 coverage/
 dist/
+data/backups/
+data/restore-test/
+scratch-*/
 *.log
 smoke-*.mjs

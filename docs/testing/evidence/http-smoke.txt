@@ -1,0 +1,30 @@
+# HTTP smoke via /api/simulator/inbound (TEST ONLY simulator transport; real OCR) — 2026-09-10T19:34Z
+# New phone registers, selects an outlet and submits pool-05-C.jpg, a receipt the seed already credited to another participant: expected outcome DUPLICATE (cross-phone re-use blocked).
+in: hi
+  -> Welcome to TEST ONLY — Sample Brown Sugar Promotion! | 1. Register | 2. Enter the promotion | 3. How it works | 4. Terms & conditions | 5. Prizes | 6. Winners | 7. My entries | 8. Help |  |  | state: HOME
+in: 1
+  -> Let's get you registered. What is your FIRST NAME? | state: REG_FIRST
+in: Smoke
+  -> Thanks Smoke. What is your SURNAME? | state: REG_SURNAME
+in: Tester
+  -> What is your national ID number? (letters and numbers only). This is kept private and is used only to verify winners. | state: REG_IDENTITY
+in: TESTSMOKE9
+  -> Which town or city do you live in? | state: REG_LOCATION
+in: Harare
+  -> Please confirm your details: | Name: Smoke Tester | ID: TE******E9 | Town: Harare | WhatsApp number: +263779900021 |  | Reply YES to confirm, or reply with the number to change: 1 na | state: REG_CONFIRM
+in: yes
+  -> By entering you confirm you are 18 or older and accept the Promotion Terms (TEST-T1) and Privacy Notice (TEST-P1). Read them: https://example.test/sample-terms (TEST ONLY | state: REG_TERMS
+in: yes
+  -> You're registered, Smoke! You can now enter the promotion. | state: HOME
+in: 2
+  -> Where did you buy? Choose the RETAILER: | 1. Corner Choice | 2. Family Foods | 3. Greenfield Stores | 4. Kwikshop Express | 5. Metro Cash & Carry | 6. Savers Market | 7. Sunrise Superm | state: OUTLET_RETAILER
+in: kwikshop westgate harare
+  -> Matching branches: | 1. Kwikshop Express — Westgate, Harare | 2. Kwikshop Express — Westgate, Bindura | 3. Sunrise Supermarket — Westgate, Harare | 4. Valuemart — Westgate, Harar | state: OUTLET_SEARCH
+in: 1
+  -> Outlet: Kwikshop Express — Westgate, Harare. |  | Now send ONE clear photo of the whole receipt. Make sure the shop name, date, receipt number and the sugar line are readable | state: ENTRY_RECEIPT
+in: <image pool-05-C.jpg>
+  -> We have received your receipt. Your submission reference is R-61DCAF8C. We are checking it now and will message you with the result. | state: HOME
+transcript tail:
+   in message.image | 
+   out reply | We have received your receipt. Your submission reference is R-61DCAF8C. We are checking it now and will message you with the result.
+   out receipt_outcome | This receipt has already been used for this promotion, so no new entry was added. Please submit a different qualifying receipt. Reply 2 to enter again.

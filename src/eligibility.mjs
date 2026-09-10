@@ -1,142 +1,178 @@
 /**
- * Deterministic, versioned eligibility rules (G-08, spec 11.3).
- * Pure function: same (facts, rules, context) -> same result. The campaign
- * version is immutable; receipts bind to the version active at creation.
+ * Deterministic, versioned eligibility rules (spec §11). Pure function:
+ * same (extraction, rules, context) -> same result. Quantities are integer
+ * grams; money is integer minor units. Every rule reports pass|fail|unknown
+ * with a stable participant-safe reason code and internal evidence.
  *
- * Rule outcomes: "pass" | "fail" | "review" with a stable reason code.
- * Final receipt decision aggregation:
- *   any fail            -> NOT_QUALIFIED (first stable reason)
- *   any review          -> NEEDS_REVIEW  (no silent qualification)
- *   all pass + confidence>=threshold -> QUALIFIED
+ * Dispositions: QUALIFIED | NOT_QUALIFIED | REVIEW_REQUIRED | REUPLOAD_REQUIRED
+ * (DUPLICATE is decided by the pipeline's canonical-receipt claim, not here).
+ * Precedence: any fail -> NOT_QUALIFIED (document/quality failures ->
+ * REUPLOAD_REQUIRED); else any unknown -> REVIEW_REQUIRED; else QUALIFIED.
  */
-
 export const REASONS = {
-  // participant-facing stable reason codes (never leak fraud signals)
-  OUT_OF_CAMPAIGN_WINDOW: "receipt_date_outside_campaign",
-  NON_PARTICIPATING_OUTLET: "outlet_not_participating",
-  OUTLET_MISMATCH: "outlet_selection_mismatch",
-  NO_PRODUCT_MATCH: "no_qualifying_product",
-  BELOW_MIN_QTY: "below_minimum_quantity",
-  TOTAL_TOO_LOW: "below_minimum_spend",
+  OK: "ok",
+  NOT_RECEIPT: "not_a_valid_receipt",
+  IMAGE_QUALITY: "image_quality_insufficient",
+  CAMPAIGN_INACTIVE: "campaign_not_open",
+  NOT_ENROLLED: "participant_not_enrolled",
+  PARTICIPANT_BLOCKED: "participant_not_eligible",
   MISSING_RECEIPT_NO: "missing_receipt_number",
   MISSING_DATE: "missing_transaction_date",
-  MISSING_OUTLET: "missing_outlet",
-  LOW_CONFIDENCE: "receipt_unclear",
-  NOT_RECEIPT: "not_a_valid_receipt",
-  CAP_REACHED: "weekly_entry_limit_reached",
-  PARTICIPANT_BLOCKED: "participant_not_eligible",
-  OVER_MAX_MEDIA: "image_too_large",
-  UNSUPPORTED_MEDIA: "unsupported_media_type",
-  WITHDRAWN_CONSENT: "consent_withdrawn",
-  OK: "ok",
+  DATE_AMBIGUOUS: "transaction_date_unclear",
+  OUT_OF_WINDOW: "receipt_date_outside_campaign",
+  OUTLET_UNKNOWN: "outlet_not_readable",
+  OUTLET_MISMATCH: "outlet_selection_mismatch",
+  OUTLET_NOT_PARTICIPATING: "outlet_not_participating",
+  NO_PRODUCT: "no_qualifying_product",
+  QTY_UNKNOWN: "quantity_unclear",
+  BELOW_MIN: "below_minimum_quantity",
+  CAP_REACHED: "entry_limit_reached",
+  TOTAL_MISSING: "total_unclear",
 };
 
-export const QUALIFIED = "QUALIFIED";
-export const NOT_QUALIFIED = "NOT_QUALIFIED";
-export const NEEDS_REVIEW = "NEEDS_REVIEW";
-export const DUPLICATE = "DUPLICATE";
-export const ERROR_STATE = "ERROR";
+export const DISPOSITION = { QUALIFIED: "QUALIFIED", NOT_QUALIFIED: "NOT_QUALIFIED", REVIEW: "REVIEW_REQUIRED", REUPLOAD: "REUPLOAD_REQUIRED", DUPLICATE: "DUPLICATE" };
 
-function rule(name, ok, reason, detail) {
-  return { rule: name, outcome: ok ? "pass" : ok === null ? "review" : "fail", reason: ok ? REASONS.OK : reason, detail };
+/** Default rule set shape (rules_json v2). All thresholds are explicit. */
+export function defaultRules(overrides = {}) {
+  return {
+    rules_version: 2,
+    products: [],                                  // [{ code, name, aliases[], pack_grams, qualifying }]
+    primary_rule: { min_packs: 2, pack_grams: 2000, min_total_grams: 4000 },
+    allow_pack_combinations: false,                // D-06: any approved pack sizes totalling min_total_grams
+    award: { entries_per_receipt: 1 },             // D-07: no multiplier unless approved
+    caps: { per_participant_per_period: null },    // D-08: null = unlimited
+    date_order: "DMY",
+    outlet_match: { required: true, min_score: 0.5 },
+    review_thresholds: { min_document_score: 0.5, min_ocr_confidence: 0.35 },
+    ...overrides,
+  };
 }
 
-/**
- * facts:    normalized extraction {outlet, date, receiptNo, total, lineItems[], confidence}
- * rules:    campaign version rules {
- *             products: [{sku, aliases[], packWeightKg}],
- *             min_total_qty_kg: 4,
- *             min_packs: 2, pack_weight_kg: 2,
- *             min_total_amount, currencies: ["USD"],
- *             weekly_caps: {participant: 3},
- *             exclude_outlets: [], allow_outlets: [] or null,
- *             window: {start, end} ISO
- *           }
- * context:  {campaignStart, campaignEnd, selectedOutletId, outletParticipating,
- *            participantBlocked, weeklyEntryCount, consentValid, mediaOk}
- */
-export function evaluateEligibility(facts, rules = {}, context = {}, opts = {}) {
-  const { minConfidence = 0.6 } = opts;
-  const results = [];
-  const add = (n, ok, r, d) => results.push(rule(n, ok, r, d));
+function norm(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim(); }
 
-  // 1. Document quality
-  if (!facts.receiptNo || !facts.date) add("receipt_identity", null, REASONS.MISSING_RECEIPT_NO, "missing receipt no/date");
-  const total = Number(facts.total || 0);
-  if (total <= 0) add("total_present", null, REASONS.TOTAL_TOO_LOW, "total missing or zero");
-
-  // 2 - Campaign window: missing date -> review, never silent fail
-    const dt = new Date(facts.date || "");
-    const inWindow = !facts.date ? null
-      : (!context.campaignStart || !context.campaignEnd
-          || (dt >= new Date(context.campaignStart) && dt <= new Date(context.campaignEnd)));
-    add("campaign_window", inWindow, REASONS.OUT_OF_CAMPAIGN_WINDOW, `receipt ${facts.date}`);
-
-  // 3. Outlet
-  const outletOk = !context.outletParticipating
-    ? null
-    : !!context.selectedOutletId && context.outletParticipating(context.selectedOutletId, facts.outlet, rules);
-  add("outlet", outletOk, REASONS.NON_PARTICIPATING_OUTLET, `selected=${context.selectedOutletId} extracted=${facts.outlet}`);
-
-  // 4. Product + threshold (D-03 safe default: 2 x 2kg packs or 4kg total)
-  const lines = Array.isArray(facts.lineItems) ? facts.lineItems : [];
-  const products = rules.products || [];
-  const thresholdKg = Number(rules.min_total_qty_kg || 4);
-  const matchLine = (line, p) => {
-    const desc = String(line.description || "").toLowerCase();
-    const parts = [];
-    if (p.sku) parts.push(String(p.sku).toLowerCase());
-    for (const a of (p.aliases || [])) if (a) parts.push(String(a).toLowerCase());
-    if (p.name) parts.push(String(p.name).toLowerCase());
-    return parts.some((pt) => pt && desc.includes(pt));
-  };
-  const matched = [];
-  for (const line of lines) {
-    for (const p of products) {
-      if (matchLine(line, p)) {
-        const qty = Number(line.quantity || 0);
-        const kg = qty * (Number(p.packWeightKg ?? p.pack_weight_kg) || 0);
-        matched.push({ sku: p.sku, qty, kg, line });
-        break;
-      }
+/** Match a line to a catalogue product by code/name/alias token containment. */
+export function matchProduct(line, products) {
+  const desc = norm(line.description);
+  for (const p of products) {
+    if (p.qualifying === false) continue;
+    const keys = [p.code, p.name, ...(p.aliases || [])].map(norm).filter(Boolean);
+    for (const k of keys) {
+      if (k && desc.includes(k)) return { code: p.code, packGrams: Number(p.pack_grams) || null, basis: k };
     }
   }
-  const totalKg = matched.reduce((a, m) => a + m.kg, 0);
-  const minPacks = Number(rules.min_packs || 2);
-  const packs = matched.reduce((a, m) => a + m.qty, 0);
-  const meets = totalKg >= thresholdKg && packs >= minPacks;
-  add("product_qualification", meets ? true : (matched.length ? false : null),
-    REASONS.NO_PRODUCT_MATCH, `matched=${JSON.stringify(matched)} thresholdKg=${thresholdKg}`);
-
-  // 5. Participant caps
-  const cap = Number(rules.weekly_caps?.participant || 0);
-  const capOk = cap <= 0 || Number(context.weeklyEntryCount || 0) < cap;
-  add("participant_cap", capOk, REASONS.CAP_REACHED, `count=${context.weeklyEntryCount} cap=${cap}`);
-
-  // 6. Participant state
-  add("participant_active", !context.participantBlocked, REASONS.PARTICIPANT_BLOCKED, "");
-  add("consent_valid", context.consentValid !== false, REASONS.WITHDRAWN_CONSENT, "");
-
-  // 7. Confidence -> review instead of silent pass
-  if (Number(facts.confidence || 1) < minConfidence) add("extraction_confidence", null, REASONS.LOW_CONFIDENCE, `conf=${facts.confidence}`);
-
-  const hasFail = results.some((r) => r.outcome === "fail");
-  const hasReview = results.some((r) => r.outcome === "review");
-  const decision = hasFail ? NOT_QUALIFIED : hasReview ? NEEDS_REVIEW : QUALIFIED;
-  const reason = decision === NOT_QUALIFIED
-    ? results.find((r) => r.outcome === "fail").reason
-    : decision === NEEDS_REVIEW ? results.find((r) => r.outcome === "review").reason : REASONS.OK;
-  return { decision, reason, ruleResults: results, totalKg, packs, matchedLines: matched.length };
+  return null;
 }
 
-/** Group a receipt into an ISO-8601 week period (e.g. 2026-W38). */
-export function drawPeriodOf(dateIso) {
-  const d = new Date(dateIso);
-  // ISO week: Thursday's year, days since Thursday / 7
-  const cd = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-  const day = cd.getUTCDay() || 7;
-  cd.setUTCDate(cd.getUTCDate() + 4 - day);           // Thursday of this week
-  const yearStart = new Date(Date.UTC(cd.getUTCFullYear(), 0, 1));
-  const week = Math.ceil(((cd - yearStart) / 86400000 + 1) / 7);
-  return `${cd.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+export function evaluateEligibility(extraction, rulesIn = {}, context = {}) {
+  const rules = defaultRules(rulesIn);
+  const R = [];
+  const add = (rule, outcome, reason, evidence) => R.push({ rule, outcome, reason: outcome === "pass" ? REASONS.OK : reason, evidence: evidence ?? null });
+  const x = extraction || {};
+  const doc = x.document || { kind: "unknown", score: 0 };
+  const q = x.quality || {};
+  const tx = x.transaction || {};
+
+  // 1. Document classification + image quality
+  if (doc.kind === "non_receipt") add("document_is_receipt", "fail", REASONS.NOT_RECEIPT, { score: doc.score });
+  else if (doc.kind === "unknown" || (doc.score ?? 0) < rules.review_thresholds.min_document_score) add("document_is_receipt", "unknown", REASONS.NOT_RECEIPT, { score: doc.score });
+  else add("document_is_receipt", "pass", null, { score: doc.score });
+  // Image quality is a signal for the re-upload message, never a reason to hold
+  // a receipt whose text and facts were read: poor quality + not a readable
+  // receipt -> re-upload; otherwise the document/fact rules decide.
+  const iq = context.imageQuality || {};
+  if ((iq.blurry || iq.tooDark || iq.lowContrast) && doc.kind !== "receipt") add("image_quality", "fail", REASONS.IMAGE_QUALITY, iq);
+  else add("image_quality", "pass", null, iq);
+
+  // 2. Campaign + participant
+  add("campaign_open", context.campaignOpen === false ? "fail" : "pass", REASONS.CAMPAIGN_INACTIVE, { intakeAt: context.intakeAt });
+  add("participant_enrolled", context.enrolled === false ? "fail" : "pass", REASONS.NOT_ENROLLED, null);
+  add("participant_eligible", context.participantBlocked ? "fail" : "pass", REASONS.PARTICIPANT_BLOCKED, null);
+
+  // 3. Receipt identity
+  add("receipt_number_present", tx.receiptNo ? "pass" : "unknown", REASONS.MISSING_RECEIPT_NO, { receiptNo: tx.receiptNo });
+  add("total_present", tx.totalMinor != null ? "pass" : "unknown", REASONS.TOTAL_MISSING, { totalMinor: tx.totalMinor });
+
+  // 4. Purchase date inside window (half-open [start, end))
+  const ws = context.windowStart ? new Date(context.windowStart) : null, we = context.windowEnd ? new Date(context.windowEnd) : null;
+  const inWin = (d) => { const t = new Date(d + "T12:00:00Z"); return (!ws || t >= startOfDay(ws)) && (!we || t < we); };
+  if (!tx.date) add("purchase_date_in_window", "unknown", REASONS.MISSING_DATE, { dateRaw: tx.dateRaw });
+  else if (tx.dateAmbiguous) {
+    // Day/month order comes from the campaign's configured date_order (D-09).
+    // The configured reading governs; review only when the two readings
+    // DISAGREE about the window (configured reading out, alternative in).
+    const alt = swapDayMonth(tx.date);
+    const a = inWin(tx.date), b = alt ? inWin(alt) : a;
+    if (a) add("purchase_date_in_window", "pass", null, { date: tx.date, alt, ambiguous: true, dateOrder: rules.date_order });
+    else if (!b) add("purchase_date_in_window", "fail", REASONS.OUT_OF_WINDOW, { date: tx.date, alt, ambiguous: true });
+    else add("purchase_date_in_window", "unknown", REASONS.DATE_AMBIGUOUS, { date: tx.date, alt, dateOrder: rules.date_order });
+  } else add("purchase_date_in_window", inWin(tx.date) ? "pass" : "fail", REASONS.OUT_OF_WINDOW, { date: tx.date, windowStart: context.windowStart, windowEnd: context.windowEnd });
+
+  // 5. Outlet: selected outlet must participate; extracted merchant must credibly match it
+  if (context.selectedOutletParticipating === false) add("outlet_participating", "fail", REASONS.OUTLET_NOT_PARTICIPATING, { selected: context.selectedOutletId });
+  else add("outlet_participating", "pass", null, { selected: context.selectedOutletId });
+  const cands = (x.merchant?.candidates || []);
+  const hit = cands.find((c) => c.outletId === context.selectedOutletId && c.score >= rules.outlet_match.min_score);
+  if (!rules.outlet_match.required) add("outlet_match", "pass", null, { skipped: true });
+  else if (hit) add("outlet_match", "pass", null, { score: hit.score, basis: hit.basis });
+  else if (!cands.length) add("outlet_match", "unknown", REASONS.OUTLET_UNKNOWN, { merchantText: x.merchant?.rawText });
+  else add("outlet_match", "unknown", REASONS.OUTLET_MISMATCH, { merchantText: x.merchant?.rawText, top: cands[0] });
+
+  // 6. Product + quantity (integer grams; voided lines excluded; "2KG" is pack size not qty)
+  const products = rules.products || [];
+  const pr = rules.primary_rule;
+  const matched = [];
+  let qtyUnknown = false;
+  for (const li of (x.lineItems || [])) {
+    if (li.voided) continue;
+    const m = matchProduct(li, products);
+    if (!m) continue;
+    const packGrams = li.packGrams || m.packGrams || null;
+    if (li.quantity == null || !packGrams) { qtyUnknown = true; matched.push({ ...m, quantity: li.quantity, packGrams, grams: null, line: li.rawText }); continue; }
+    matched.push({ ...m, quantity: li.quantity, packGrams, grams: li.quantity * packGrams, line: li.rawText });
+  }
+  const primaryPacks = matched.filter((m) => m.grams != null && m.packGrams === pr.pack_grams).reduce((a, m) => a + m.quantity, 0);
+  const totalGrams = matched.reduce((a, m) => a + (m.grams || 0), 0);
+  let meets = primaryPacks >= pr.min_packs && primaryPacks * pr.pack_grams >= pr.min_total_grams;
+  if (!meets && rules.allow_pack_combinations) meets = totalGrams >= pr.min_total_grams;
+  if (!matched.length) add("qualifying_product", "fail", REASONS.NO_PRODUCT, { lines: (x.lineItems || []).length });
+  else if (meets) add("qualifying_product", "pass", null, { primaryPacks, totalGrams, matched });
+  else if (qtyUnknown) add("qualifying_product", "unknown", REASONS.QTY_UNKNOWN, { primaryPacks, totalGrams, matched });
+  else add("qualifying_product", "fail", REASONS.BELOW_MIN, { primaryPacks, totalGrams, required: pr, combinationsAllowed: !!rules.allow_pack_combinations, matched });
+
+  // 7. Caps (business caps only if approved; null = unlimited)
+  const cap = rules.caps?.per_participant_per_period;
+  if (cap != null && Number(cap) > 0) add("entry_cap", Number(context.periodEntryCount || 0) < Number(cap) ? "pass" : "fail", REASONS.CAP_REACHED, { count: context.periodEntryCount, cap });
+  else add("entry_cap", "pass", null, { unlimited: true });
+
+  // 8. OCR confidence (information only; low -> review, never fail)
+  if (q.confidence != null && q.confidence < rules.review_thresholds.min_ocr_confidence) add("ocr_confidence", "unknown", REASONS.IMAGE_QUALITY, { confidence: q.confidence });
+  else add("ocr_confidence", "pass", null, { confidence: q.confidence });
+
+  const fails = R.filter((r) => r.outcome === "fail");
+  const unknowns = R.filter((r) => r.outcome === "unknown");
+  let disposition, reason;
+  if (fails.length) {
+    // A non-receipt / unusable image is a re-upload case, whatever else failed:
+    // there is no receipt to judge, so no business reason may be reported.
+    const docFail = fails.find((r) => ["document_is_receipt", "image_quality"].includes(r.rule));
+    const first = docFail || fails[0];
+    disposition = docFail ? DISPOSITION.REUPLOAD : DISPOSITION.NOT_QUALIFIED;
+    reason = first.reason;
+  } else if (unknowns.length) { disposition = DISPOSITION.REVIEW; reason = unknowns[0].reason; }
+  else { disposition = DISPOSITION.QUALIFIED; reason = REASONS.OK; }
+  return { disposition, reason, rules: R, rulesVersion: rules.rules_version, primaryPacks, totalGrams, matched, awardUnits: disposition === DISPOSITION.QUALIFIED ? Number(rules.award?.entries_per_receipt || 1) : 0 };
+}
+
+function startOfDay(d) { return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())); }
+function swapDayMonth(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (d > 12) return null;
+  return `${y}-${String(d).padStart(2, "0")}-${String(m).padStart(2, "0")}`;
+}
+
+/** Period code for an intake timestamp from configured half-open periods. */
+export function periodFor(periods, intakeIso) {
+  const t = new Date(intakeIso).getTime();
+  for (const p of periods) if (t >= new Date(p.starts_at).getTime() && t < new Date(p.ends_at).getTime()) return p;
+  return null;
 }

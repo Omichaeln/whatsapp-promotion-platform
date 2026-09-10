@@ -81,3 +81,30 @@ button:disabled { cursor: default; }
 .promo .note { font-size: 12.5px; color: var(--text-secondary); }
 .promo .spacer { height: 14px; }
 .promo .pulse { margin-top: 8px; }
+
+/* ---------- v2 console additions ---------- */
+.banner { background: #fff7ed; color: #9a3412; border-bottom: 1px solid #fed7aa; padding: 6px 22px; font-size: 12px; }
+.subtabs { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
+.subtabs button { border: 1px solid var(--hairline); background: #fff; border-radius: 999px; padding: 5px 12px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
+.subtabs button.active { background: var(--accent-dim); color: var(--accent); border-color: transparent; }
+.stats { display: flex; gap: 18px; flex-wrap: wrap; }
+.stat .big { font-size: 24px; font-weight: 600; }
+.stat .lab { font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 1px; }
+.tbl-wrap { overflow-x: auto; }
+.split2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 14px; align-items: start; }
+@media (max-width: 900px) { .split2 { grid-template-columns: 1fr; } .promo-page { padding: 12px; } }
+.imgbox img { max-width: 100%; border: 1px solid var(--hairline); border-radius: 8px; background: #eee; }
+.ocr { white-space: pre-wrap; font-size: 11px; background: var(--bg); padding: 10px; border-radius: 8px; max-height: 320px; overflow: auto; }
+.phone { background: #e5ddd5; border-radius: 14px; padding: 12px; font-size: 13px; line-height: 1.45; max-width: 420px; }
+.bubble { background: #fff; border-radius: 10px; padding: 6px 10px; margin: 6px 0; max-width: 90%; white-space: pre-wrap; }
+.bubble.in { background: #dcf8c6; margin-left: auto; }
+.bubble.sys { background: #fef3c7; font-size: 11px; }
+.bubble.err { background: #fee2e2; }
+.check { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; margin-right: 10px; }
+.promo .btn.danger { background: #b42318; }
+.notice-ok { font-size: 12px; color: #065f46; background: #ecfdf5; padding: 8px 10px; border-radius: 8px; margin-top: 8px; }
+.promo .actions { white-space: nowrap; }
+.promo .actions .btn { margin-right: 4px; }
+.promo select.field { width: auto; }
+.promo textarea.area { width: 100%; box-sizing: border-box; }
+.promo-tabs .sub { align-self: center; }

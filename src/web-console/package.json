@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Promotion operations console (builds to src/web/dist, served statically; no runtime deps in the server).",
+  "description": "Promotion operations console (builds to src/web-console-dist, served statically by the Node server).",
   "scripts": {
     "dev": "vite",
     "build": "vite build"

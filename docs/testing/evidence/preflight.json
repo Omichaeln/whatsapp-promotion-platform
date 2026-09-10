@@ -1,0 +1,152 @@
+{
+  "checkedAt": "2026-09-10T19:34:35.322Z",
+  "node": "v22.22.2",
+  "environment": "local",
+  "checks": [
+    {
+      "name": "node >= 22.13",
+      "pass": true,
+      "detail": "v22.22.2",
+      "blocking": true
+    },
+    {
+      "name": "dependency sharp",
+      "pass": true,
+      "detail": "",
+      "blocking": true
+    },
+    {
+      "name": "dependency tesseract.js",
+      "pass": true,
+      "detail": "",
+      "blocking": true
+    },
+    {
+      "name": "dependency @tesseract.js-data/eng",
+      "pass": true,
+      "detail": "",
+      "blocking": true
+    },
+    {
+      "name": "sharp renders",
+      "pass": true,
+      "detail": "",
+      "blocking": true
+    },
+    {
+      "name": "configuration valid for environment",
+      "pass": true,
+      "detail": "",
+      "blocking": true
+    },
+    {
+      "name": "secret ADMIN_PASSWORD",
+      "pass": true,
+      "detail": "not set (bootstrap password (>=12 chars); required on public deployments)",
+      "blocking": false
+    },
+    {
+      "name": "secret IDENTITY_KEY",
+      "pass": true,
+      "detail": "not set (AES-256-GCM key material for identity numbers; required outside local)",
+      "blocking": false
+    },
+    {
+      "name": "secret AUDIT_CHECKPOINT_KEY",
+      "pass": true,
+      "detail": "not set (HMAC key for signed audit checkpoints (draw bundles))",
+      "blocking": false
+    },
+    {
+      "name": "secret META_APP_SECRET",
+      "pass": true,
+      "detail": "not set (Meta app secret (webhook signature))",
+      "blocking": false
+    },
+    {
+      "name": "secret META_ACCESS_TOKEN",
+      "pass": true,
+      "detail": "not set (system-user access token)",
+      "blocking": false
+    },
+    {
+      "name": "secret WHATSAPP_WEBHOOK_TOKEN",
+      "pass": true,
+      "detail": "not set (verify token for the webhook handshake; also seeds media-link signing)",
+      "blocking": false
+    },
+    {
+      "name": "secret RECEIPT_PROVIDER_OPENAI_API_KEY",
+      "pass": true,
+      "detail": "not set (vision-LLM key (OpenAI-compatible))",
+      "blocking": false
+    },
+    {
+      "name": "secret CRM_WEBHOOK_TOKEN",
+      "pass": true,
+      "detail": "not set (bearer for the CRM endpoint)",
+      "blocking": false
+    },
+    {
+      "name": "secret AI_PROVIDER_API_KEY",
+      "pass": true,
+      "detail": "not set (legacy desk AI key)",
+      "blocking": false
+    },
+    {
+      "name": "media dir writable",
+      "pass": true,
+      "detail": "/home/user/whatsapp-promotion-platform/data/media",
+      "blocking": true
+    },
+    {
+      "name": "migrations applied",
+      "pass": true,
+      "detail": "7/7 (run npm run migrate)",
+      "blocking": false
+    },
+    {
+      "name": "db environment matches",
+      "pass": true,
+      "detail": "db=local cfg=local",
+      "blocking": false
+    },
+    {
+      "name": "sample data indicator",
+      "pass": true,
+      "detail": "TEST ONLY sample data present",
+      "blocking": false
+    },
+    {
+      "name": "transport mode",
+      "pass": true,
+      "detail": "simulator (SIMULATED — not WhatsApp)",
+      "blocking": false
+    },
+    {
+      "name": "extractor mode",
+      "pass": true,
+      "detail": "tesseract",
+      "blocking": true
+    },
+    {
+      "name": "crm mode",
+      "pass": true,
+      "detail": "not_configured (events queue visibly)",
+      "blocking": false
+    },
+    {
+      "name": "fixtures present",
+      "pass": true,
+      "detail": "run node scripts/gen-fixtures.mjs",
+      "blocking": false
+    },
+    {
+      "name": "console built",
+      "pass": true,
+      "detail": "run npm run web:build",
+      "blocking": false
+    }
+  ],
+  "ok": true
+}
