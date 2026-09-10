@@ -42,6 +42,7 @@ export const CONFIG_SCHEMA = [
   ["AI_PROVIDER_API_KEY", "", "legacy desk AI key", true],
   ["AI_MONTHLY_BUDGET_USD", "0", "legacy desk AI budget"],
   ["LOG_LEVEL", "info", "log level"],
+  ["SEED_POPULATED", "false", "non-production only: after boot, push the fixture receipts through the real pipeline and run the sample draw (~1-2 min) so every screen has data"],
 ];
 
 export function loadConfig(env = process.env) {
@@ -57,6 +58,7 @@ export function loadConfig(env = process.env) {
     database: abs(env.DATABASE || railwayPaths?.database || "./data/promotions.db"),
     mediaDir: abs(env.MEDIA_DIR || railwayPaths?.mediaDir || "./data/media"),
     logLevel: env.LOG_LEVEL || "info",
+    seedPopulated: /^(1|true|yes)$/i.test(env.SEED_POPULATED || ""),
     adminEmail: (env.ADMIN_EMAIL || "admin@example.com").toLowerCase().trim(),
     adminPassword: env.ADMIN_PASSWORD || (environment === "local" ? "change-me-now-local" : null),
     identityKey: env.IDENTITY_KEY || (environment === "local" ? "dev-only-key" : ""),

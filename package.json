@@ -24,6 +24,7 @@
     "load": "node --no-warnings=ExperimentalWarning bench/load.mjs --out docs/testing/evidence/load-benchmark.json",
     "verify:draw": "node --no-warnings=ExperimentalWarning scripts/verify-draw-bundle.mjs",
     "restore:rehearsal": "node --no-warnings=ExperimentalWarning scripts/backup-restore-rehearsal.mjs --out docs/testing/evidence/restore-rehearsal.json",
+    "smoke:remote": "node --no-warnings=ExperimentalWarning scripts/remote-smoke.mjs",
     "audit:deps": "npm audit --omit=dev --audit-level=high",
     "check": "for f in $(find src scripts test bench -name '*.mjs' -o -name '*.js' | grep -v web-console); do node --check \"$f\" || exit 1; done && echo 'check ok'",
     "ci": "npm run check && npm test && npm run bench && npm run audit:deps"

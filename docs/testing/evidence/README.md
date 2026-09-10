@@ -15,6 +15,7 @@ Every file here was produced by running the commands listed against the code in 
 | `draw-verify-W-2.txt` | `npm run verify:draw -- draw-bundle-W-2.json` | independent verifier: all checks pass; a copy with one winner altered fails (`exit=1`) |
 | `http-smoke.txt` | `curl` against `POST /api/simulator/inbound` | a complete registration → outlet → receipt journey over HTTP; cross-phone re-use of a credited receipt blocked |
 | `readiness-endpoint.json` | `GET /api/readiness` | provider modes, three-level readiness flags, open decisions, activation validator result |
+| `remote-smoke-staging-rehearsal.txt` / `.json` | `npm run smoke:remote` against `src/bootstrap.mjs` started with the Railway start command under `ENVIRONMENT=staging`, `HOST=0.0.0.0`, `SEED_POPULATED=true` | 95/95 black-box checks over HTTP covering every function group (see `docs/release/railway-deploy.md` §4); the same command is run against the Railway URL once deployed |
 | `dependency-audit.txt` | `npm run audit:deps` | production dependency audit (0 vulnerabilities at build time) |
 
 Reproduce: `npm ci && npm run fixtures && npm run migrate && npm run seed && npm test && npm run bench && npm run load -- --receipts 30 --concurrency 5 && npm run restore:rehearsal && npm run preflight`.

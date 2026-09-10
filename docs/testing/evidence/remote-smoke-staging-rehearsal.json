@@ -1,0 +1,580 @@
+{
+  "base_url": "http://127.0.0.1:5399",
+  "started_at": "2026-09-10T20:38:25.335Z",
+  "finished_at": "2026-09-10T20:38:52.440Z",
+  "pass": 95,
+  "fail": 0,
+  "skip": 0,
+  "results": [
+    {
+      "group": "availability",
+      "name": "GET /health/live",
+      "status": "PASS",
+      "detail": "HTTP 200"
+    },
+    {
+      "group": "availability",
+      "name": "GET /health/ready (db + extractor + worker)",
+      "status": "PASS",
+      "detail": "HTTP 200 extractor=tesseract.js mode=real"
+    },
+    {
+      "group": "availability",
+      "name": "console served at /",
+      "status": "PASS",
+      "detail": "HTTP 200 text/html"
+    },
+    {
+      "group": "availability",
+      "name": "OpenAPI document",
+      "status": "PASS",
+      "detail": "122 paths"
+    },
+    {
+      "group": "availability",
+      "name": "public winners endpoint (no auth)",
+      "status": "PASS",
+      "detail": "2 published winners, periods=W-2"
+    },
+    {
+      "group": "auth",
+      "name": "wrong password rejected",
+      "status": "PASS",
+      "detail": "HTTP 401"
+    },
+    {
+      "group": "auth",
+      "name": "admin login",
+      "status": "PASS",
+      "detail": "HTTP 200 roles=platform_admin"
+    },
+    {
+      "group": "auth",
+      "name": "whoami reports roles and environment",
+      "status": "PASS",
+      "detail": "env=staging mfa=false"
+    },
+    {
+      "group": "auth",
+      "name": "unauthenticated API call rejected",
+      "status": "PASS",
+      "detail": "HTTP 401"
+    },
+    {
+      "group": "auth",
+      "name": "garbage token rejected",
+      "status": "PASS",
+      "detail": "HTTP 401"
+    },
+    {
+      "group": "staff",
+      "name": "account smoke-reviewer@example.test: create/reset -> temporary password -> forced change -> login",
+      "status": "PASS",
+      "detail": "forced change=true"
+    },
+    {
+      "group": "staff",
+      "name": "account smoke-draw@example.test: create/reset -> temporary password -> forced change -> login",
+      "status": "PASS",
+      "detail": "forced change=true"
+    },
+    {
+      "group": "staff",
+      "name": "account smoke-approver@example.test: create/reset -> temporary password -> forced change -> login",
+      "status": "PASS",
+      "detail": "forced change=true"
+    },
+    {
+      "group": "staff",
+      "name": "account smoke-ops@example.test: create/reset -> temporary password -> forced change -> login",
+      "status": "PASS",
+      "detail": "forced change=true"
+    },
+    {
+      "group": "staff",
+      "name": "account smoke-support@example.test: create/reset -> temporary password -> forced change -> login",
+      "status": "PASS",
+      "detail": "forced change=true"
+    },
+    {
+      "group": "staff",
+      "name": "reviewer cannot manage staff (403)",
+      "status": "PASS",
+      "detail": "HTTP 403"
+    },
+    {
+      "group": "staff",
+      "name": "platform_admin cannot freeze a draw (no draw_officer role)",
+      "status": "PASS",
+      "detail": "HTTP 403"
+    },
+    {
+      "group": "staff",
+      "name": "reviewer sees the review queue",
+      "status": "PASS",
+      "detail": "HTTP 200"
+    },
+    {
+      "group": "campaign",
+      "name": "active campaign present",
+      "status": "PASS",
+      "detail": "SAMPLE-BROWN-SUGAR (active) v1"
+    },
+    {
+      "group": "campaign",
+      "name": "campaign detail: active version with rules, content, flags",
+      "status": "PASS",
+      "detail": "rules primary={\"min_packs\":2,\"pack_grams\":2000,\"min_total_grams\":4000}"
+    },
+    {
+      "group": "campaign",
+      "name": "periods listed",
+      "status": "PASS",
+      "detail": "W-2:drawn W-1:closed W0:open W+1:scheduled"
+    },
+    {
+      "group": "campaign",
+      "name": "campaign outlet master (80 sample outlets)",
+      "status": "PASS",
+      "detail": "80 outlets"
+    },
+    {
+      "group": "campaign",
+      "name": "product catalogue with pack grams",
+      "status": "PASS",
+      "detail": ",,"
+    },
+    {
+      "group": "campaign",
+      "name": "decision register D-01..D-22",
+      "status": "PASS",
+      "detail": "22 decisions, open=22"
+    },
+    {
+      "group": "campaign",
+      "name": "production activation validator refuses (sample markers / open decisions)",
+      "status": "PASS",
+      "detail": "35 failures"
+    },
+    {
+      "group": "campaign",
+      "name": "readiness endpoint with provider modes",
+      "status": "PASS",
+      "detail": "transport=simulated extractor=real crm=not_configured levels={\"locally_testable\":true,\"integrated_client_testing\":false,\"production\":false}"
+    },
+    {
+      "group": "campaign",
+      "name": "outlet CSV export",
+      "status": "PASS",
+      "detail": "80 rows"
+    },
+    {
+      "group": "campaign",
+      "name": "versions listed",
+      "status": "PASS",
+      "detail": "1 versions"
+    },
+    {
+      "group": "participant",
+      "name": "greeting returns the menu",
+      "status": "PASS",
+      "detail": "Welcome to TEST ONLY — Sample Brown Sugar Promotion!"
+    },
+    {
+      "group": "participant",
+      "name": "registration: name, surname, ID (masked in confirmation), town, confirm, terms",
+      "status": "PASS",
+      "detail": "You're registered, Smoke! You can now enter the promotion."
+    },
+    {
+      "group": "participant",
+      "name": "participant visible to staff with masked identity",
+      "status": "PASS",
+      "detail": "id=ptc_16d30dfed82218da70c6728f status=active"
+    },
+    {
+      "group": "participant",
+      "name": "outlet selection by search resolves to a canonical outlet",
+      "status": "PASS",
+      "detail": "Outlet: Sunrise Supermarket — Westgate, Harare."
+    },
+    {
+      "group": "participant",
+      "name": "receipt acknowledged durably with a reference",
+      "status": "PASS",
+      "detail": "We have received your receipt. Your submission reference is R-3D13ED21. We are checking it now and will message you with the result."
+    },
+    {
+      "group": "participant",
+      "name": "fresh two-pack receipt read from pixels -> QUALIFIED",
+      "status": "PASS",
+      "detail": "R-3D13ED21 -> QUALIFIED ok"
+    },
+    {
+      "group": "participant",
+      "name": "participant told ONE entry was added",
+      "status": "PASS",
+      "detail": "out:receipt_outcome:Thank you for entering TEST ONLY — Sample Brown Sugar Promotion! Your receipt R-3D13ED21 qualifies and ONE entry has been added to the draw. You now have 1 qualified entries. Good luck!\n\nYou can enter again with a different qualifying receipt — reply 2."
+    },
+    {
+      "group": "participant",
+      "name": "exactly one active entry in the ledger",
+      "status": "PASS",
+      "detail": "1 entries"
+    },
+    {
+      "group": "participant",
+      "name": "entry trace shows the OCR provider and rules version",
+      "status": "PASS",
+      "detail": "provider=\"tesseract.js\""
+    },
+    {
+      "group": "participant",
+      "name": "same receipt again (same phone) -> DUPLICATE, no second entry",
+      "status": "PASS",
+      "detail": "R-92D8B748 -> DUPLICATE"
+    },
+    {
+      "group": "participant",
+      "name": "same receipt from another phone -> DUPLICATE (cross-phone re-use blocked)",
+      "status": "PASS",
+      "detail": "R-04E42C0E -> DUPLICATE"
+    },
+    {
+      "group": "participant",
+      "name": "one pack -> NOT_QUALIFIED below_minimum_quantity",
+      "status": "PASS",
+      "detail": "R-67A3914E -> NOT_QUALIFIED below_minimum_quantity"
+    },
+    {
+      "group": "participant",
+      "name": "non-receipt photo -> REUPLOAD_REQUIRED",
+      "status": "PASS",
+      "detail": "R-78158FC3 -> REUPLOAD_REQUIRED not_a_valid_receipt"
+    },
+    {
+      "group": "participant",
+      "name": "malformed upload refused with guidance (not stored as a receipt)",
+      "status": "PASS",
+      "detail": "Please send a PHOTO of your receipt (use the camera or gallery). Voice notes, stickers and text cannot be checked. Reply MENU to go back."
+    },
+    {
+      "group": "participant",
+      "name": "date readable both ways (11/01/2026) -> REVIEW_REQUIRED, never auto-decided",
+      "status": "PASS",
+      "detail": "R-C744E241 -> REVIEW_REQUIRED transaction_date_unclear"
+    },
+    {
+      "group": "participant",
+      "name": "menu 7: own entry status",
+      "status": "PASS",
+      "detail": "Your entries for TEST ONLY — Sample Brown Sugar Promotion:"
+    },
+    {
+      "group": "participant",
+      "name": "menu 3/4/5/6: mechanics, terms, prizes, winners",
+      "status": "PASS",
+      "detail": "winners: Published winners by week:"
+    },
+    {
+      "group": "participant",
+      "name": "HELP and MENU keywords",
+      "status": "PASS",
+      "detail": "Welcome to TEST ONLY — Sample Brown Sugar Promotion!"
+    },
+    {
+      "group": "review",
+      "name": "review queue contains the uncertain receipt",
+      "status": "PASS",
+      "detail": "queue size=4"
+    },
+    {
+      "group": "review",
+      "name": "reviewer assigns the task",
+      "status": "PASS",
+      "detail": "HTTP 200"
+    },
+    {
+      "group": "review",
+      "name": "receipt workspace: facts, rule results, outlet match, signed media link",
+      "status": "PASS",
+      "detail": "media link=signed, expires 2026-09-10T21:08:49.832Z"
+    },
+    {
+      "group": "review",
+      "name": "signed media link without a staff session refused",
+      "status": "PASS",
+      "detail": "HTTP 401"
+    },
+    {
+      "group": "review",
+      "name": "signed media link serves the image to the reviewer",
+      "status": "PASS",
+      "detail": "HTTP 200 image/jpeg"
+    },
+    {
+      "group": "review",
+      "name": "tampered media signature refused even with a session",
+      "status": "PASS",
+      "detail": "HTTP 403"
+    },
+    {
+      "group": "review",
+      "name": "platform_admin cannot decide a review (reviewer role only)",
+      "status": "PASS",
+      "detail": "HTTP 403"
+    },
+    {
+      "group": "review",
+      "name": "reviewer qualifies through the integrity path -> entry awarded",
+      "status": "PASS",
+      "detail": "HTTP 200 entry=ent_957ac0ea13b440e5f82559e7"
+    },
+    {
+      "group": "review",
+      "name": "second decision on the same receipt refused",
+      "status": "PASS",
+      "detail": "HTTP 409"
+    },
+    {
+      "group": "review",
+      "name": "participant told the review outcome",
+      "status": "PASS",
+      "detail": "out:receipt_outcome:Good news: after review, receipt R-C744E241 qualifies and ONE entry has been added to the draw. You now have 2 qualified entries."
+    },
+    {
+      "group": "review",
+      "name": "entry disqualification (audited)",
+      "status": "PASS",
+      "detail": "HTTP 200"
+    },
+    {
+      "group": "review",
+      "name": "entry reinstatement",
+      "status": "PASS",
+      "detail": "HTTP 200"
+    },
+    {
+      "group": "support",
+      "name": "support sees the conversation transcript (masked phone)",
+      "status": "PASS",
+      "detail": "HTTP 200"
+    },
+    {
+      "group": "support",
+      "name": "handoff: claim suspends automation (holding message only), operator sends, release resumes the menu",
+      "status": "PASS",
+      "detail": "claim=200 send=200 release=200 during handoff: \"Our team is handling your conversation. Please wait for their reply.\""
+    },
+    {
+      "group": "support",
+      "name": "identity reveal requires a reason and is audited",
+      "status": "PASS",
+      "detail": "HTTP 200"
+    },
+    {
+      "group": "support",
+      "name": "audit trail records the reveal",
+      "status": "PASS",
+      "detail": "3 events"
+    },
+    {
+      "group": "draw",
+      "name": "existing draws listed with period codes and status",
+      "status": "PASS",
+      "detail": "W-2:published"
+    },
+    {
+      "group": "draw",
+      "name": "stored published draw re-verifies (seed, snapshot, output hashes)",
+      "status": "PASS",
+      "detail": "{\"ok\":true,\"problems\":[]}"
+    },
+    {
+      "group": "draw",
+      "name": "bundle export for the independent verifier",
+      "status": "PASS",
+      "detail": "draw-verifier/2 events=4"
+    },
+    {
+      "group": "draw",
+      "name": "barrier W-1 passes",
+      "status": "PASS",
+      "detail": "eligible=7 distinct=7 winners planned=5"
+    },
+    {
+      "group": "draw",
+      "name": "freeze candidates (draw officer)",
+      "status": "PASS",
+      "detail": "status=frozen snapshot=d3f417bd6783"
+    },
+    {
+      "group": "draw",
+      "name": "draw officer cannot approve (separation of duties)",
+      "status": "PASS",
+      "detail": "HTTP 403"
+    },
+    {
+      "group": "draw",
+      "name": "execute with committed seed -> output hash",
+      "status": "PASS",
+      "detail": "status=executed output=5fbd7c5fb093"
+    },
+    {
+      "group": "draw",
+      "name": "approval with a mismatching expected hash refused",
+      "status": "PASS",
+      "detail": "HTTP 409"
+    },
+    {
+      "group": "draw",
+      "name": "independent approver approves against the output hash",
+      "status": "PASS",
+      "detail": "status=approved"
+    },
+    {
+      "group": "draw",
+      "name": "stored draw re-verifies deterministically",
+      "status": "PASS",
+      "detail": "{\"ok\":true,\"problems\":[]}"
+    },
+    {
+      "group": "draw",
+      "name": "publish draw materialises winners (fulfilment role)",
+      "status": "PASS",
+      "detail": "winners created=5 status=published"
+    },
+    {
+      "group": "winners",
+      "name": "winners listed for the draw",
+      "status": "PASS",
+      "detail": "5 winners"
+    },
+    {
+      "group": "winners",
+      "name": "notify winner -> claim reference + deadline, message queued",
+      "status": "PASS",
+      "detail": "deadline=2026-09-17T20:38:52.400Z"
+    },
+    {
+      "group": "winners",
+      "name": "invalid transition (notified -> collected) refused",
+      "status": "PASS",
+      "detail": "HTTP 409"
+    },
+    {
+      "group": "winners",
+      "name": "verified",
+      "status": "PASS",
+      "detail": "HTTP 200"
+    },
+    {
+      "group": "winners",
+      "name": "accepted with a collection outlet",
+      "status": "PASS",
+      "detail": "HTTP 200 outlet=CNR-BYO-02"
+    },
+    {
+      "group": "winners",
+      "name": "collected with fulfilment reference",
+      "status": "PASS",
+      "detail": "HTTP 200"
+    },
+    {
+      "group": "winners",
+      "name": "second collection refused",
+      "status": "PASS",
+      "detail": "HTTP 409"
+    },
+    {
+      "group": "winners",
+      "name": "publish winner (projection only)",
+      "status": "PASS",
+      "detail": "HTTP 200"
+    },
+    {
+      "group": "winners",
+      "name": "public list shows only name initial, town, prize, week",
+      "status": "PASS",
+      "detail": "{\"period\":\"W-1\",\"rank\":1,\"name\":\"Tendai N.\",\"location\":\"Harare\",\"prize\":\"TEST prize: USD 200 voucher\"}"
+    },
+    {
+      "group": "winners",
+      "name": "participant menu 6 lists the published week",
+      "status": "PASS",
+      "detail": "Published winners by week:"
+    },
+    {
+      "group": "operations",
+      "name": "integrations: transport/extractor/crm/db/storage/worker/queues",
+      "status": "PASS",
+      "detail": "transport=simulated extractor=tesseract.js crm=not_configured worker={\"running\":true,\"lastTick\":\"2026-09-10T20:38:52.417Z\",\"ticks"
+    },
+    {
+      "group": "operations",
+      "name": "queue stats and dead letters",
+      "status": "PASS",
+      "detail": "dead events=0 dead jobs=0"
+    },
+    {
+      "group": "operations",
+      "name": "outbound messages listed with masked phones",
+      "status": "PASS",
+      "detail": "100 messages"
+    },
+    {
+      "group": "operations",
+      "name": "CRM events queued and visible (provider may be not_configured)",
+      "status": "PASS",
+      "detail": "100 events; summary={\"provider\":\"none\",\"pending\":115,\"sending\":0,\"delivered\":0,\"retryable_failure\":0,\"permanent_failure\""
+    },
+    {
+      "group": "operations",
+      "name": "CRM mapping preview",
+      "status": "PASS",
+      "detail": "HTTP 200"
+    },
+    {
+      "group": "operations",
+      "name": "CRM reconcile runs (audited)",
+      "status": "PASS",
+      "detail": "HTTP 200"
+    },
+    {
+      "group": "operations",
+      "name": "alerts view",
+      "status": "PASS",
+      "detail": "0 open alerts"
+    },
+    {
+      "group": "operations",
+      "name": "reports summary",
+      "status": "PASS",
+      "detail": "{\"campaign\":\"cmp_08b96cc978a9d9e8617236bd\",\"range\":{\"since\":\"1970-01-01\",\"until\":\"9999-12-31\"},\"definitions\":{\"submissions\":\"receipt uploads (one per image mess"
+    },
+    {
+      "group": "operations",
+      "name": "entries export (CSV, watermarked, formula-safe)",
+      "status": "PASS",
+      "detail": "17 rows"
+    },
+    {
+      "group": "operations",
+      "name": "audit hash chain verifies",
+      "status": "PASS",
+      "detail": "{\"ok\":true,\"total\":198,\"broken\":[],\"brokenCount\":0,\"head\":\"6a1f8592395850cb333b3353f2e092c2de72d187879c94a0e3394469fa79d"
+    },
+    {
+      "group": "operations",
+      "name": "sample-data marker present (TEST ONLY deployment)",
+      "status": "PASS",
+      "detail": "{\"seeded_at\":\"2026-09-10T20:37:25.691Z\",\"seed_clock\":\"2026-09-10T20:37:25.645Z\","
+    },
+    {
+      "group": "auth",
+      "name": "logout revokes the session token",
+      "status": "PASS",
+      "detail": "logout=200 whoami after=401"
+    }
+  ]
+}
