@@ -1,6 +1,6 @@
 # Test readiness statement
 
-Build: branch `claude/funny-brown-r7wpo9`, 10 September 2026 (the exact commit is in the pull request and in `docs/testing/evidence/README.md`). This statement is an engineering self-assessment with evidence; it is not a client sign-off.
+Build: branch `claude/funny-brown-r7wpo9`, 10 September 2026 (code commit `f0a7f7a8f4fdbd5f2a57fd12f8359d29d25a3ab5`; the pull request carries the full history). This statement is an engineering self-assessment with evidence; it is not a client sign-off.
 
 ## Readiness at the three levels
 
