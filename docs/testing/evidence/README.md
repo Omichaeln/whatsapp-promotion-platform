@@ -1,4 +1,4 @@
-# Evidence index (build of 10 September 2026, branch `claude/funny-brown-r7wpo9`)
+# Evidence index (build of 10 September 2026, branch `claude/funny-brown-r7wpo9`, code commit `f0a7f7a8f4fdbd5f2a57fd12f8359d29d25a3ab5`)
 
 Every file here was produced by running the commands listed against the code in this branch. Nothing is hand-edited except the redaction of temporary passwords in `seed-run.txt`. No file contains a secret value.
 
