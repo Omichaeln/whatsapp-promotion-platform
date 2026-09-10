@@ -22,7 +22,7 @@ Per the build brief, the system is **not** described as ready for integrated cli
 | Vision-LLM extraction | `src/extract/vision.mjs` (OpenAI-compatible, strict schema, re-parsed locally) | **configured=no, verified=no** (no key; api.openai.com unreachable from the sandbox) | ADR-0003 |
 | Simulator extractor | `src/extract/simulator.mjs` | TEST ONLY; refused outside `local` | used by the fast test suites only |
 | CRM | `src/crm.mjs` (canonical events, versioned outbox, read-back, reconcile) + `scripts/crm-receiver.mjs` | **not_configured** (`CRM_PROVIDER=none`); webhook adapter **verified against the local contract receiver only** | `test/crm-reliability.test.mjs` T-26/T-27; D-19 |
-| Hosting (Railway) | `Procfile` → `src/bootstrap.mjs`, volume at `/app/data` | **not deployed from this environment**; the Railway URL was unreachable from the sandbox | `docs/release/rollout-and-rollback.md` |
+| Hosting (Railway) | `Procfile` → `src/bootstrap.mjs`, volume at `/app/data`, `SEED_POPULATED` journeys | **not deployed from this environment** (Railway API, dashboard and app URL unreachable from the sandbox); the Railway start command was rehearsed locally under `ENVIRONMENT=staging` and the 95-check live test passed | `docs/release/railway-deploy.md`, `evidence/remote-smoke-staging-rehearsal.txt` |
 | Database | `node:sqlite` WAL, expand-only migrations 001–007 | verified locally, migration rehearsal on populated v1 data | `evidence/migration-rehearsal.json`, `evidence/restore-rehearsal.json` |
 
 ## Access for testers (local / any deployment of this branch)
@@ -34,7 +34,7 @@ Per the build brief, the system is **not** described as ready for integrated cli
 
 ## Evidence index
 
-See `docs/testing/evidence/README.md`. Automated suite, receipt benchmark, load benchmark, migration rehearsal, backup/restore rehearsal, preflight, seed run (redacted), draw bundle + independent verification (including a tampered copy failing), HTTP smoke journey, dependency audit, readiness endpoint output.
+See `docs/testing/evidence/README.md`. Live system test (95 checks over HTTP against a staging-style boot), automated suite, receipt benchmark, load benchmark, migration rehearsal, backup/restore rehearsal, preflight, seed run (redacted), draw bundle + independent verification (including a tampered copy failing), HTTP smoke journey, dependency audit, readiness endpoint output.
 
 ## Blockers to the next level (owner → action)
 

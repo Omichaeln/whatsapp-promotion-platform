@@ -1,0 +1,98 @@
+PASS  [availability] GET /health/live — HTTP 200
+PASS  [availability] GET /health/ready (db + extractor + worker) — HTTP 200 extractor=tesseract.js mode=real
+PASS  [availability] console served at / — HTTP 200 text/html
+PASS  [availability] OpenAPI document — 122 paths
+PASS  [availability] public winners endpoint (no auth) — 2 published winners, periods=W-2
+PASS  [auth] wrong password rejected — HTTP 401
+PASS  [auth] admin login — HTTP 200 roles=platform_admin
+PASS  [auth] whoami reports roles and environment — env=staging mfa=false
+PASS  [auth] unauthenticated API call rejected — HTTP 401
+PASS  [auth] garbage token rejected — HTTP 401
+PASS  [staff] account smoke-reviewer@example.test: create/reset -> temporary password -> forced change -> login — forced change=true
+PASS  [staff] account smoke-draw@example.test: create/reset -> temporary password -> forced change -> login — forced change=true
+PASS  [staff] account smoke-approver@example.test: create/reset -> temporary password -> forced change -> login — forced change=true
+PASS  [staff] account smoke-ops@example.test: create/reset -> temporary password -> forced change -> login — forced change=true
+PASS  [staff] account smoke-support@example.test: create/reset -> temporary password -> forced change -> login — forced change=true
+PASS  [staff] reviewer cannot manage staff (403) — HTTP 403
+PASS  [staff] platform_admin cannot freeze a draw (no draw_officer role) — HTTP 403
+PASS  [staff] reviewer sees the review queue — HTTP 200
+PASS  [campaign] active campaign present — SAMPLE-BROWN-SUGAR (active) v1
+PASS  [campaign] campaign detail: active version with rules, content, flags — rules primary={"min_packs":2,"pack_grams":2000,"min_total_grams":4000}
+PASS  [campaign] periods listed — W-2:drawn W-1:closed W0:open W+1:scheduled
+PASS  [campaign] campaign outlet master (80 sample outlets) — 80 outlets
+PASS  [campaign] product catalogue with pack grams — ,,
+PASS  [campaign] decision register D-01..D-22 — 22 decisions, open=22
+PASS  [campaign] production activation validator refuses (sample markers / open decisions) — 35 failures
+PASS  [campaign] readiness endpoint with provider modes — transport=simulated extractor=real crm=not_configured levels={"locally_testable":true,"integrated_client_testing":false,"production":false}
+PASS  [campaign] outlet CSV export — 80 rows
+PASS  [campaign] versions listed — 1 versions
+PASS  [participant] greeting returns the menu — Welcome to TEST ONLY — Sample Brown Sugar Promotion!
+PASS  [participant] registration: name, surname, ID (masked in confirmation), town, confirm, terms — You're registered, Smoke! You can now enter the promotion.
+PASS  [participant] participant visible to staff with masked identity — id=ptc_16d30dfed82218da70c6728f status=active
+PASS  [participant] outlet selection by search resolves to a canonical outlet — Outlet: Sunrise Supermarket — Westgate, Harare.
+PASS  [participant] receipt acknowledged durably with a reference — We have received your receipt. Your submission reference is R-3D13ED21. We are checking it now and will message you with the result.
+PASS  [participant] fresh two-pack receipt read from pixels -> QUALIFIED — R-3D13ED21 -> QUALIFIED ok
+PASS  [participant] participant told ONE entry was added — out:receipt_outcome:Thank you for entering TEST ONLY — Sample Brown Sugar Promotion! Your receipt R-3D13ED21 qualifies and ONE entry has been added to the draw.
+PASS  [participant] exactly one active entry in the ledger — 1 entries
+PASS  [participant] entry trace shows the OCR provider and rules version — provider="tesseract.js"
+PASS  [participant] same receipt again (same phone) -> DUPLICATE, no second entry — R-92D8B748 -> DUPLICATE
+PASS  [participant] same receipt from another phone -> DUPLICATE (cross-phone re-use blocked) — R-04E42C0E -> DUPLICATE
+PASS  [participant] one pack -> NOT_QUALIFIED below_minimum_quantity — R-67A3914E -> NOT_QUALIFIED below_minimum_quantity
+PASS  [participant] non-receipt photo -> REUPLOAD_REQUIRED — R-78158FC3 -> REUPLOAD_REQUIRED not_a_valid_receipt
+PASS  [participant] malformed upload refused with guidance (not stored as a receipt) — Please send a PHOTO of your receipt (use the camera or gallery). Voice notes, stickers and text cannot be checked. Reply MENU to go back.
+PASS  [participant] date readable both ways (11/01/2026) -> REVIEW_REQUIRED, never auto-decided — R-C744E241 -> REVIEW_REQUIRED transaction_date_unclear
+PASS  [participant] menu 7: own entry status — Your entries for TEST ONLY — Sample Brown Sugar Promotion:
+PASS  [participant] menu 3/4/5/6: mechanics, terms, prizes, winners — winners: Published winners by week:
+PASS  [participant] HELP and MENU keywords — Welcome to TEST ONLY — Sample Brown Sugar Promotion!
+PASS  [review] review queue contains the uncertain receipt — queue size=4
+PASS  [review] reviewer assigns the task — HTTP 200
+PASS  [review] receipt workspace: facts, rule results, outlet match, signed media link — media link=signed, expires 2026-09-10T21:08:49.832Z
+PASS  [review] signed media link without a staff session refused — HTTP 401
+PASS  [review] signed media link serves the image to the reviewer — HTTP 200 image/jpeg
+PASS  [review] tampered media signature refused even with a session — HTTP 403
+PASS  [review] platform_admin cannot decide a review (reviewer role only) — HTTP 403
+PASS  [review] reviewer qualifies through the integrity path -> entry awarded — HTTP 200 entry=ent_957ac0ea13b440e5f82559e7
+PASS  [review] second decision on the same receipt refused — HTTP 409
+PASS  [review] participant told the review outcome — out:receipt_outcome:Good news: after review, receipt R-C744E241 qualifies and ONE entry has been added to the draw. You now have 2 qualified entries.
+PASS  [review] entry disqualification (audited) — HTTP 200
+PASS  [review] entry reinstatement — HTTP 200
+PASS  [support] support sees the conversation transcript (masked phone) — HTTP 200
+PASS  [support] handoff: claim suspends automation (holding message only), operator sends, release resumes the menu — claim=200 send=200 release=200 during handoff: "Our team is handling your conversation. Please wait for their reply."
+PASS  [support] identity reveal requires a reason and is audited — HTTP 200
+PASS  [support] audit trail records the reveal — 3 events
+PASS  [draw] existing draws listed with period codes and status — W-2:published
+PASS  [draw] stored published draw re-verifies (seed, snapshot, output hashes) — {"ok":true,"problems":[]}
+PASS  [draw] bundle export for the independent verifier — draw-verifier/2 events=4
+PASS  [draw] barrier W-1 passes — eligible=7 distinct=7 winners planned=5
+PASS  [draw] freeze candidates (draw officer) — status=frozen snapshot=d3f417bd6783
+PASS  [draw] draw officer cannot approve (separation of duties) — HTTP 403
+PASS  [draw] execute with committed seed -> output hash — status=executed output=5fbd7c5fb093
+PASS  [draw] approval with a mismatching expected hash refused — HTTP 409
+PASS  [draw] independent approver approves against the output hash — status=approved
+PASS  [draw] stored draw re-verifies deterministically — {"ok":true,"problems":[]}
+PASS  [draw] publish draw materialises winners (fulfilment role) — winners created=5 status=published
+PASS  [winners] winners listed for the draw — 5 winners
+PASS  [winners] notify winner -> claim reference + deadline, message queued — deadline=2026-09-17T20:38:52.400Z
+PASS  [winners] invalid transition (notified -> collected) refused — HTTP 409
+PASS  [winners] verified — HTTP 200
+PASS  [winners] accepted with a collection outlet — HTTP 200 outlet=CNR-BYO-02
+PASS  [winners] collected with fulfilment reference — HTTP 200
+PASS  [winners] second collection refused — HTTP 409
+PASS  [winners] publish winner (projection only) — HTTP 200
+PASS  [winners] public list shows only name initial, town, prize, week — {"period":"W-1","rank":1,"name":"Tendai N.","location":"Harare","prize":"TEST prize: USD 200 voucher"}
+PASS  [winners] participant menu 6 lists the published week — Published winners by week:
+PASS  [operations] integrations: transport/extractor/crm/db/storage/worker/queues — transport=simulated extractor=tesseract.js crm=not_configured worker={"running":true,"lastTick":"2026-09-10T20:38:52.417Z","ticks
+PASS  [operations] queue stats and dead letters — dead events=0 dead jobs=0
+PASS  [operations] outbound messages listed with masked phones — 100 messages
+PASS  [operations] CRM events queued and visible (provider may be not_configured) — 100 events; summary={"provider":"none","pending":115,"sending":0,"delivered":0,"retryable_failure":0,"permanent_failure"
+PASS  [operations] CRM mapping preview — HTTP 200
+PASS  [operations] CRM reconcile runs (audited) — HTTP 200
+PASS  [operations] alerts view — 0 open alerts
+PASS  [operations] reports summary — {"campaign":"cmp_08b96cc978a9d9e8617236bd","range":{"since":"1970-01-01","until":"9999-12-31"},"definitions":{"submissions":"receipt uploads (one per image mess
+PASS  [operations] entries export (CSV, watermarked, formula-safe) — 17 rows
+PASS  [operations] audit hash chain verifies — {"ok":true,"total":198,"broken":[],"brokenCount":0,"head":"6a1f8592395850cb333b3353f2e092c2de72d187879c94a0e3394469fa79d
+PASS  [operations] sample-data marker present (TEST ONLY deployment) — {"seeded_at":"2026-09-10T20:37:25.691Z","seed_clock":"2026-09-10T20:37:25.645Z",
+PASS  [auth] logout revokes the session token — logout=200 whoami after=401
+
+95 passed, 0 failed, 0 skipped
+written docs/testing/evidence/remote-smoke-staging-rehearsal.json

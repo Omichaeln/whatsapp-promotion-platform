@@ -32,6 +32,7 @@ Sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD` from `.env` (defaults: `admin@exam
 | `npm run load` | engineering load benchmark (real OCR) → `docs/testing/evidence/load-benchmark.json` |
 | `npm run verify:draw -- bundle.json` | independent draw verifier |
 | `npm run restore:rehearsal` | backup + isolated restore + integrity checks → evidence |
+| `npm run smoke:remote` | 95-check live system test against any deployment URL (`BASE_URL`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`; see `docs/release/railway-deploy.md`) |
 | `npm run crm:receiver` | local CRM contract receiver (fault injection) |
 | `npm run web:build` | rebuild the console bundle |
 | `npm run check` / `npm run ci` | syntax gate / full CI sequence |
@@ -42,7 +43,7 @@ Sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD` from `.env` (defaults: `admin@exam
 
 ## Deployment (Railway)
 
-`Procfile` → `src/bootstrap.mjs` (migrate → non-production sample seed → server + worker). Mount a volume at `/app/data`. Set `ENVIRONMENT`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `IDENTITY_KEY`, `AUDIT_CHECKPOINT_KEY`; for the client's number set `WHATSAPP_TRANSPORT=cloud-api` and the `META_*` variables (`docs/integrations/whatsapp.md`). Production refuses the simulator transport/extractor, sample seeding and dev keys.
+`Procfile` → `src/bootstrap.mjs` (migrate → non-production sample seed → server + worker → optional `SEED_POPULATED=true` journeys). Mount a volume at `/app/data`. Full procedure and live test: `docs/release/railway-deploy.md`. Set `ENVIRONMENT`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `IDENTITY_KEY`, `AUDIT_CHECKPOINT_KEY`; for the client's number set `WHATSAPP_TRANSPORT=cloud-api` and the `META_*` variables (`docs/integrations/whatsapp.md`). Production refuses the simulator transport/extractor, sample seeding and dev keys.
 
 ## License
 
