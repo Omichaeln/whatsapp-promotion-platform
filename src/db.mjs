@@ -37,13 +37,20 @@ export function mask(v) {
   return s.slice(0, 2) + "******" + s.slice(-2);
 }
 
-export function normalizePhone(raw) {
-  // Strip +, spaces, dashes, parens. Zimbabwe mobile -> national 7xxxxxxxxx.
+/**
+ * Channel identity normalisation: full international digits (E.164 without
+ * "+"). A local number with a leading 0 gets the configured default country
+ * code; country codes are NEVER stripped, so two numbers from different
+ * countries can never merge (§7.3). Default country is a test assumption
+ * (D-04) and is read from DEFAULT_COUNTRY_CODE.
+ */
+export function normalizePhone(raw, defaultCountryCode = process.env.DEFAULT_COUNTRY_CODE || "263") {
   let s = String(raw || "").replace(/[^\d]/g, "");
-  if (s.startsWith("263") || s.startsWith("260")) s = s.slice(3);
-  if (s.startsWith("0")) s = s.slice(1);
-  if (s.length >= 9) s = s.slice(-9);
-  return s || null;
+  if (!s) return null;
+  if (s.startsWith("00")) s = s.slice(2);
+  else if (s.startsWith("0")) s = `${defaultCountryCode}${s.slice(1)}`;
+  if (s.length < 8 || s.length > 15) return null;
+  return s;
 }
 
 export function nowIso() {

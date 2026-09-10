@@ -3,23 +3,36 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "End-to-end WhatsApp promotion platform: registration, consent, receipt validation, entry ledger, auditable draws, winners, claims and CRM synchronisation (spec rev 2026-09-07).",
+  "description": "WhatsApp promotion platform: registration, consent, real receipt OCR + deterministic qualification, canonical-receipt duplicate prevention, immutable entry ledger, crash-safe auditable draws with independent verifier, winner/claim lifecycle, CRM outbox with read-back, staff console.",
   "engines": {
     "node": ">=22.13"
   },
   "scripts": {
-    "migrate": "node src/db.js migrate",
-    		"web:build": "cd src/web-console && npm install --no-audit --no-fund && npm run build && rm -rf ../web-console-dist && cp -R dist ../web-console-dist",
-    		"seed": "node scripts/seed-demo.mjs",
+    "preflight": "node --no-warnings=ExperimentalWarning scripts/preflight.mjs",
+    "migrate": "node --no-warnings=ExperimentalWarning src/db.js migrate",
+    "seed": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env scripts/seed-demo.mjs",
+    "seed:light": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env scripts/seed-demo.mjs --light",
+    "reset:sample": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env scripts/reset-sample.mjs --confirm",
+    "fixtures": "node --no-warnings=ExperimentalWarning scripts/gen-fixtures.mjs",
     "start": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env src/server.js",
     "worker": "node --no-warnings=ExperimentalWarning --env-file-if-exists=.env src/worker.js",
-    "test": "node --no-warnings=ExperimentalWarning --test test/*.test.mjs",
-    "bench": "node bench/run.mjs",
-    "check": "node --version >/dev/null && for f in $(find src scripts test bench -name '*.mjs' -o -name '*.js' 2>/dev/null); do node --check \"$f\" || exit 1; done && echo 'check ok'",
-    "reconstruct-draw": "node --no-warnings=ExperimentalWarning scripts/reconstruct-draw.mjs"
+    "crm:receiver": "node --no-warnings=ExperimentalWarning scripts/crm-receiver.mjs",
+    "web:build": "cd src/web-console && npm install --no-audit --no-fund && npm run build && rm -rf ../web-console-dist && cp -R dist ../web-console-dist",
+    "test": "node --no-warnings=ExperimentalWarning --test --test-concurrency=1 test/*.test.mjs",
+    "test:e2e": "node --no-warnings=ExperimentalWarning --test test/e2e/*.e2e.mjs",
+    "bench": "node --no-warnings=ExperimentalWarning bench/run.mjs --out docs/testing/evidence/receipt-benchmark.json",
+    "load": "node --no-warnings=ExperimentalWarning bench/load.mjs --out docs/testing/evidence/load-benchmark.json",
+    "verify:draw": "node --no-warnings=ExperimentalWarning scripts/verify-draw-bundle.mjs",
+    "restore:rehearsal": "node --no-warnings=ExperimentalWarning scripts/backup-restore-rehearsal.mjs --out docs/testing/evidence/restore-rehearsal.json",
+    "audit:deps": "npm audit --omit=dev --audit-level=high",
+    "check": "for f in $(find src scripts test bench -name '*.mjs' -o -name '*.js' | grep -v web-console); do node --check \"$f\" || exit 1; done && echo 'check ok'",
+    "ci": "npm run check && npm test && npm run bench && npm run audit:deps"
   },
   "dependencies": {
+    "@tesseract.js-data/eng": "1.0.0",
     "baileys": "^7.0.0-rc14",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "sharp": "0.35.4",
+    "tesseract.js": "7.0.0"
   }
 }

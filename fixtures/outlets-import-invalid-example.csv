@@ -1,0 +1,5 @@
+outlet_code,retailer,branch,town,province,collection_enabled,active_from,active_to,aliases
+EXA-HRE-01,Example Retailer,Central,Harare,Harare,1,2026-01-01,9999-12-31,
+EXA-HRE-01,Example Retailer,Duplicate Code,Harare,Harare,1,2026-01-01,9999-12-31,
+,Missing Code,Branch,Town,Province,1,2026-01-01,9999-12-31,
+EXA-BAD-02,Bad Dates,Branch,Town,Province,maybe,not-a-date,9999-12-31,

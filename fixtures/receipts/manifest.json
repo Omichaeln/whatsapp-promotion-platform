@@ -1,0 +1,655 @@
+{
+  "generated_at": "2026-09-10T19:36:49.618Z",
+  "fictional": true,
+  "note": "All receipts, retailers and purchases are synthetic test fixtures. Expected values are labels for the benchmark; the pipeline never reads this file.",
+  "fixtures": [
+    {
+      "id": "valid-two-pack-A",
+      "file": "valid-two-pack-A.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "004512",
+        "date": "2026-10-05"
+      },
+      "notes": "Layout A, 2 x 2kg",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "A",
+        "receiptNo": "004512",
+        "date": "05/10/2026"
+      }
+    },
+    {
+      "id": "valid-two-pack-B",
+      "file": "valid-two-pack-B.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "88213",
+        "date": "2026-10-06"
+      },
+      "notes": "Layout B inline qty",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "B",
+        "receiptNo": "88213",
+        "date": "06/10/2026"
+      }
+    },
+    {
+      "id": "valid-two-pack-C",
+      "file": "valid-two-pack-C.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "C77120",
+        "date": "2026-10-07"
+      },
+      "notes": "Layout C one line per pack",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "C",
+        "receiptNo": "C-77120",
+        "date": "07/10/2026"
+      }
+    },
+    {
+      "id": "valid-three-pack",
+      "file": "valid-three-pack.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 3,
+        "grams": 6000,
+        "disposition": "QUALIFIED",
+        "awards": 1
+      },
+      "notes": "Larger purchase still one award",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "A",
+        "receiptNo": "004533",
+        "date": "08/10/2026"
+      }
+    },
+    {
+      "id": "valid-multi-line",
+      "file": "valid-multi-line.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED"
+      },
+      "notes": "Many unrelated lines",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "A",
+        "receiptNo": "004540",
+        "date": "09/10/2026"
+      }
+    },
+    {
+      "id": "pool-01-B",
+      "file": "pool-01-B.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "90113",
+        "date": "2026-10-10"
+      },
+      "notes": "Draw-pool purchase 1 (layout B)",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "B",
+        "receiptNo": "90113",
+        "date": "10/10/2026"
+      }
+    },
+    {
+      "id": "pool-02-C",
+      "file": "pool-02-C.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "C9074",
+        "date": "2026-10-11"
+      },
+      "notes": "Draw-pool purchase 2 (layout C)",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "C",
+        "receiptNo": "C-9074",
+        "date": "11/10/2026"
+      }
+    },
+    {
+      "id": "pool-03-A",
+      "file": "pool-03-A.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "005021",
+        "date": "2026-10-12"
+      },
+      "notes": "Draw-pool purchase 3 (layout A)",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "A",
+        "receiptNo": "005021",
+        "date": "12/10/2026"
+      }
+    },
+    {
+      "id": "pool-04-B",
+      "file": "pool-04-B.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "90452",
+        "date": "2026-10-13"
+      },
+      "notes": "Draw-pool purchase 4 (layout B)",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "B",
+        "receiptNo": "90452",
+        "date": "13/10/2026"
+      }
+    },
+    {
+      "id": "pool-05-C",
+      "file": "pool-05-C.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "C9185",
+        "date": "2026-10-14"
+      },
+      "notes": "Draw-pool purchase 5 (layout C)",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "C",
+        "receiptNo": "C-9185",
+        "date": "14/10/2026"
+      }
+    },
+    {
+      "id": "pool-06-A",
+      "file": "pool-06-A.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "005042",
+        "date": "2026-10-15"
+      },
+      "notes": "Draw-pool purchase 6 (layout A)",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "A",
+        "receiptNo": "005042",
+        "date": "15/10/2026"
+      }
+    },
+    {
+      "id": "pool-07-B",
+      "file": "pool-07-B.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "90791",
+        "date": "2026-10-16"
+      },
+      "notes": "Draw-pool purchase 7 (layout B)",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "B",
+        "receiptNo": "90791",
+        "date": "16/10/2026"
+      }
+    },
+    {
+      "id": "pool-08-C",
+      "file": "pool-08-C.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "C9296",
+        "date": "2026-10-17"
+      },
+      "notes": "Draw-pool purchase 8 (layout C)",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "C",
+        "receiptNo": "C-9296",
+        "date": "17/10/2026"
+      }
+    },
+    {
+      "id": "pool-09-A",
+      "file": "pool-09-A.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "005063",
+        "date": "2026-10-18"
+      },
+      "notes": "Draw-pool purchase 9 (layout A)",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "A",
+        "receiptNo": "005063",
+        "date": "18/10/2026"
+      }
+    },
+    {
+      "id": "pool-10-B",
+      "file": "pool-10-B.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "91130",
+        "date": "2026-10-19"
+      },
+      "notes": "Draw-pool purchase 10 (layout B)",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "B",
+        "receiptNo": "91130",
+        "date": "19/10/2026"
+      }
+    },
+    {
+      "id": "uat-fresh-1-A",
+      "file": "uat-fresh-1-A.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "007001",
+        "date": "2026-10-12"
+      },
+      "notes": "UAT row 2: fresh qualifying purchase (layout A)",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "A",
+        "receiptNo": "007001",
+        "date": "12/10/2026"
+      }
+    },
+    {
+      "id": "uat-fresh-2-B",
+      "file": "uat-fresh-2-B.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "93001",
+        "date": "2026-10-13"
+      },
+      "notes": "UAT row 3: fresh qualifying purchase (layout B)",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "B",
+        "receiptNo": "93001",
+        "date": "13/10/2026"
+      }
+    },
+    {
+      "id": "uat-ambiguous-C",
+      "file": "uat-ambiguous-C.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "REVIEW_REQUIRED",
+        "reason": "transaction_date_unclear"
+      },
+      "notes": "UAT row 5d: 11/01/2026 reads 11 January (outside the window) as DMY but 1 November (inside) as MDY -> configured reading fails, alternative passes -> reviewer decides",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "C",
+        "receiptNo": "C-95001",
+        "date": "11/01/2026"
+      }
+    },
+    {
+      "id": "one-pack",
+      "file": "one-pack.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 1,
+        "grams": 2000,
+        "disposition": "NOT_QUALIFIED",
+        "reason": "below_minimum_quantity"
+      },
+      "notes": "One 2kg pack",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "A",
+        "receiptNo": "004513",
+        "date": "05/10/2026"
+      }
+    },
+    {
+      "id": "wrong-sku",
+      "file": "wrong-sku.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 0,
+        "disposition": "NOT_QUALIFIED",
+        "reason": "no_qualifying_product"
+      },
+      "notes": "White sugar is not the qualifying SKU",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "A",
+        "receiptNo": "004514",
+        "date": "05/10/2026"
+      }
+    },
+    {
+      "id": "alt-pack-1kg-x4",
+      "file": "alt-pack-1kg-x4.jpg",
+      "expect": {
+        "document": "receipt",
+        "grams": 4000,
+        "disposition": "NOT_QUALIFIED",
+        "reason": "below_minimum_quantity",
+        "dispositionIfCombinations": "QUALIFIED"
+      },
+      "notes": "4 x 1kg qualifies ONLY under the disabled combination rule (D-06)",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "B",
+        "receiptNo": "88250",
+        "date": "06/10/2026"
+      }
+    },
+    {
+      "id": "void-line",
+      "file": "void-line.jpg",
+      "expect": {
+        "document": "receipt",
+        "disposition": "NOT_QUALIFIED"
+      },
+      "notes": "Voided sugar line must not count",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "A",
+        "receiptNo": "004515",
+        "date": "05/10/2026"
+      }
+    },
+    {
+      "id": "two-kg-text-not-qty",
+      "file": "two-kg-text-not-qty.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 1,
+        "disposition": "NOT_QUALIFIED",
+        "reason": "below_minimum_quantity"
+      },
+      "notes": "'2KG' in the description is a pack size, not a quantity of two",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "C",
+        "receiptNo": "C-77140",
+        "date": "07/10/2026"
+      }
+    },
+    {
+      "id": "date-before-window",
+      "file": "date-before-window.jpg",
+      "expect": {
+        "document": "receipt",
+        "disposition": "NOT_QUALIFIED",
+        "reason": "receipt_date_outside_campaign"
+      },
+      "notes": "Old receipt",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "A",
+        "receiptNo": "004516",
+        "date": "01/01/2025"
+      }
+    },
+    {
+      "id": "date-future",
+      "file": "date-future.jpg",
+      "expect": {
+        "document": "receipt",
+        "disposition": "NOT_QUALIFIED",
+        "reason": "receipt_date_outside_campaign"
+      },
+      "notes": "Future-dated receipt",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "A",
+        "receiptNo": "004517",
+        "date": "01/01/2031"
+      }
+    },
+    {
+      "id": "non-participating-outlet",
+      "file": "non-participating-outlet.jpg",
+      "expect": {
+        "document": "receipt",
+        "disposition": "REVIEW_REQUIRED"
+      },
+      "notes": "Merchant does not match the selected outlet; routed to review, never auto-qualified",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "A",
+        "receiptNo": "004518",
+        "date": "05/10/2026"
+      }
+    },
+    {
+      "id": "ambiguous-date",
+      "file": "ambiguous-date.jpg",
+      "expect": {
+        "document": "receipt",
+        "disposition": "REVIEW_REQUIRED",
+        "reason": "transaction_date_unclear"
+      },
+      "notes": "10/01/2026 is 10 Jan (DMY, outside window) or 1 Oct (MDY, inside): readings disagree -> review, never auto-decided",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "A",
+        "receiptNo": "004519",
+        "date": "10/01/2026"
+      }
+    },
+    {
+      "id": "missing-receipt-no",
+      "file": "missing-receipt-no.jpg",
+      "expect": {
+        "document": "receipt",
+        "disposition": "REVIEW_REQUIRED",
+        "reason": "missing_receipt_number"
+      },
+      "notes": "No receipt number printed",
+      "duplicateOf": null,
+      "spec": {
+        "layout": "A",
+        "receiptNo": "",
+        "date": "05/10/2026"
+      }
+    },
+    {
+      "id": "random-photo",
+      "file": "random-photo.jpg",
+      "expect": {
+        "document": "non_receipt",
+        "disposition": "REUPLOAD_REQUIRED"
+      },
+      "notes": "Random photograph (gradient noise)",
+      "duplicateOf": null,
+      "spec": null
+    },
+    {
+      "id": "unrelated-paper",
+      "file": "unrelated-paper.jpg",
+      "expect": {
+        "document": "non_receipt",
+        "disposition": "REUPLOAD_REQUIRED"
+      },
+      "notes": "Unrelated paper containing instruction-like text (prompt injection attempt)",
+      "duplicateOf": null,
+      "spec": null
+    },
+    {
+      "id": "blurred",
+      "file": "blurred.jpg",
+      "expect": {
+        "disposition": "REVIEW_REQUIRED|REUPLOAD_REQUIRED|NOT_QUALIFIED",
+        "neverQualify": true
+      },
+      "notes": "Heavy blur — must never auto-qualify (any non-qualifying disposition acceptable)",
+      "duplicateOf": null,
+      "spec": null
+    },
+    {
+      "id": "dark",
+      "file": "dark.jpg",
+      "expect": {
+        "disposition": "REVIEW_REQUIRED|REUPLOAD_REQUIRED|QUALIFIED",
+        "duplicateOf": "valid-two-pack-A"
+      },
+      "notes": "Very dark capture of an already-credited receipt: standalone it may still read (then it is a DUPLICATE of A), or it goes to review/re-upload",
+      "duplicateOf": "valid-two-pack-A",
+      "spec": null
+    },
+    {
+      "id": "cropped-top-missing",
+      "file": "cropped-top-missing.jpg",
+      "expect": {
+        "disposition": "REVIEW_REQUIRED"
+      },
+      "notes": "Header/merchant cut off — outlet unknown -> review",
+      "duplicateOf": null,
+      "spec": null
+    },
+    {
+      "id": "dup-photo",
+      "file": "dup-photo.jpg",
+      "expect": {
+        "document": "receipt",
+        "disposition": "QUALIFIED|REVIEW_REQUIRED",
+        "duplicateOf": "valid-two-pack-A"
+      },
+      "notes": "Same purchase as valid-two-pack-A (photo): standalone it reads as qualifying (or review if degraded); with A already credited the FINAL outcome must be DUPLICATE",
+      "duplicateOf": "valid-two-pack-A",
+      "spec": null
+    },
+    {
+      "id": "dup-cropped",
+      "file": "dup-cropped.jpg",
+      "expect": {
+        "document": "receipt",
+        "disposition": "QUALIFIED|REVIEW_REQUIRED",
+        "duplicateOf": "valid-two-pack-A"
+      },
+      "notes": "Same purchase as valid-two-pack-A (cropped): standalone it reads as qualifying (or review if degraded); with A already credited the FINAL outcome must be DUPLICATE",
+      "duplicateOf": "valid-two-pack-A",
+      "spec": null
+    },
+    {
+      "id": "dup-rotated",
+      "file": "dup-rotated.jpg",
+      "expect": {
+        "document": "receipt",
+        "disposition": "QUALIFIED|REVIEW_REQUIRED",
+        "duplicateOf": "valid-two-pack-A"
+      },
+      "notes": "Same purchase as valid-two-pack-A (rotated): standalone it reads as qualifying (or review if degraded); with A already credited the FINAL outcome must be DUPLICATE",
+      "duplicateOf": "valid-two-pack-A",
+      "spec": null
+    },
+    {
+      "id": "dup-recompressed",
+      "file": "dup-recompressed.jpg",
+      "expect": {
+        "document": "receipt",
+        "disposition": "QUALIFIED|REVIEW_REQUIRED",
+        "duplicateOf": "valid-two-pack-A"
+      },
+      "notes": "Same purchase as valid-two-pack-A (recompressed): standalone it reads as qualifying (or review if degraded); with A already credited the FINAL outcome must be DUPLICATE",
+      "duplicateOf": "valid-two-pack-A",
+      "spec": null
+    },
+    {
+      "id": "valid-two-pack-B-photo",
+      "file": "valid-two-pack-B-photo.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "88213",
+        "date": "2026-10-06"
+      },
+      "notes": "Phone-photo variant (rotated/recompressed) of valid-two-pack-B; distinct purchase from valid-two-pack-B only in the benchmark sense — same receipt number, so it is a DUPLICATE of valid-two-pack-B if both are submitted",
+      "duplicateOf": "valid-two-pack-B",
+      "spec": null
+    },
+    {
+      "id": "valid-two-pack-C-photo",
+      "file": "valid-two-pack-C-photo.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 2,
+        "grams": 4000,
+        "disposition": "QUALIFIED",
+        "receiptNo": "C77120",
+        "date": "2026-10-07"
+      },
+      "notes": "Phone-photo variant (rotated/recompressed) of valid-two-pack-C; distinct purchase from valid-two-pack-C only in the benchmark sense — same receipt number, so it is a DUPLICATE of valid-two-pack-C if both are submitted",
+      "duplicateOf": "valid-two-pack-C",
+      "spec": null
+    },
+    {
+      "id": "one-pack-photo",
+      "file": "one-pack-photo.jpg",
+      "expect": {
+        "document": "receipt",
+        "packs": 1,
+        "grams": 2000,
+        "disposition": "NOT_QUALIFIED",
+        "reason": "below_minimum_quantity"
+      },
+      "notes": "Phone-photo variant (rotated/recompressed) of one-pack; distinct purchase from one-pack only in the benchmark sense — same receipt number, so it is a DUPLICATE of one-pack if both are submitted",
+      "duplicateOf": "one-pack",
+      "spec": null
+    }
+  ]
+}

@@ -1,59 +1,28 @@
-import { ReceiptExtractor } from "./receipt-extractor.mjs";
+import { ReceiptExtractor, EXTRACTION_SCHEMA_VERSION } from "./receipt-extractor.mjs";
+import { parseReceiptText } from "./parse-receipt.mjs";
 
 /**
- * Simulator extractor (dev + tests): the fixture PNG carries an embedded JSON
- * receipt fact block (media.mjs encodeReceiptText). A vision provider would
- * implement the same contract by OCR-ing the image (see vision.mjs pattern).
+ * SIMULATED extractor — TEST ONLY. Reads a text block embedded in the upload
+ * bytes (`WPP_TEXT:<base64 receipt text>:`) instead of pixels. It exists so
+ * unit tests for the rules/ledger/draw layers can run without OCR latency.
+ * The production activation validator rejects this extractor (mode
+ * "simulated"), and the readiness page labels it. It must never be used as
+ * evidence of receipt processing.
  */
 export class SimulatorExtractor extends ReceiptExtractor {
-  constructor({ minConfidence = 0.9, model = "simulator-receipt-v1" } = {}) {
-    super();
-    this.minConfidence = minConfidence;
-    this.model = model;
+  get name() { return "simulator"; }
+  get mode() { return "simulated"; }
+  async extract({ imageBytes, context = {} }) {
+    const s = Buffer.from(imageBytes).toString("latin1");
+    const m = s.match(/WPP_TEXT:([A-Za-z0-9+/=]+):/);
+    const text = m ? Buffer.from(m[1], "base64").toString("utf8") : "";
+    const parsed = parseReceiptText(text, { outlets: context.outlets || [], dateOrder: context.dateOrder || "DMY", quality: context.quality || {} });
+    return { schemaVersion: EXTRACTION_SCHEMA_VERSION, provider: this.name, model: "simulator/2", promptVersion: "parser/2", latencyMs: 0, ...parsed, raw: { simulated: true } };
   }
-
-  parseEmbedded(imageBytes) {
-    const s = imageBytes.toString("latin1");
-    const m = s.match(/WPP_RECEIVED:([A-Za-z0-9+/=]+):/);
-    if (!m) return null;
-    try { return JSON.parse(Buffer.from(m[1], "base64").toString("utf8")); }
-    catch { return null; }
-  }
-
-  async extract({ imageBytes }) {
-    const facts = this.parseEmbedded(imageBytes);
-    if (!facts) {
-      return {
-        extracted: null,
-        confidence: 0.01,
-        provider: this.model,
-        model: this.model,
-        hint: "review_or_reupload",
-        error: "no_text_detected",
-      };
-    }
-    const confidence = Number(facts._confidence ?? 0.9);
-    return {
-      extracted: {
-        outlet: facts.outlet || null,
-        date: facts.date || null,
-        receiptNo: facts.receiptNo || null,
-        currency: facts.currency || "USD",
-        total: Number(facts.total ?? 0),
-        lineItems: Array.isArray(facts.lineItems) ? facts.lineItems : [],
-      },
-      confidence,
-      provider: this.model,
-      model: this.model,
-      hint: confidence < this.minConfidence ? "review" : "decide",
-      raw: facts,
-    };
-  }
+  async health() { return { provider: this.name, mode: "simulated", ok: true, note: "TEST ONLY — does not read pixels" }; }
 }
 
-/** Embed structured receipt facts into a synthetic PNG-suffix buffer. */
-export function encodeReceiptFacts(facts) {
-  const json = JSON.stringify(facts);
-  const b64 = Buffer.from(json).toString("base64");
-  return Buffer.from(`WPP_RECEIVED:${b64}:`, "latin1");
+/** Test helper: embed receipt TEXT (not facts) so the same parser runs. */
+export function encodeReceiptText(text) {
+  return Buffer.from(`WPP_TEXT:${Buffer.from(text, "utf8").toString("base64")}:`, "latin1");
 }

@@ -1,0 +1,31 @@
+{
+  "rehearsedAt": "2026-09-10T18:55:32.730Z",
+  "migration": "007_promotion_v2.sql",
+  "foreignKeys": "ON",
+  "rowsBefore": {
+    "campaigns": 1,
+    "participants": 1,
+    "receipts": 1,
+    "entries": 1,
+    "draws": 1,
+    "draw_candidates": 1,
+    "winners": 1,
+    "audit_events": 1
+  },
+  "rowsAfter": {
+    "campaigns": 1,
+    "participants": 1,
+    "receipts": 1,
+    "entries": 1,
+    "draws": 1,
+    "draw_candidates": 1,
+    "winners": 1,
+    "audit_events": 1
+  },
+  "rowsIdentical": true,
+  "newTables": 7,
+  "oldCodeCompatible": true,
+  "ms": 36,
+  "integrity": "ok",
+  "fkCheck": true
+}

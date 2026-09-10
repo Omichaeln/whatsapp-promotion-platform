@@ -1,0 +1,13 @@
+# Dependency audit (2026-09-10T18:54:01Z)
+found 0 vulnerabilities
+
+# Production dependency tree (top level)
+whatsapp-promotion-platform@0.1.0 /home/user/whatsapp-promotion-platform
++-- @emnapi/runtime@1.11.3 extraneous
++-- @img/sharp-wasm32@0.35.4 extraneous
++-- @tesseract.js-data/eng@1.0.0
++-- baileys@7.0.0-rc14
++-- qrcode@1.5.4
++-- sharp@0.35.4
+`-- tesseract.js@7.0.0
+

@@ -1,80 +1,50 @@
-import crypto from "node:crypto";
-import { id, sha256hex, nowIso } from "./db.mjs";
+import { hamming, PROBABLE_DUPLICATE_DIST } from "./media.mjs";
 
 /**
- * Duplicate + fraud controls (G-09, spec 14). Layered:
- *  - exact:  provider message ID, media SHA-256
- *  - similarity: perceptual aHash distance, normalized receipt fingerprint
- *  - content/behaviour signals are recorded for review, never auto-reject.
- * Never returns anything that would leak to the participant beyond the
- * stable DUPLICATE outcome.
+ * Receipt identity + duplicate evidence (spec §11).
+ * Layers:
+ *  - provider message id       -> webhook replay (channel_events unique)
+ *  - SHA-256 of bytes          -> exact image repeat
+ *  - aHash/dHash distance      -> visual duplicate CANDIDATES (search signal only)
+ *  - canonical purchase key    -> same transaction across different photographs
+ *
+ * Canonical key = outletId | txn date | receipt number | total(minor). A printed
+ * receipt number alone is not unique (till counters repeat across days and
+ * branches), so the key always includes outlet and date. Credit is enforced by
+ * the UNIQUE(campaign_id, canonical_key) constraint on canonical_receipts and
+ * UNIQUE(canonical_receipt_id) on entries — never by application checks alone.
  */
-
-export function fingerprintOf(facts, outletId) {
-  const date = String(facts?.date || "").slice(0, 10);
-  const no = String(facts?.receiptNo || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-  const total = String(facts?.total || "");
-  return `${outletId || facts?.outlet || ""}|${date}|${no}|${total}`;
+export function canonicalKeyOf({ outletId, date, receiptNo, totalMinor }) {
+  if (!outletId || !date || !receiptNo) return null;      // incomplete identity -> no key (review path)
+  return `${outletId}|${date}|${String(receiptNo).toUpperCase().replace(/[^A-Z0-9]/g, "")}|${totalMinor ?? ""}`;
 }
 
-export function createDuplicateDetector({ db, phashDistance = 12 }) {
-  const bySha = db.prepare(`select id, phash, status from media_assets where sha256 = ? limit 1`);
-  const byReceiptFp = db.prepare(`select id, status from receipts where fingerprint = ? and status != 'error' limit 1`);
-  const byProviderMsg = db.prepare(`select id from inbound_events where provider_message_id = ? limit 1`);
+export function createDuplicateDetector({ db, phashDistance = PROBABLE_DUPLICATE_DIST }) {
+  const byShaOther = db.prepare(`select r.id, r.status from receipts r join media_assets m on m.id = r.media_asset_id where m.sha256 = ? and r.campaign_id = ? and r.id != ? order by r.created_at limit 5`);
+  const hashed = db.prepare(`select r.id as receipt_id, m.phash, m.dhash from receipts r join media_assets m on m.id = r.media_asset_id where r.campaign_id = ? and r.id != ? and (m.phash is not null or m.dhash is not null) order by r.created_at desc limit 5000`);
+  const byCanonical = db.prepare(`select * from canonical_receipts where campaign_id = ? and canonical_key = ?`);
 
   return {
-    /** Returns { duplicate: false } or { duplicate: true, kind, original } */
-    checkExact({ providerMessageId, sha256 }) {
-      if (providerMessageId && byProviderMsg.get(providerMessageId)) {
-        return { duplicate: true, kind: "provider_message", original: byProviderMsg.get(providerMessageId).id };
-      }
-      if (sha256) {
-        const row = bySha.get(sha256);
-        if (row) return { duplicate: true, kind: "exact_sha256", original: row.id };
-      }
-      return { duplicate: false };
+    /** Exact byte repeat of a prior submission in this campaign. */
+    exactImageMatches({ sha256, campaignId, excludeReceiptId }) {
+      return byShaOther.all(sha256, campaignId, excludeReceiptId || "").map((r) => ({ receiptId: r.id, kind: "exact_sha256", score: 1 }));
     },
-    checkFingerprint(fingerprint, excludeReceiptId) {
-      if (!fingerprint || fingerprint.startsWith("||")) return { duplicate: false };
-      const row = excludeReceiptId
-        ? db.prepare(`select id, status from receipts where fingerprint = ? and status != 'error' and id != ? limit 1`).get(fingerprint, excludeReceiptId)
-        : byReceiptFp.get(fingerprint);
-      if (row) return { duplicate: true, kind: "receipt_fingerprint", original: row.id };
-      return { duplicate: false };
-    },
-    /** Probable perceptual match -> NEEDS_REVIEW, never auto-duplicate.
-   *  P0-04: exclude the current asset so a legitimate receipt never matches
-   *  itself (the pipeline stores the media asset before this runs). */
-    probableSimilar(phash, excludeAssetId = null) {
-      if (!phash) return { probable: false };
-      const better = [];
-      for (const row of db.prepare(`select id, phash from media_assets where phash is not null`).all()) {
-        if (excludeAssetId && row.id === excludeAssetId) continue;
-        const d = hamming(phash, row.phash);
-        if (d <= phashDistance) better.push({ assetId: row.id, distance: d });
+    /** Visually similar prior submissions (bounded scan; candidates only). */
+    visualCandidates({ phash, dhash, campaignId, excludeReceiptId }) {
+      if (!phash && !dhash) return [];
+      const out = [];
+      for (const row of hashed.all(campaignId, excludeReceiptId || "")) {
+        const dp = hamming(phash, row.phash), dd = hamming(dhash, row.dhash);
+        const d = Math.min(dp, dd);
+        if (d <= phashDistance) out.push({ receiptId: row.receipt_id, kind: dp <= dd ? "phash" : "dhash", score: Number((1 - d / 64).toFixed(3)), distance: d });
       }
-      return { probable: better.length > 0, matches: better.slice(0, 5) };
+      return out.sort((a, b) => a.distance - b.distance).slice(0, 5);
     },
+    canonical(campaignId, key) { return key ? byCanonical.get(campaignId, key) : null; },
   };
 }
 
-export function hamming(aHex, bHex) {
-  let a = BigInt("0x" + aHex), b = BigInt("0x" + bHex);
-  let d = 0;
-  while (a !== 0n || b !== 0n) {
-    d += Number((a ^ b) & 1n);
-    a >>= 1n; b >>= 1n;
-  }
-  return d;
+/** Behavioural risk signals: recorded for review, never auto-decisions. */
+export function behaviouralSignals({ periodSubmissions = 0, periodDuplicates = 0, failedAttempts = 0 }) {
+  return { velocity: periodSubmissions > 20, repeatedDuplicates: periodDuplicates > 3, repeatedFailures: failedAttempts > 5 };
 }
-
-/** Behavioural risk signals (recorded for review, not for auto-decisions). */
-export function behaviouralSignals({ weeklySubmissions, weeklyDuplicates, repeatedOutlet, failedAttempts }) {
-  return {
-    velocity: weeklySubmissions > 10,
-    repeatedFailures: failedAttempts > 5,
-    sameOutletRepeat: repeatedOutlet > 3,
-  };
-}
-
-export { id, sha256hex, crypto, nowIso };

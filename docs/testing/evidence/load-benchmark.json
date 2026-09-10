@@ -1,0 +1,45 @@
+{
+  "generated_at": "2026-09-10T19:37:34.138Z",
+  "machine": {
+    "cpus": 4,
+    "model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+    "mem_gb": 17,
+    "node": "v22.22.2"
+  },
+  "assumptions": {
+    "note": "engineering benchmark, NOT a client forecast (D-21)",
+    "receipts": 30,
+    "concurrent_participants": 5,
+    "extractor": "tesseract.js (real OCR, single WASM worker)",
+    "transport": "simulator (no provider latency)"
+  },
+  "results": {
+    "inbound_events": 160,
+    "ingest_seconds": 3.3,
+    "total_seconds": 35.8,
+    "webhook_ack_ms": {
+      "p50": 9,
+      "p95": 16,
+      "max": 56
+    },
+    "decision_ms_from_intake": {
+      "p50": 3203,
+      "p95": 4933,
+      "max": 5351
+    },
+    "receipts_per_minute": 50.2,
+    "by_status": {
+      "DUPLICATE": 8,
+      "NOT_QUALIFIED": 10,
+      "QUALIFIED": 2,
+      "REVIEW_REQUIRED": 10
+    },
+    "double_credits": 0,
+    "outbound": {
+      "pending": 25,
+      "sent": 170
+    },
+    "dead_letters": 0
+  },
+  "bottleneck": "OCR is CPU-bound and serialised on one WASM worker (~1 s per clear image); scale by running N worker processes or a tesseract worker pool; webhook acknowledgement is independent of OCR (durable intake)."
+}

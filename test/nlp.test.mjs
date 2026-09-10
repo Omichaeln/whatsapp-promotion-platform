@@ -22,7 +22,7 @@ describe("natural-language commands (nlp.mjs)", () => {
   it("parses send with a phone and message body", () => {
     const s = parseCommand("send: thanks for entering to 263770001111");
     assert.equal(s.action, "send");
-    assert.equal(s.params.phone, "770001111");
+    assert.equal(s.params.phone, "263770001111");
     assert.equal(s.params.text, "thanks for entering");
     const s2 = parseCommand("send 'hi there' to 263771111111");
     assert.equal(s2.params.text, "hi there");

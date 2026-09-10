@@ -1,45 +1,83 @@
-// Labelled receipt corpus benchmark harness (spec G-07 / 17.2).
-// Extends the simulator/vision extractor with a deterministic label set and
-// reports precision/recall/latency/review-rate per retailer format. The
-// production extractor must be benchmarked on the real client corpus before
-// launch; this harness proves the reporting contract.
-// Usage: node bench/run.mjs [--format table]
-import { SimulatorExtractor, encodeReceiptFacts } from "../src/extract/simulator.mjs";
+// Receipt benchmark (spec §20 "Receipt-quality evidence").
+// Runs every fixture image through the REAL extractor (pixels -> OCR ->
+// parser -> rules) and compares with the labelled manifest. The pipeline never
+// sees the manifest. Output: JSON report + markdown summary.
+// Usage: node bench/run.mjs [--extractor tesseract|vision] [--out docs/testing/evidence/receipt-benchmark.json]
+import fs from "node:fs";
+import path from "node:path";
+import { ROOT, loadConfig } from "../src/config.mjs";
+import { createExtractor } from "../src/extract/vision.mjs";
+import { evaluateEligibility, defaultRules } from "../src/eligibility.mjs";
+import { inspectImage, normaliseForOcr, qualitySignals, imageHashes, hamming } from "../src/media.mjs";
+import { canonicalKeyOf } from "../src/duplicates.mjs";
 
-const extractor = new SimulatorExtractor({ minConfidence: 0.6 });
+const args = process.argv.slice(2);
+const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : d; };
+const extractorName = opt("--extractor", "tesseract");
+const outFile = opt("--out", null);
 
-// Labelled corpus: { id, format (retailer), label: qualify|reject|review, facts? }
-const corpus = [
-  { id: "ok-01", format: "OK Mart", label: "qualify", facts: { outlet: "OK-HRE-01", date: "2026-10-05", receiptNo: "R-01", total: 10, _confidence: 0.95, lineItems: [{ description: "ZimSweet Brown Sugar 2kg", quantity: 2 }] } },
-  { id: "ok-02", format: "OK Mart", label: "qualify", facts: { outlet: "OK-HRE-01", date: "2026-10-06", receiptNo: "R-02", total: 9, _confidence: 0.9, lineItems: [{ description: "brown sugar 2kg x2", quantity: 2 }] } },
-  { id: "tm-01", format: "TM", label: "reject", facts: { outlet: "TM-HRE-01", date: "2026-10-05", receiptNo: "R-03", total: 4, _confidence: 0.9, lineItems: [{ description: "bread", quantity: 1 }] } },
-  { id: "ss-01", format: "Spar", label: "review", facts: { outlet: "SSC-BUL-01", date: "", receiptNo: "", total: 0, _confidence: 0.2, lineItems: [] } },
-  { id: "ss-02", format: "Spar", label: "reject", facts: { outlet: "SSC-BUL-01", date: "2026-10-07", receiptNo: "R-04", total: 3, _confidence: 0.85, lineItems: [{ description: "ZimSweet Brown Sugar 2kg", quantity: 1 }] } },
+const FIX = path.join(ROOT, "fixtures", "receipts");
+const manifest = JSON.parse(fs.readFileSync(path.join(FIX, "manifest.json"), "utf8"));
+
+// Test campaign context (mirrors the seeded TEST ONLY campaign)
+const outlets = [
+  { id: "out_SUN-HRE-01", retailer: "Sunrise Supermarket", branch: "Westgate", town: "Harare", aliases_json: JSON.stringify(["sunrise westgate"]) },
+  { id: "out_VAL-HRE-01", retailer: "Valuemart", branch: "Westgate", town: "Harare", aliases_json: "[]" },
+  { id: "out_KWK-HRE-01", retailer: "Kwikshop Express", branch: "Westgate", town: "Harare", aliases_json: "[]" },
 ];
+const selectedFor = (id) => id.includes("-B") ? "out_VAL-HRE-01" : id.includes("-C") || id.startsWith("two-kg") ? "out_KWK-HRE-01" : "out_SUN-HRE-01";
+const rules = defaultRules({ products: [{ code: "GC-BS-2KG", name: "Goldcane Brown Sugar 2kg", aliases: ["goldcane brown sugar", "brown sugar 2kg"], pack_grams: 2000, qualifying: true }, { code: "GC-BS-1KG", name: "Goldcane Brown Sugar 1kg", aliases: ["brown sugar 1kg"], pack_grams: 1000, qualifying: true }] });
+const context = { windowStart: "2026-09-28T00:00:00Z", windowEnd: "2026-11-23T00:00:00Z", campaignOpen: true, enrolled: true };
 
-async function run() {
-  const results = [];
-  for (const c of corpus) {
-    const t0 = Date.now();
-    const out = await extractor.extract({ imageBytes: c.facts ? encodeReceiptFacts(c.facts) : Buffer.from("noise") });
-    const latencyMs = Date.now() - t0;
-    const extracted = out.extracted;
-    // deterministic proxy decision (mirror of eligibility for the benchmark)
-    const qualifies = Array.isArray(extracted?.lineItems) && extracted.lineItems.some((li) => {
-      const desc = String(li.description || "").toLowerCase();
-      return desc.includes("brown sugar") && Number(li.quantity) >= 2;
-    });
-    const decision = out.confidence < 0.25 ? "review" : qualifies ? "qualify" : "reject";
-    results.push({ id: c.id, format: c.format, label: c.label, decision, latencyMs, confidence: out.confidence });
-  }
-  const tp = results.filter((r) => r.label === "qualify" && r.decision === "qualify").length;
-  const fp = results.filter((r) => r.label !== "qualify" && r.decision === "qualify").length;
-  const fn = results.filter((r) => r.label === "qualify" && r.decision !== "qualify").length;
-  const precision = tp / Math.max(tp + fp, 1);
-  const recall = tp / Math.max(tp + fn, 1);
-  const reviewRate = results.filter((r) => r.decision === "review").length / results.length;
-  const p95ms = results.map((r) => r.latencyMs).sort((a, b) => a - b)[Math.floor(results.length * 0.95)];
-  console.log(JSON.stringify({ corpus: results.length, precision, recall, reviewRate, p95LatencyMs: p95ms, results }, null, 2));
+const extractor = createExtractor({ ...loadConfig({}), receiptExtractor: extractorName });
+const results = [];
+const seen = [];
+for (const f of manifest.fixtures) {
+  const bytes = fs.readFileSync(path.join(FIX, f.file));
+  const t0 = Date.now();
+  let row = { id: f.id, expect: f.expect };
+  try {
+    const info = await inspectImage(bytes);
+    const quality = await qualitySignals(bytes);
+    const hashes = await imageHashes(bytes);
+    const normalised = await normaliseForOcr(bytes);
+    const x = await extractor.extract({ imageBytes: bytes, normalisedBytes: normalised, context: { outlets, dateOrder: "DMY", quality } });
+    const sel = selectedFor(f.id);
+    const v = evaluateEligibility(x, rules, { ...context, selectedOutletId: sel, selectedOutletParticipating: true, imageQuality: quality });
+    const key = canonicalKeyOf({ outletId: sel, date: x.transaction.date, receiptNo: x.transaction.receiptNo, totalMinor: x.transaction.totalMinor });
+    // duplicate signals against fixtures already processed
+    const dupBy = seen.filter((s) => s.key && s.key === key).map((s) => s.id);
+    const near = seen.filter((s) => hamming(s.hashes.phash, hashes.phash) <= 10 || hamming(s.hashes.dhash, hashes.dhash) <= 10).map((s) => s.id);
+    seen.push({ id: f.id, key, hashes });
+    const disposition = dupBy.length ? "DUPLICATE" : v.disposition;
+    const expected = String(f.expect.disposition || "").split("|");
+    const dupOf = f.duplicateOf || f.expect.duplicateOf || null;
+    row = { ...row, format: info.format, ms: Date.now() - t0, ocrMs: x.latencyMs, document: x.document.kind, docScore: x.document.score, receiptNo: x.transaction.receiptNo, date: x.transaction.date, totalMinor: x.transaction.totalMinor, packs: v.primaryPacks, grams: v.totalGrams, disposition, reason: v.reason, canonicalDupOf: dupBy, nearHash: near, ocrConfidence: x.quality.confidence, quality,
+      standalone: v.disposition,
+      pass: (f.expect.neverQualify ? v.disposition !== "QUALIFIED" : expected.includes(v.disposition))
+        && (dupOf ? (disposition === "DUPLICATE" || (dupBy.length === 0 && v.disposition !== "QUALIFIED")) : disposition === v.disposition)
+        && (f.expect.document ? f.expect.document === x.document.kind : true)
+        && (f.expect.packs == null || f.expect.packs === v.primaryPacks)
+        && (f.expect.receiptNo == null || f.expect.receiptNo === x.transaction.receiptNo)
+        && (f.expect.date == null || f.expect.date === x.transaction.date) };
+  } catch (e) { row = { ...row, error: e.message, pass: false, disposition: "ERROR" }; }
+  results.push(row);
+  console.error(`${row.pass ? "PASS" : "FAIL"} ${f.id.padEnd(26)} -> ${row.disposition}${row.standalone && row.standalone !== row.disposition ? ` (standalone ${row.standalone})` : ""} ${row.reason || ""} (${row.ms}ms) expected ${f.expect.disposition}${f.duplicateOf ? ` dup-of ${f.duplicateOf}` : ""}`);
 }
+await extractor.close?.();
 
-await run();
+const auto = results.filter((r) => r.disposition === "QUALIFIED");
+const falseAccept = results.filter((r) => r.disposition === "QUALIFIED" && (!String(r.expect.disposition).includes("QUALIFIED") || r.expect.neverQualify || manifest.fixtures.find((f) => f.id === r.id)?.duplicateOf));
+const falseReject = results.filter((r) => r.disposition === "NOT_QUALIFIED" && String(r.expect.disposition) === "QUALIFIED");
+const review = results.filter((r) => r.disposition === "REVIEW_REQUIRED" || r.disposition === "REUPLOAD_REQUIRED");
+const lat = results.map((r) => r.ms).filter(Boolean).sort((a, b) => a - b);
+const report = {
+  generated_at: new Date().toISOString(), extractor: extractor.name, mode: extractor.mode, corpus: { size: results.length, provenance: "synthetic fictional fixtures (scripts/gen-fixtures.mjs); NOT client receipts", split: "all held-out: parser/rules were written before these images were rendered; duplicate variants grouped with their source" },
+  totals: { passed: results.filter((r) => r.pass).length, failed: results.filter((r) => !r.pass).length, auto_qualified: auto.length, false_accepts: falseAccept.map((r) => r.id), false_rejects: falseReject.map((r) => r.id), review_rate: Number((review.length / results.length).toFixed(2)), p50_ms: lat[Math.floor(lat.length * 0.5)], p95_ms: lat[Math.floor(lat.length * 0.95)] },
+  by_layout: ["A", "B", "C"].map((L) => { const rs = results.filter((r) => manifest.fixtures.find((f) => f.id === r.id)?.spec?.layout === L); return { layout: L, n: rs.length, passed: rs.filter((r) => r.pass).length }; }),
+  results,
+};
+const json = JSON.stringify(report, null, 2);
+if (outFile) { fs.mkdirSync(path.dirname(path.resolve(outFile)), { recursive: true }); fs.writeFileSync(outFile, json); console.error(`wrote ${outFile}`); }
+console.log(JSON.stringify({ ...report, results: undefined }, null, 2));
+process.exit(report.totals.false_accepts.length ? 2 : 0);

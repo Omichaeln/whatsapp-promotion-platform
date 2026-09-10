@@ -1,0 +1,3 @@
+outlet_code,retailer,branch,town,province,collection_enabled,active_from,active_to,aliases
+EXA-HRE-01,Example Retailer,Central,Harare,Harare,1,2026-01-01,9999-12-31,example central;ex central
+EXA-BYO-01,Example Retailer,Hillside,Bulawayo,Bulawayo,0,2026-01-01,9999-12-31,
