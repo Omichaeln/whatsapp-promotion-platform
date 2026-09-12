@@ -18,11 +18,21 @@ export class CloudApiTransport extends WhatsAppTransport {
     this.lastSuccess = null; this.lastError = null;
   }
   get requiresTemplateOutsideWindow() { return true; }
+  get isLiveProvider() { return true; }
   static normalizePhone(raw) { return normalizePhone(raw); }
 
   verifyHandshake(searchParams) {
-    const mode = searchParams.get("hub.mode"), token = searchParams.get("hub.verify_token"), challenge = searchParams.get("hub.challenge");
-    if (mode === "subscribe" && token && this.webhookToken && crypto.timingSafeEqual(Buffer.from(token), Buffer.from(this.webhookToken.padEnd(token.length).slice(0, token.length))) && token === this.webhookToken) return { status: 200, body: challenge };
+    // Compare fixed-length digests. Padding the secret to the token's CHARACTER
+    // length threw `RangeError: Input buffers must have the same byte length`
+    // on any multi-byte token, so an unauthenticated GET could make this
+    // endpoint answer 500 instead of 403; and the `token === this.webhookToken`
+    // that followed reintroduced the very timing signal timingSafeEqual removes.
+    // Nothing may throw out of here: a malformed query must be a plain 403.
+    try {
+      const mode = searchParams.get("hub.mode"), token = searchParams.get("hub.verify_token"), challenge = searchParams.get("hub.challenge");
+      if (mode === "subscribe" && token && this.webhookToken
+        && crypto.timingSafeEqual(crypto.createHash("sha256").update(token, "utf8").digest(), crypto.createHash("sha256").update(this.webhookToken, "utf8").digest())) return { status: 200, body: challenge };
+    } catch { /* fall through to 403 */ }
     return { status: 403, body: "verification failed" };
   }
   validateSignature(headers, rawBody) {
@@ -52,9 +62,21 @@ export class CloudApiTransport extends WhatsAppTransport {
     }
     return out;
   }
-  async call(url, init) {
+  /**
+   * `read(res)` consumes the body INSIDE the deadline. The timer used to be
+   * cleared as soon as the response headers arrived, leaving `res.json()` /
+   * `arrayBuffer()` — which stream on the same socket — with no bound at all.
+   * The worker runs one tick at a time behind `if (running) return`, so a single
+   * body that never finishes arriving wedges inbound, jobs, outbox and CRM
+   * together while the process still looks healthy. `read` must not throw:
+   * errors from here are rewritten and lose their `.permanent` flag.
+   */
+  async call(url, init, read = null) {
     const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), this.timeoutMs);
-    try { return await this.fetch(url, { ...init, signal: ctrl.signal, headers: { Authorization: `Bearer ${this.meta.accessToken}`, ...(init?.headers || {}) } }); }
+    try {
+      const res = await this.fetch(url, { ...init, signal: ctrl.signal, headers: { Authorization: `Bearer ${this.meta.accessToken}`, ...(init?.headers || {}) } });
+      return read ? { res, body: await read(res) } : res;
+    }
     catch (e) { const err = new Error(e.name === "AbortError" ? "cloud api timeout" : e.message); if (e.name === "AbortError" && init?.method === "POST") err.unknownOutcome = true; throw err; }
     finally { clearTimeout(t); }
   }
@@ -65,8 +87,7 @@ export class CloudApiTransport extends WhatsAppTransport {
     if (message.kind === "text") { body.type = "text"; body.text = { body: String(message.payload).slice(0, 4096), preview_url: false }; }
     else if (message.kind === "template") { body.type = "template"; body.template = message.payload; }
     else if (message.kind === "interactive") { body.type = "interactive"; body.interactive = message.payload; }
-    const res = await this.call(`${this.base}/${this.meta.phoneNumberId}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const json = await res.json().catch(() => ({}));
+    const { res, body: json } = await this.call(`${this.base}/${this.meta.phoneNumberId}/messages`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }, (r) => r.json().catch(() => ({})));
     if (!res.ok) {
       const code = json?.error?.code; const e = new Error(`cloud api ${res.status}: ${json?.error?.message || "send failed"}`);
       e.code = code ? `META_${code}` : `HTTP_${res.status}`; e.permanent = res.status >= 400 && res.status < 500 && ![429, 408].includes(res.status);
@@ -76,14 +97,36 @@ export class CloudApiTransport extends WhatsAppTransport {
     return { providerMessageId: json.messages?.[0]?.id || null };
   }
   async downloadMedia(mediaId) {
-    const r = await this.call(`${this.base}/${mediaId}`, { method: "GET" });
+    const { res: r, body: j } = await this.call(`${this.base}/${mediaId}`, { method: "GET" }, (x) => (x.ok ? x.json().catch(() => ({})) : null));
     if (!r.ok) { const e = new Error(`media resolve failed ${r.status}`); e.permanent = r.status === 404 || r.status === 400; throw e; }
-    const j = await r.json().catch(() => ({}));
-    if (!j.url || !/^https:\/\/(lookaside\.fbsbx\.com|scontent[.-][a-z0-9.-]*fbcdn\.net|.*\.whatsapp\.net)\//i.test(j.url)) { const e = new Error("media url missing or not a Meta host"); e.permanent = true; throw e; }
-    const dl = await this.call(j.url, { method: "GET" });
+    if (!isMetaMediaHost(j?.url)) { const e = new Error("media url missing or not a Meta host"); e.permanent = true; throw e; }
+    const TOO_BIG = 10 * 1024 * 1024;
+    // The body is read under call()'s deadline; a size refusal is signalled by
+    // value rather than thrown, because call() rewrites errors raised in here.
+    const { res: dl, body: media } = await this.call(j.url, { method: "GET" }, async (x) => {
+      if (!x.ok) return null;
+      if (Number(x.headers.get("content-length") || 0) > TOO_BIG) return "too_large";
+      const buf = Buffer.from(await x.arrayBuffer());
+      return buf.length > TOO_BIG ? "too_large" : buf;
+    });
     if (!dl.ok) { const e = new Error(`media download failed ${dl.status}`); e.permanent = dl.status === 404 || dl.status === 410; throw e; }
-    const len = Number(dl.headers.get("content-length") || 0); if (len > 10 * 1024 * 1024) { const e = new Error("media too large"); e.permanent = true; throw e; }
-    return Buffer.from(await dl.arrayBuffer());
+    if (!Buffer.isBuffer(media)) { const e = new Error("media too large"); e.permanent = true; throw e; }
+    return media;
   }
   health() { return { ok: !!(this.meta.accessToken && this.meta.phoneNumberId), provider: "cloud-api", mode: "configured", phoneNumberId: this.meta.phoneNumberId, lastSuccess: this.lastSuccess, lastError: this.lastError, note: "configured only; live delivery unverified until a send/receive round-trip is recorded" }; }
+}
+
+/**
+ * Match the HOST, not the string. The old regex alternative `.*\.whatsapp\.net`
+ * was unanchored on the left, so `.*` swallowed a whole different authority:
+ * `https://169.254.169.254/latest/meta-data/?a=.whatsapp.net/` passed the
+ * "Meta hosts only" check and was then fetched with the production
+ * `Authorization: Bearer <META_ACCESS_TOKEN>` header attached.
+ */
+export function isMetaMediaHost(raw) {
+  if (!raw) return false;
+  let u; try { u = new URL(String(raw)); } catch { return false; }
+  if (u.protocol !== "https:") return false;
+  const h = u.hostname.toLowerCase();
+  return h === "lookaside.fbsbx.com" || /(^|\.)fbcdn\.net$/.test(h) || /(^|\.)whatsapp\.net$/.test(h);
 }

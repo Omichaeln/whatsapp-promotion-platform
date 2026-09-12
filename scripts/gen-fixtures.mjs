@@ -7,10 +7,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
+import { pathToFileURL } from "node:url";
 import { ROOT } from "../src/config.mjs";
 
 const OUT = path.join(ROOT, "fixtures", "receipts");
-fs.mkdirSync(OUT, { recursive: true });
 
 // Layout A: description line then "qty x unit  amount" line (SUNRISE style)
 // Layout B: inline "DESC  qty @ unit  amount" (VALUEMART style)
@@ -22,7 +22,10 @@ const RETAILERS = {
 };
 
 function money(n) { return n.toFixed(2); }
-function receiptText({ layout, branch, no, date, time, items }) {
+// Exported so harnesses that need FRESH receipts (bench/load.mjs) print them
+// the same way the fixture pack does, instead of resubmitting the same six
+// images and measuring duplicate rejection.
+export function receiptText({ layout, branch, no, date, time, items }) {
   const L = RETAILERS[layout];
   const lines = [...L.header.map((h) => h.replace("{branch}", branch)), ...L.meta(no, date, time), "--------------------------------"];
   let total = 0;
@@ -36,7 +39,7 @@ function receiptText({ layout, branch, no, date, time, items }) {
   return lines;
 }
 
-async function render(lines, { width = 620, fontSize = 24, bg = "#f7f5ef", fg = "#111" } = {}) {
+export async function render(lines, { width = 620, fontSize = 24, bg = "#f7f5ef", fg = "#111" } = {}) {
   const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${lines.length * 36 + 70}"><rect width="100%" height="100%" fill="${bg}"/>${lines.map((l, i) => `<text x="30" y="${52 + i * 36}" font-family="DejaVu Sans Mono" font-size="${fontSize}" fill="${fg}">${esc(l)}</text>`).join("")}</svg>`;
   return sharp(Buffer.from(svg)).jpeg({ quality: 85 }).toBuffer();
@@ -89,6 +92,7 @@ FIX.push({ id: "dark", from: "valid-two-pack-A", op: "dark", expect: { dispositi
 FIX.push({ id: "cropped-top-missing", from: "valid-two-pack-A", op: "cropTop", expect: { disposition: "REVIEW_REQUIRED" }, notes: "Header/merchant cut off — outlet unknown -> review" });
 
 async function main() {
+  fs.mkdirSync(OUT, { recursive: true });
   const manifest = { generated_at: new Date().toISOString(), fictional: true, note: "All receipts, retailers and purchases are synthetic test fixtures. Expected values are labels for the benchmark; the pipeline never reads this file.", fixtures: [] };
   const images = {};
   for (const f of FIX) {
@@ -134,4 +138,7 @@ async function main() {
   fs.writeFileSync(path.join(OUT, "manifest.json"), JSON.stringify(manifest, null, 2));
   console.log(`wrote ${manifest.fixtures.length} fixtures to ${OUT}`);
 }
-main().catch((e) => { console.error(e); process.exit(1); });
+// Importing this module must not rewrite fixtures/receipts: bench/load.mjs
+// imports the renderer, and a stray regeneration would silently move the
+// labelled corpus the benchmark is measured against.
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) main().catch((e) => { console.error(e); process.exit(1); });

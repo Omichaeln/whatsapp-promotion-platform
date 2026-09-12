@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
+import util from "node:util";
 import { fileURLToPath } from "node:url";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -42,6 +44,8 @@ export const CONFIG_SCHEMA = [
   ["AI_PROVIDER_API_KEY", "", "legacy desk AI key", true],
   ["AI_MONTHLY_BUDGET_USD", "0", "legacy desk AI budget"],
   ["LOG_LEVEL", "info", "log level"],
+  ["VOLUME_PATH", "(Railway: /app/data)", "persistent data volume; refuses to boot when its marker file is absent (set VOLUME_INIT=true once when provisioning a new volume, or VOLUME_PATH= to disable the check)"],
+  ["ENV_FILE", "./.env", "env file read by the CLI entrypoints (preflight, src/db.js) when node was not started with --env-file*"],
   ["SEED_POPULATED", "false", "non-production only: after boot, push the fixture receipts through the real pipeline and run the sample draw (~1-2 min) so every screen has data"],
 ];
 
@@ -58,6 +62,9 @@ export function loadConfig(env = process.env) {
     database: abs(env.DATABASE || railwayPaths?.database || "./data/promotions.db"),
     mediaDir: abs(env.MEDIA_DIR || railwayPaths?.mediaDir || "./data/media"),
     logLevel: env.LOG_LEVEL || "info",
+    // The data volume is the failure domain for everything durable: name it so
+    // boot can prove it is mounted (see dataVolumeStatus).
+    volumePath: (env.VOLUME_PATH ?? (onRailway ? "/app/data" : "")) ? abs(env.VOLUME_PATH ?? "/app/data") : "",
     seedPopulated: /^(1|true|yes)$/i.test(env.SEED_POPULATED || ""),
     adminEmail: (env.ADMIN_EMAIL || "admin@example.com").toLowerCase().trim(),
     adminPassword: env.ADMIN_PASSWORD || (environment === "local" ? "change-me-now-local" : null),
@@ -78,17 +85,82 @@ export function loadConfig(env = process.env) {
   };
 }
 
+export const TRANSPORTS = ["simulator", "cloud-api", "linked-device"];
+export const EXTRACTORS = ["tesseract", "vision", "simulator"];
+export const VOLUME_MARKER = ".volume-id";
+
+/**
+ * Is the durable data directory the mounted volume?
+ * A missing/mis-mounted volume is otherwise indistinguishable from a healthy
+ * first boot: openDb creates a brand-new database inside the container's
+ * ephemeral layer, everything looks green, and the next deploy takes every
+ * participant, receipt, entry and audit row with it. The marker file lives on
+ * the volume, so an unmarked directory means "this is not the volume".
+ * Disabled when VOLUME_PATH is empty or the environment is local.
+ */
+export function dataVolumeStatus(cfg) {
+  const dir = cfg.volumePath;
+  if (!dir || cfg.environment === "local") return { checked: false, ok: true, dir };
+  const marker = path.join(dir, VOLUME_MARKER);
+  const dbExists = cfg.database !== ":memory:" && fs.existsSync(cfg.database);
+  return { checked: true, ok: fs.existsSync(marker), dir, marker, dbExists };
+}
+
+/** Stamp the volume (first provisioning, or adopting a volume that already holds the database). */
+export function markDataVolume(cfg) {
+  const st = dataVolumeStatus(cfg);
+  if (!st.checked || st.ok) return st;
+  fs.mkdirSync(st.dir, { recursive: true });
+  fs.writeFileSync(st.marker, JSON.stringify({ id: crypto.randomBytes(8).toString("hex"), markedAt: new Date().toISOString(), database: cfg.database }, null, 2));
+  return { ...st, ok: true, written: true };
+}
+
 /** Fail-fast checks for non-local environments (called by the server). */
 export function validateConfig(cfg) {
   const problems = [];
+  // An unknown value used to fall through to the simulator transport
+  // (server.mjs) and the tesseract extractor (extract/vision.mjs): a typo such
+  // as WHATSAPP_TRANSPORT=cloud_api booted a "production" service that could
+  // neither receive nor send a single WhatsApp message, with nothing to say so.
+  if (!TRANSPORTS.includes(cfg.whatsappTransport)) problems.push(`WHATSAPP_TRANSPORT="${cfg.whatsappTransport}" is not one of ${TRANSPORTS.join(" | ")}`);
+  if (!EXTRACTORS.includes(cfg.receiptExtractor)) problems.push(`RECEIPT_EXTRACTOR="${cfg.receiptExtractor}" is not one of ${EXTRACTORS.join(" | ")}`);
   if (cfg.environment !== "local") {
     if (!cfg.adminPassword || cfg.adminPassword.length < 12) problems.push("ADMIN_PASSWORD must be set (>=12 chars) outside local");
     if (!cfg.identityKey || cfg.identityKey === "dev-only-key") problems.push("IDENTITY_KEY must be set outside local");
     if (cfg.receiptExtractor === "simulator" && cfg.environment === "production") problems.push("RECEIPT_EXTRACTOR=simulator is forbidden in production");
     if (cfg.whatsappTransport === "linked-device" && cfg.environment === "production") problems.push("linked-device transport is forbidden in production");
   }
+  if (cfg.environment === "production") {
+    // The documented production requirements (docs/release/configuration.md)
+    // were never enforced: a production boot with the default simulator
+    // transport is green on /health/ready while no consumer message can ever
+    // arrive or leave, and an unset AUDIT_CHECKPOINT_KEY signs every draw
+    // bundle checkpoint with a publicly known fallback string.
+    if (cfg.whatsappTransport !== "cloud-api") problems.push(`production requires WHATSAPP_TRANSPORT=cloud-api (got "${cfg.whatsappTransport}"): no WhatsApp message can be received or sent otherwise`);
+    if (!cfg.auditCheckpointKey) problems.push("AUDIT_CHECKPOINT_KEY must be set in production (audit checkpoints and draw bundles are otherwise signed with a well-known fallback key)");
+    if (cfg.whatsappTransport === "cloud-api" && !cfg.publicBaseUrl) problems.push("PUBLIC_BASE_URL must be set in production (webhook callback and media links)");
+  }
   if (cfg.whatsappTransport === "cloud-api" && (!cfg.meta.accessToken || !cfg.meta.appSecret || !cfg.webhookToken)) problems.push("cloud-api transport requires META_ACCESS_TOKEN, META_APP_SECRET, WHATSAPP_WEBHOOK_TOKEN");
+  const vol = dataVolumeStatus(cfg);
+  if (vol.checked && !vol.ok) problems.push(`VOLUME_PATH ${vol.dir} carries no ${VOLUME_MARKER} marker: the persistent volume is not mounted there (a new database would be created in ephemeral container storage). Provision once with VOLUME_INIT=true, or set VOLUME_PATH= to disable this check.`);
   return problems;
+}
+
+/**
+ * Load an env file the way `node --env-file-if-exists=.env` would (real
+ * environment variables win), for the entrypoints that npm does not start with
+ * that flag. Without this, `npm run preflight` validated the default
+ * configuration and exited 0 while `npm start` ran a completely different one,
+ * and `npm run migrate` migrated the wrong database file.
+ */
+export function loadEnvFile(env = process.env, file = null) {
+  if (process.execArgv.some((a) => a.startsWith("--env-file"))) return { loaded: false, reason: "node already applied --env-file" };
+  const target = file || (env.ENV_FILE ? (path.isAbsolute(env.ENV_FILE) ? env.ENV_FILE : path.join(ROOT, env.ENV_FILE)) : path.join(ROOT, ".env"));
+  if (!fs.existsSync(target)) return { loaded: false, reason: "no env file", file: target };
+  const parsed = util.parseEnv(fs.readFileSync(target, "utf8"));
+  const applied = [];
+  for (const [k, v] of Object.entries(parsed)) if (env[k] === undefined) { env[k] = v; applied.push(k); }
+  return { loaded: true, file: target, applied };
 }
 
 export function ensureDir(dir) { fs.mkdirSync(dir, { recursive: true }); return dir; }

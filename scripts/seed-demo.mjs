@@ -19,6 +19,9 @@ const staff = ensureSampleStaff(auth, { db });
 for (const s of staff) console.log(`[seed] staff ${s.email} (${s.roles.join(",")}) temporary password: ${s.temporaryPassword}`);
 const light = process.argv.includes("--light");
 if (light) { console.log("[seed] light seed; done"); await app.close(); process.exit(0); }
-await runPopulatedSeed(app);
+const r = await runPopulatedSeed(app);
 await app.close();
+// An interrupted earlier run leaves a half-populated environment that used to
+// be reported as "already seeded"; make the operator's exit code say otherwise.
+if (r?.incomplete) { console.error(`[seed] a previous run did not finish (last stage: ${r.stage}); reset first: npm run reset:sample && npm run seed`); process.exit(1); }
 process.exit(0);

@@ -25,6 +25,7 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { c
   const getOutletByCode = db.prepare(`select * from outlets where outlet_code = ?`);
   const campaignOutlets = db.prepare(`select o.*, co.collection_enabled as campaign_collection_enabled, co.active_from as member_from, co.active_to as member_to from outlets o join campaign_outlets co on co.outlet_id = o.id where co.campaign_id = ? and o.active = 1 order by o.retailer, o.town, o.branch`);
   const allProducts = db.prepare(`select * from products where active = 1 order by brand, name`);
+  const getProductBySku = db.prepare(`select * from products where sku = ?`);
   const getParticipantByPhone = db.prepare(`select * from participants where wa_phone_uid = ?`);
   const getParticipant = db.prepare(`select * from participants where id = ?`);
   const getEnrollment = db.prepare(`select * from campaign_enrollments where participant_id = ? and campaign_id = ?`);
@@ -54,6 +55,20 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { c
   const maskPhone = (p) => p ? `***${String(p).slice(-4)}` : null;
 
   function nextVersionNo(campaignId) { return listVersions.all(campaignId).length + 1; }
+
+  /**
+   * Master-data fields whose before/after must be recoverable from the audit
+   * chain. An outlet edit decides who can enter and who can collect: `active`
+   * drops the outlet out of listCampaignOutlets (so every in-flight receipt for
+   * that branch is decided outlet_not_participating), `collection_enabled`
+   * gates prize collection and `aliases_json` feeds merchant matching. A single
+   * POST used to change all of that with nothing in audit_events naming who did
+   * it, when, or what the value had been.
+   */
+  const OUTLET_AUDITED = ["outlet_code", "retailer", "branch", "town", "province", "collection_enabled", "active_from", "active_to", "aliases_json", "active", "retailer_code"];
+  const PRODUCT_AUDITED = ["sku", "brand", "name", "aliases_json", "pack_weight_kg", "unit", "active", "pack_grams", "product_code"];
+  const pickFields = (row, keys) => (row ? Object.fromEntries(keys.map((k) => [k, row[k] ?? null])) : null);
+  const changedFields = (before, after) => (before ? Object.keys(after).filter((k) => String(before[k] ?? "") !== String(after[k] ?? "")) : Object.keys(after));
 
   const domain = {
     audit: A, auditService: audit, maskPhone, maskIdentity, identityFingerprint,
@@ -196,12 +211,20 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { c
     upsertOutlet(o, actorId = "system") {
       if (!o.outlet_code || !o.retailer || !o.town) throw new Error("outlet_code, retailer, town required");
       const oid = o.id || `out_${o.outlet_code}`;
+      const prev = getOutletByCode.get(o.outlet_code) || null;
       db.prepare(`insert into outlets (id, outlet_code, retailer, branch, town, province, collection_enabled, active_from, active_to, aliases_json, active, retailer_code)
         values (?,?,?,?,?,?,?,?,?,?,?,?)
         on conflict(outlet_code) do update set retailer=excluded.retailer, branch=excluded.branch, town=excluded.town, province=excluded.province,
           collection_enabled=excluded.collection_enabled, active_from=excluded.active_from, active_to=excluded.active_to, aliases_json=excluded.aliases_json, active=excluded.active, retailer_code=excluded.retailer_code`)
         .run(oid, o.outlet_code, o.retailer, o.branch || o.retailer, o.town, o.province || "", Number(o.collection_enabled ?? 1), o.active_from || "1970-01-01", o.active_to || "9999-12-31", JSON.stringify(o.aliases || []), Number(o.active ?? 1), o.retailer_code || null);
-      return getOutletByCode.get(o.outlet_code);
+      const row = getOutletByCode.get(o.outlet_code);
+      // Without this the hash-chained trail held no record of an outlet being
+      // deactivated, renamed or stripped of its aliases — the change that stops
+      // a branch's receipts qualifying or stops it handing out prizes.
+      const before = pickFields(prev, OUTLET_AUDITED); const after = pickFields(row, OUTLET_AUDITED);
+      const changed = changedFields(before, after);
+      if (changed.length) A({ actorType: "admin", actorId, action: "outlet.upsert", targetType: "outlet", targetId: row.id, payload: { created: !prev, changed, before, after } });
+      return row;
     },
     setCampaignOutlets(campaignId, outletIds, actorId, { collectionByOutlet = {} } = {}) {
       return tx(db, () => {
@@ -227,7 +250,10 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { c
       return tx(db, () => {
         const ids = [];
         for (const r of rows) {
-          const o = domain.upsertOutlet({ ...r, aliases: r.aliases ? String(r.aliases).split(";").map((s) => s.trim()).filter(Boolean) : [], collection_enabled: /^(1|true|yes)$/i.test(r.collection_enabled || "1") ? 1 : 0 });
+          // actorId is passed through so the per-outlet audit rows name the
+          // importing user, not "system"; the outlets.import summary row below
+          // stays as the record of the bulk action itself.
+          const o = domain.upsertOutlet({ ...r, aliases: r.aliases ? String(r.aliases).split(";").map((s) => s.trim()).filter(Boolean) : [], collection_enabled: /^(1|true|yes)$/i.test(r.collection_enabled || "1") ? 1 : 0 }, actorId);
           ids.push(o.id);
         }
         if (campaignId) { const ins = db.prepare(`insert or ignore into campaign_outlets (campaign_id, outlet_id, collection_enabled) values (?,?,?)`); for (const oid of ids) ins.run(campaignId, oid, getOutlet.get(oid).collection_enabled); }
@@ -236,14 +262,21 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { c
       });
     },
     listProducts: () => allProducts.all(),
-    upsertProduct(p) {
+    upsertProduct(p, actorId = "system") {
       if (!p.sku || !p.name) throw new Error("sku and name required");
       const grams = Number(p.pack_grams ?? (p.pack_weight_kg ? Math.round(Number(p.pack_weight_kg) * 1000) : 0));
       if (!Number.isInteger(grams) || grams <= 0) throw new Error("pack_grams must be a positive integer");
       const pid = p.id || `prod_${p.sku}`;
+      const prev = getProductBySku.get(p.sku) || null;
       db.prepare(`insert into products (id, sku, brand, name, aliases_json, pack_weight_kg, unit, active, pack_grams, product_code) values (?,?,?,?,?,?,?,?,?,?)
         on conflict(sku) do update set brand=excluded.brand, name=excluded.name, aliases_json=excluded.aliases_json, pack_weight_kg=excluded.pack_weight_kg, unit=excluded.unit, active=excluded.active, pack_grams=excluded.pack_grams, product_code=excluded.product_code`)
         .run(pid, p.sku, p.brand || "", p.name, JSON.stringify(p.aliases || []), grams / 1000, p.unit || "pack", Number(p.active ?? 1), grams, p.product_code || p.sku);
+      // Catalogue edits were equally unrecorded. (They do not change
+      // qualification — eligibility matches against the campaign version's
+      // rules.products — but FR-24 covers every master-data change.)
+      const before = pickFields(prev, PRODUCT_AUDITED); const after = pickFields(getProductBySku.get(p.sku), PRODUCT_AUDITED);
+      const changed = changedFields(before, after);
+      if (changed.length) A({ actorType: "admin", actorId, action: "product.upsert", targetType: "product", targetId: pid, payload: { created: !prev, changed, before, after } });
       return pid;
     },
 
@@ -336,10 +369,51 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { c
     /** Privacy deletion/anonymisation: profile fields and identity removed, ledger references retained (§17). */
     anonymiseParticipant(pid, actorId, reason) {
       const p = getParticipant.get(pid); if (!p) throw new Error("participant not found");
+      const phone = p.wa_phone_uid;
+      // Erasure used to touch the participants row and nothing else, so the
+      // person's real MSISDN (and, for an abandoned registration, their
+      // plaintext national ID in the session context) stayed in
+      // channel_events / conversation_sessions / outbound_messages and was
+      // still served by the conversation and transcript views. A published
+      // winner's name is a separate problem: it is served by the UNAUTHENTICATED
+      // /api/winners/public and it belongs to a published draw result, which is
+      // not this service's to rewrite. Withdrawing a publication is an audited
+      // winner_ops action, so erasure refuses until that has happened rather
+      // than silently leaving the name up or silently altering the result.
+      const published = db.prepare(`select id from winners where participant_id=? and publication_state='published'`).all(pid);
+      if (published.length) throw Object.assign(new Error(`participant is a published winner (${published.map((w) => w.id).join(", ")}): withdraw the publication first, then erase`), { code: "CONFLICT" });
+      const scrubbed = { channelEvents: 0, sessions: 0, outbound: 0, outboundDeleted: 0, winnerNames: 0 };
       tx(db, () => {
         db.prepare(`update participants set first_name='[deleted]', surname='', identity_enc=null, identity_masked=null, identity_hash=null, identity_fp=null, location=null, status='deleted', wa_phone_uid=?, updated_at=?, row_version=row_version+1 where id=?`).run(`deleted:${pid}`, now(), pid);
         db.prepare(`update campaign_enrollments set withdrawn_at=coalesce(withdrawn_at, ?) where participant_id=?`).run(now(), pid);
-        A({ actorType: "admin", actorId, action: "participant.anonymise", targetType: "participant", targetId: pid, reason });
+        // withdrawParticipant closes the consent; erasure did not, so a deleted
+        // person's consent still read as live.
+        db.prepare(`update consents set withdrawn_at=coalesce(withdrawn_at, ?) where participant_id=?`).run(now(), pid);
+        // Inbound ledger: keep the row (provider idempotency, counts) but drop
+        // the number and the message body it carried.
+        const updEvent = db.prepare(`update channel_events set wa_phone_uid=?, payload_json=? where id=?`);
+        for (const e of db.prepare(`select id, payload_json from channel_events where wa_phone_uid=?`).all(phone)) {
+          let body = {}; try { body = JSON.parse(e.payload_json) || {}; } catch { body = {}; }
+          updEvent.run(`deleted:${pid}`, JSON.stringify({ text: "[erased]", mediaId: null, status: body.status ?? null, raw: null, timestamp: body.timestamp ?? null, inlineMediaB64: null, mime: body.mime ?? null, erased: true }), e.id);
+          scrubbed.channelEvents += 1;
+        }
+        // context_json can hold the plaintext identity of an abandoned
+        // registration; nothing needs the row (a later message starts at HOME).
+        scrubbed.sessions = db.prepare(`delete from conversation_sessions where wa_phone_uid=?`).run(phone).changes;
+        // Messages that were never sent are dropped outright — they are only
+        // personal data addressed to someone who no longer exists, and leaving
+        // them queued would have the worker try to deliver to a dead number.
+        // Anything already sent stays as delivery history, minus the number and
+        // the body. Statuses are left alone so an erasure does not masquerade as
+        // an outbound-failure incident (worker.mjs alerts on failed messages).
+        scrubbed.outboundDeleted = db.prepare(`delete from outbound_messages where wa_phone_uid=? and sent_at is null and status in ('pending','retryable_failure')`).run(phone).changes;
+        const updOut = db.prepare(`update outbound_messages set wa_phone_uid=?, payload_json=? where id=?`);
+        for (const m of db.prepare(`select id from outbound_messages where wa_phone_uid=?`).all(phone)) {
+          updOut.run(`deleted:${pid}`, JSON.stringify({ body: "[erased]", erased: true }), m.id);
+          scrubbed.outbound += 1;
+        }
+        scrubbed.winnerNames = db.prepare(`update winners set display_name=null, row_version=row_version+1 where participant_id=? and display_name is not null`).run(pid).changes;
+        A({ actorType: "admin", actorId, action: "participant.anonymise", targetType: "participant", targetId: pid, reason, payload: { scrubbed } });
       });
       return getParticipant.get(pid);
     },

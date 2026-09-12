@@ -4,7 +4,7 @@ Every file here was produced by running the commands listed against the code in 
 
 | File | Produced by | What it shows |
 |---|---|---|
-| `test-results.txt` | `npm test` | TAP output of all suites (unit, integration, real OCR, contract, security); final line `exit=0` |
+| `test-results.txt` | `npm test` | TAP output of the suites that existed at this commit (unit, integration, real OCR, contract, security): 46 tests in 9 suites, final line `exit=0`. **Stale**: `test/audit-integrity.test.mjs` and `test/media-limits.test.mjs` were added later and are not in this recording — re-run `npm test` and replace this file before the counts are quoted as coverage of the branch tip |
 | `receipt-benchmark.json` | `npm run bench` | per-fixture OCR outcome vs label, false accepts/rejects, review rate, latency percentiles, by-layout summary |
 | `load-benchmark.json` | `npm run load -- --receipts 30 --concurrency 5` | intake/processing throughput and latency with real OCR on one worker (engineering benchmark, not a capacity claim); the same six fixture images are shared across phones on purpose, so most outcomes are DUPLICATE / ownership-dispute REVIEW — the integrity check is `double_credits: 0` |
 | `migration-rehearsal.json` | rehearsal script (see `docs/release/migrations.md`) | migration 007 applied to a populated v1-shaped database with foreign keys ON; row counts identical, integrity ok |

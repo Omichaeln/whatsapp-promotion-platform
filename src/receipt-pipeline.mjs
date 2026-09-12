@@ -29,10 +29,50 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
   const insertItem = db.prepare(`insert into receipt_items (id, receipt_id, description, sku, quantity, unit_weight_kg, amount, evidence_json) values (?,?,?,?,?,?,?,?)`);
   const insertEntry = db.prepare(`insert into entries (id, receipt_id, participant_id, campaign_id, campaign_version_id, draw_period, entry_no, status, created_at, period_code, weight_units, canonical_receipt_id) values (?,?,?,?,?,?,?,?,?,?,?,?)`);
   const insertCandidate = db.prepare(`insert or ignore into duplicate_candidates (id, receipt_id, candidate_receipt_id, kind, score, resolution, created_at) values (?,?,?,?,?,?,?)`);
-  const insertReview = db.prepare(`insert or ignore into review_tasks (id, receipt_id, state, sla_due_at, created_at) values (?,?,?,?,?)`);
+  // A receipt can RE-ENTER review: reprocess() decides the open task, and the
+  // re-run of a deterministic pipeline on the same image decides REVIEW again.
+  // review_tasks.receipt_id is UNIQUE, so `insert or ignore` silently did
+  // nothing: the receipt sat in REVIEW_REQUIRED behind a task marked 'decided'
+  // — invisible in the queue, refused by review() as "already decided", with no
+  // route back through any API. The upsert reopens a decided task instead.
+  // An open or assigned task is left alone (only row_version moves) so a re-run
+  // can neither steal it from its reviewer nor extend its SLA deadline.
+  const insertReview = db.prepare(`insert into review_tasks (id, receipt_id, state, sla_due_at, created_at) values (?,?,?,?,?)
+    on conflict(receipt_id) do update set
+      state=case when review_tasks.state='decided' then 'open' else review_tasks.state end,
+      assignee=case when review_tasks.state='decided' then null else review_tasks.assignee end,
+      assigned_at=case when review_tasks.state='decided' then null else review_tasks.assigned_at end,
+      escalated=case when review_tasks.state='decided' then 0 else review_tasks.escalated end,
+      sla_due_at=case when review_tasks.state='decided' then excluded.sla_due_at else review_tasks.sla_due_at end,
+      decision=null, reason_code=null, note=null, decided_by=null, decided_at=null,
+      row_version=review_tasks.row_version+1`);
   const attemptsFor = db.prepare(`select count(*) n from validation_results where receipt_id=?`);
+  // Draws already frozen for a period: their candidate snapshot is immutable,
+  // so an entry awarded into that period afterwards can never enter any draw.
+  const closedDrawsForPeriod = db.prepare(`select d.id, d.status from draws d left join campaign_periods cp on cp.id = d.period_id
+    where d.campaign_id = ? and coalesce(cp.code, d.draw_period) = ? and d.status in ('frozen','executing','executed','approved','published')`);
+  const periodAlreadyDrawn = (r) => (r.period_code ? closedDrawsForPeriod.all(r.campaign_id, r.period_code) : []);
+  // The CRM versions an entry by the number of decisions taken on it: the award
+  // is 1 and every entry_event after it is the next version. disqualifyEntry
+  // used a literal 2, so disqualify -> reinstate -> disqualify re-emitted
+  // version 2 with a byte-identical payload; crm.emit's INSERT OR IGNORE drops
+  // it and the collision alarm cannot fire on an identical payload, leaving the
+  // CRM permanently out of step with the ledger. Count the events instead.
+  const entryVersion = (entryId) => db.prepare(`select count(*) n from entry_events where entry_id=?`).get(entryId).n + 1;
 
   const content = (campaignId) => domain.versionContent(campaignId);
+  // The decision is judged with the version PINNED to the receipt, so the
+  // message about that decision has to be rendered from the same version. Both
+  // helpers resolved the currently ACTIVE version, so a receipt submitted under
+  // v1 and reviewed after v2 was activated was answered in v2's wording, with
+  // v2's reason labels and v2's participant_status flag — copy the participant
+  // never saw. Fall back to the active version only when the pin is unusable.
+  const versionJson = (r, field, fallback) => {
+    const v = r?.campaign_version_id ? domain.getVersion(r.campaign_version_id) : null;
+    try { return v ? JSON.parse(v[field] || "{}") : fallback(); } catch { return fallback(); }
+  };
+  const pinnedContent = (r) => versionJson(r, "content_json", () => content(r.campaign_id));
+  const pinnedFlags = (r) => versionJson(r, "flags_json", () => domain.versionFlags(r.campaign_id));
   const ruleVars = (rules) => ({ min_packs: rules.primary_rule?.min_packs, pack_label: `${(rules.primary_rule?.pack_grams || 0) / 1000}kg pack`, product: rules.products?.[0]?.name || "the qualifying product" });
 
   // ---------------------------------------------------------------------------
@@ -89,8 +129,17 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
     const pause = domain.getPauseFlags(r.campaign_id);
     const enrollment = domain.getEnrollment(r.participant_id, r.campaign_id);
     const participant = domain.getParticipant(r.participant_id);
+    // FR-13/FR-22: whether the promotion was open is a fact about INTAKE time,
+    // but the campaign row is read here, at PROCESSING time. Pausing or closing
+    // the campaign (a first-class operator control) while a receipt sat in the
+    // queue therefore retro-rejected an on-time submission as "the promotion
+    // was not open at the time" — a false reason, and terminal.
+    const intakeMs = Date.parse(r.intake_at);
+    const openAtIntake = !["draft", "archived"].includes(campaign.status)
+      && (!campaign.start_at || intakeMs >= Date.parse(campaign.start_at))
+      && (!campaign.end_at || intakeMs < Date.parse(campaign.end_at));
     const ctx = {
-      intakeAt: r.intake_at, campaignOpen: !!period && campaign.status === "active",
+      intakeAt: r.intake_at, campaignOpen: !!period && openAtIntake,
       windowStart: rules.purchase_window?.start || campaign.start_at, windowEnd: rules.purchase_window?.end || campaign.end_at,
       selectedOutletId: r.selected_outlet_id, selectedOutletParticipating: !!(selectedOutlet && (outlets.length === 0 || member)),
       enrolled: !!enrollment && !enrollment.withdrawn_at, participantBlocked: participant?.status !== "active",
@@ -109,7 +158,11 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
     const out = tx(db, () => {
       for (const c of exact) insertCandidate.run(id("dup"), receiptId, c.receiptId, c.kind, c.score, "open", now());
       for (const c of visual) insertCandidate.run(id("dup"), receiptId, c.receiptId, c.kind, c.score, "open", now());
-      let canonical = key ? duplicates.canonical(r.campaign_id, key) : null;
+      // Resolve on the STABLE identity (outlet + date + number), not on the key
+      // alone: the key embeds the total, so one unreadable or misread TOTAL on
+      // one of two photographs of the same slip used to mint a second canonical
+      // row and credit the same purchase twice.
+      let canonical = duplicates.claim(r.campaign_id, { outletId: r.selected_outlet_id, date: x.transaction.date, receiptNo: x.transaction.receiptNo, totalMinor: x.transaction.totalMinor });
       let dupOf = null;
       if (canonical && canonical.first_receipt_id !== receiptId) {
         const firstR = getReceipt.get(canonical.first_receipt_id);
@@ -144,6 +197,14 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
       // own: the deterministic identity (outlet|date|number|total) does.
       if (dupOf) { disposition = DISPOSITION.DUPLICATE; reason = "duplicate_receipt"; insertCandidate.run(id("dup"), receiptId, dupOf, "canonical", 1, "same_purchase", now()); }
 
+      // The period's draw is already frozen: its candidate snapshot is fixed,
+      // so an entry awarded now would sit in NO draw for the life of the
+      // campaign while the participant is told "ONE entry has been added to the
+      // draw". A person decides (void + rerun, or a goodwill outcome) instead.
+      // Checked before the canonical claim below so the claim is not recorded
+      // as 'credited' for an award that is not made.
+      if (disposition === DISPOSITION.QUALIFIED && periodAlreadyDrawn(r).length) { disposition = DISPOSITION.REVIEW; reason = "period_already_drawn"; }
+
       // canonical claim (UNIQUE guarded; a concurrent loser becomes DUPLICATE)
       let canonicalId = canonical?.id || null;
       if (key && !canonical && disposition !== DISPOSITION.DUPLICATE) {
@@ -165,14 +226,25 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
   }
 
   function delay(receiptId, why, r, transient = true) {
-    db.prepare(`update receipts set status=?, reason_code=?, row_version=row_version+1 where id=?`).run(transient ? RECEIPT_STATUS.DELAYED : RECEIPT_STATUS.DELAYED, why, receiptId);
+    // The receipt always parks as 'delayed' — a platform-side extraction fault
+    // is never the participant's fault and must stay reprocessable — but a
+    // failure the caller marked permanent (a provider rejecting our
+    // credentials) cannot succeed on a retry. Re-queueing it burned an hour of
+    // provider calls and worker slots and, worse, delayed the alert that is the
+    // only thing that can fix it. The `transient` flag used to be dead (both
+    // arms of a ternary were 'delayed'); now it decides retry vs alert.
+    db.prepare(`update receipts set status=?, reason_code=?, row_version=row_version+1 where id=?`).run(RECEIPT_STATUS.DELAYED, why, receiptId);
     domain.audit({ actorType: "system", actorId: "pipeline", action: "receipt.delayed", targetType: "receipt", targetId: receiptId, reason: why });
     const phone = domain.getParticipant(r.participant_id)?.wa_phone_uid;
-    if (phone) outbox.enqueueWhatsApp({ waPhoneUid: phone, kind: "text", purpose: "receipt_outcome", campaignId: r.campaign_id, payload: renderCopy(content(r.campaign_id), "delayed", { reference: shortRef(receiptId) }), idempotencyKey: `receipt:${receiptId}:delayed` });
-    // retry job with backoff (bounded: 6 attempts ~ 1h)
-    const attempts = attemptsFor.get(receiptId).n + Number(db.prepare(`select count(*) n from jobs where kind='receipt.process' and payload_json like ?`).get(`%${receiptId}%`).n);
-    if (attempts < 6) db.prepare(`insert into jobs (id, kind, payload_json, status, run_after, created_at) values (?,?,?,?,?,?)`).run(id("job"), "receipt.process", JSON.stringify({ receiptId }), "pending", new Date(Date.now() + Math.min(2 ** attempts, 20) * 60_000).toISOString(), now());
-    else domain.alert({ kind: "receipt.stuck", severity: "critical", message: `receipt ${receiptId} delayed after ${attempts} attempts`, runbook: "docs/runbooks/media-and-extraction.md" });
+    if (phone) outbox.enqueueWhatsApp({ waPhoneUid: phone, kind: "text", purpose: "receipt_outcome", campaignId: r.campaign_id, payload: renderCopy(pinnedContent(r), "delayed", { reference: shortRef(receiptId) }), idempotencyKey: `receipt:${receiptId}:delayed` });
+    // retry job with backoff (bounded: 6 attempts ~ 1h). Attempts are the
+    // receipt.process jobs queued for THIS receipt — one monotonic count.
+    // Adding the validation_results count meant a receipt that had already been
+    // extracted once entered the ladder a step early and exhausted its budget
+    // before the schedule intended.
+    const attempts = Number(db.prepare(`select count(*) n from jobs where kind='receipt.process' and payload_json=?`).get(JSON.stringify({ receiptId })).n);
+    if (transient && attempts < 6) db.prepare(`insert into jobs (id, kind, payload_json, status, run_after, created_at) values (?,?,?,?,?,?)`).run(id("job"), "receipt.process", JSON.stringify({ receiptId }), "pending", new Date(Date.now() + Math.min(2 ** attempts, 20) * 60_000).toISOString(), now());
+    else domain.alert({ kind: "receipt.stuck", severity: "critical", message: transient ? `receipt ${receiptId} delayed after ${attempts} attempts` : `receipt ${receiptId} delayed: ${why} is not retryable — extraction needs an operator fix`, runbook: "docs/runbooks/media-and-extraction.md" });
     return { receiptId, decision: RECEIPT_STATUS.DELAYED, reason: why };
   }
 
@@ -199,7 +271,11 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
     let entryId = null;
     if (disposition === DISPOSITION.QUALIFIED) {
       if (!canonicalId) throw new Error("integrity: a qualified receipt must have a canonical identity");
-      const existing = db.prepare(`select id from entries where canonical_receipt_id=? and status='active'`).get(canonicalId);
+      // uq_entries_canonical is unconditional (any status), so the guard must be
+      // too: filtering on status='active' let a second award reach the INSERT
+      // and fail as a raw UNIQUE error inside the pipeline transaction instead
+      // of a clean decision.
+      const existing = db.prepare(`select id from entries where canonical_receipt_id=?`).get(canonicalId);
       if (existing) throw Object.assign(new Error("integrity: canonical receipt already credited"), { code: "ALREADY_CREDITED" });
       const entryNo = domain.countActiveEntries(r.participant_id, r.campaign_id) + 1;
       entryId = id("ent");
@@ -222,8 +298,8 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
   }
 
   function outcomeCopy(r, disposition, reason, isReview, rules) {
-    const c = content(r.campaign_id); const reference = shortRef(r.id);
-    const flags = domain.versionFlags(r.campaign_id);
+    const c = pinnedContent(r); const reference = shortRef(r.id);
+    const flags = pinnedFlags(r);
     const countLine = flags.participant_status ? renderCopy(c, "qualified_count_line", { count: domain.countActiveEntries(r.participant_id, r.campaign_id) }) : "";
     const vars = { reference, campaign: domain.getCampaign(r.campaign_id)?.name || "the promotion", reason: reasonLabel(c, reason, ruleVars(rules || {})), count_line: countLine };
     const k = { QUALIFIED: isReview ? "review_result_qualified" : "qualified", NOT_QUALIFIED: isReview ? "review_result_not_qualified" : "not_qualified", DUPLICATE: isReview ? "review_result_duplicate" : "duplicate", REVIEW_REQUIRED: "under_review", REUPLOAD_REQUIRED: isReview ? "review_result_reupload" : "reupload" }[disposition] || "under_review";
@@ -247,14 +323,32 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
       let canonicalId = r.canonical_receipt_id;
       let disposition = decision, reason = reasonCode || (decision === "QUALIFIED" ? REASONS.OK : "reviewer_decision");
       if (decision === "QUALIFIED") {
-        const key = r.fingerprint || canonicalKeyOf({ outletId: r.selected_outlet_id, date: facts.transaction?.date, receiptNo: facts.transaction?.receiptNo, totalMinor: facts.transaction?.totalMinor });
+        // The period's draw is already frozen/executed: its candidate snapshot
+        // is immutable, so this entry could never enter any draw while the
+        // participant would be told "ONE entry has been added to the draw".
+        // Refuse, naming the draw, rather than awarding an orphan entry.
+        const drawn = periodAlreadyDrawn(r);
+        if (drawn.length) throw Object.assign(new Error(`period ${r.period_code} has already been drawn (draw ${drawn[0].id} is ${drawn[0].status}); an entry awarded now could enter no draw — void and rerun that draw first, or decide another outcome`), { code: "CONFLICT", draws: drawn.map((d) => d.id) });
+        const identity = { outletId: r.selected_outlet_id, date: facts.transaction?.date, receiptNo: facts.transaction?.receiptNo, totalMinor: facts.transaction?.totalMinor };
+        const key = r.fingerprint || canonicalKeyOf(identity);
         if (!key) throw Object.assign(new Error("cannot credit: receipt identity (outlet, date, number) is incomplete — resolve the fields first"), { code: "IDENTITY_INCOMPLETE" });
-        const can = duplicates.canonical(r.campaign_id, key);
-        if (can && can.status === "credited" && can.credited_receipt_id !== receiptId) { disposition = "DUPLICATE"; reason = "duplicate_receipt"; }
-        else if (!can) {
+        // Same stable identity as process(): crediting a receipt whose total was
+        // unreadable must not mint a second claim on a purchase already claimed.
+        const can = duplicates.claim(r.campaign_id, identity) || duplicates.canonical(r.campaign_id, key);
+        // A reviewer's explicit QUALIFIED used to be rewritten to DUPLICATE in
+        // silence: the participant was told "already used" and nothing told the
+        // reviewer their decision had not been applied. Name the holder so the
+        // credit can be moved (disqualify it first) or DUPLICATE chosen
+        // deliberately.
+        if (can && can.status === "credited" && can.credited_receipt_id !== receiptId) {
+          throw Object.assign(new Error(`this purchase is already credited to receipt ${shortRef(can.credited_receipt_id || can.first_receipt_id)}; disqualify that entry first, or record this one as DUPLICATE`), { code: "CONFLICT", creditedReceiptId: can.credited_receipt_id || can.first_receipt_id });
+        } else if (!can) {
           canonicalId = id("can");
-          db.prepare(`insert into canonical_receipts (id, campaign_id, canonical_key, outlet_id, txn_date, receipt_no, total_minor, currency, first_receipt_id, status, created_at) values (?,?,?,?,?,?,?,?,?,?,?)`)
-            .run(canonicalId, r.campaign_id, key, r.selected_outlet_id, facts.transaction?.date || null, facts.transaction?.receiptNo || null, facts.transaction?.totalMinor ?? null, facts.transaction?.currency || null, receiptId, "pending", now());
+          // receipt_no_norm is what the outlet-independent and total-independent
+          // identity lookups match on; a row created here without it was
+          // invisible to both.
+          db.prepare(`insert into canonical_receipts (id, campaign_id, canonical_key, outlet_id, txn_date, receipt_no, receipt_no_norm, total_minor, currency, first_receipt_id, status, created_at) values (?,?,?,?,?,?,?,?,?,?,?,?)`)
+            .run(canonicalId, r.campaign_id, key, r.selected_outlet_id, facts.transaction?.date || null, facts.transaction?.receiptNo || null, facts.transaction?.receiptNo ? normaliseReceiptNo(facts.transaction.receiptNo) : null, facts.transaction?.totalMinor ?? null, facts.transaction?.currency || null, receiptId, "pending", now());
         } else canonicalId = can.id;
       }
       db.prepare(`update review_tasks set state='decided', decision=?, reason_code=?, note=?, decided_by=?, decided_at=?, row_version=row_version+1 where receipt_id=?`).run(disposition, reason, note, reviewer, now(), receiptId);
@@ -284,17 +378,34 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
       db.prepare(`update entries set status='excluded' where id=?`).run(entryId);
       db.prepare(`insert into entry_events (id, entry_id, type, reason, actor_id, approved_by, effective_at, note, created_at) values (?,?,?,?,?,?,?,?,?)`).run(id("eev"), entryId, "disqualified", reason, actorId, approvedBy, now(), note, now());
       domain.audit({ actorType: "admin", actorId, action: "entry.disqualified", targetType: "entry", targetId: entryId, reason, payload: { approvedBy, affectedDraws: frozen.map((d) => d.id) } });
-      crm?.emit({ entityType: "entry", entityId: entryId, entityVersion: 2, payload: { participantId: e.participant_id, campaignCode: domain.getCampaign(e.campaign_id)?.code, period: e.period_code, status: "excluded", reference: shortRef(e.receipt_id) } });
+      crm?.emit({ entityType: "entry", entityId: entryId, entityVersion: entryVersion(entryId), payload: { participantId: e.participant_id, campaignCode: domain.getCampaign(e.campaign_id)?.code, period: e.period_code, status: "excluded", reference: shortRef(e.receipt_id) } });
       return { entryId, affectedDraws: frozen };
     });
   }
-  function reinstateEntry(entryId, { actorId, reason, approvedBy = null }) {
+  /**
+   * Reversal of a disqualification. It carries the same controls as the
+   * decision it undoes: a single actor could otherwise unilaterally put back an
+   * entry that two people agreed to remove, with no reason recorded, no
+   * approver checked and nothing told to the CRM.
+   */
+  function reinstateEntry(entryId, { actorId, reason, approvedBy = null, note = null }) {
     return tx(db, () => {
       const e = db.prepare(`select * from entries where id=?`).get(entryId); if (!e || e.status !== "excluded") throw new Error("entry not excluded");
+      // A missing reason used to surface as "NOT NULL constraint failed" from
+      // inside the transaction — a 500 where a validation message belongs.
+      if (!reason) throw Object.assign(new Error("reason required"), { code: "VALIDATION" });
+      // An approver that is never checked is worse than none: the ledger shows
+      // a second name that nobody verified.
+      if (approvedBy && approvedBy === actorId) throw Object.assign(new Error("approver must differ from the actor"), { code: "SOD" });
+      const undoing = db.prepare(`select * from entry_events where entry_id=? and type='disqualified' order by created_at desc, id desc limit 1`).get(entryId);
+      if (undoing?.approved_by && !approvedBy) throw Object.assign(new Error("this entry was disqualified under independent approval: reinstating it requires an independent approver too"), { code: "APPROVAL_REQUIRED" });
       db.prepare(`update entries set status='active' where id=?`).run(entryId);
-      db.prepare(`insert into entry_events (id, entry_id, type, reason, actor_id, approved_by, effective_at, created_at) values (?,?,?,?,?,?,?,?)`).run(id("eev"), entryId, "reinstated", reason, actorId, approvedBy, now(), now());
-      domain.audit({ actorType: "admin", actorId, action: "entry.reinstated", targetType: "entry", targetId: entryId, reason });
-      return { entryId };
+      db.prepare(`insert into entry_events (id, entry_id, type, reason, actor_id, approved_by, effective_at, note, created_at) values (?,?,?,?,?,?,?,?,?)`).run(id("eev"), entryId, "reinstated", reason, actorId, approvedBy, now(), note, now());
+      domain.audit({ actorType: "admin", actorId, action: "entry.reinstated", targetType: "entry", targetId: entryId, reason, payload: { approvedBy, note } });
+      // Without this the CRM kept reporting a prize-eligible entry as excluded
+      // for ever: nothing else ever re-emits an entry.
+      crm?.emit({ entityType: "entry", entityId: entryId, entityVersion: entryVersion(entryId), payload: { participantId: e.participant_id, campaignCode: domain.getCampaign(e.campaign_id)?.code, period: e.period_code, status: "active", reference: shortRef(e.receipt_id) } });
+      return { entryId, approvedBy };
     });
   }
 

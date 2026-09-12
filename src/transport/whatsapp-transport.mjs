@@ -6,6 +6,13 @@ export const OUTBOUND_KINDS = ["text", "interactive", "template"];
 
 export class WhatsAppTransport {
   get requiresTemplateOutsideWindow() { return false; }
+  /**
+   * True when sending reaches real handsets through a provider account. The
+   * dispatch policy denies by default in non-production on such a transport:
+   * an empty allowlist used to mean "message everyone", so a staging service
+   * pointed at the live WhatsApp number answered every member of the public.
+   */
+  get isLiveProvider() { return false; }
   async start() {}
   async stop() {}
   /** send({ waPhoneUid, kind, payload, idempotencyKey, templateName }) -> { providerMessageId } */

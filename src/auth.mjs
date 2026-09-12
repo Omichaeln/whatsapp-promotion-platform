@@ -20,7 +20,7 @@ export function createAuth(db, { now = nowIso, bootstrap = null, audit = null } 
   const hashToken = (t) => crypto.createHash("sha256").update(t).digest("hex");
   const getUserByEmail = db.prepare(`select * from admin_users where email = ?`);
   const getUser = db.prepare(`select id, email, name, mfa_enabled, roles, status, must_change_password, last_login_at, created_at from admin_users where id = ?`);
-  const getMfaFull = db.prepare(`select id, mfa_secret, mfa_enabled from admin_users where id = ?`);
+  const getMfaFull = db.prepare(`select id, mfa_secret, mfa_pending_secret, mfa_enabled from admin_users where id = ?`);
   const insertToken = db.prepare(`insert into auth_tokens (id, token_hash, admin_user_id, expires_at, created_at) values (?,?,?,?,?)`);
   const getToken = db.prepare(`select * from auth_tokens where token_hash = ?`);
   const pendingMfa = new Map();
@@ -54,8 +54,29 @@ export function createAuth(db, { now = nowIso, bootstrap = null, audit = null } 
       pendingMfa.delete(userId);
       return { token: issueToken(userId, remember), user: getUser.get(userId) };
     },
-    enrollMfa(userId) { const secret = generateSecret(); db.prepare(`update admin_users set mfa_secret=?, mfa_enabled=0, updated_at=? where id=?`).run(secret, now(), userId); return { secret, otpauth: otpauthUri(secret, { label: `${getUser.get(userId)?.email || "staff"}@PromoVault` }) }; },
-    enableMfa(userId, code) { const m = getMfaFull.get(userId); if (!m?.mfa_secret) return { error: "enroll first" }; if (!verifyTotp(m.mfa_secret, code)) return { error: "invalid MFA code" }; db.prepare(`update admin_users set mfa_enabled=1, updated_at=? where id=?`).run(now(), userId); return { ok: true }; },
+    /**
+     * Enrol an authenticator. The new secret is held PENDING until enableMfa
+     * confirms it.
+     *
+     * This used to overwrite the live secret and set mfa_enabled=0
+     * unconditionally, so a single POST /api/mfa/enroll with no code, no
+     * password and no audit row turned a staff account's second factor off —
+     * making the TOTP code that /api/mfa/disable demands pointless — and the
+     * far more ordinary case, a user re-opening the enrol screen to re-scan the
+     * QR, silently disabled their own MFA. Re-enrolling while MFA is on now
+     * requires a current code (or a deliberate, audited /api/mfa/disable), and
+     * the live factor is never cleared as a side effect.
+     */
+    enrollMfa(userId, code = null) {
+      const m = getMfaFull.get(userId);
+      if (!m) throw Object.assign(new Error("user not found"), { code: "NOT_FOUND" });
+      if (m.mfa_enabled && !verifyTotp(m.mfa_secret || "", code)) throw Object.assign(new Error("MFA is already enabled: supply a current MFA code to re-enrol, or disable MFA first"), { code: "CONFLICT" });
+      const secret = generateSecret();
+      db.prepare(`update admin_users set mfa_pending_secret=?, updated_at=? where id=?`).run(secret, now(), userId);
+      audit?.({ actorType: "admin", actorId: userId, action: "staff.mfa_enroll", targetType: "admin_user", targetId: userId, payload: { reEnrol: !!m.mfa_enabled } });
+      return { secret, otpauth: otpauthUri(secret, { label: `${getUser.get(userId)?.email || "staff"}@PromoVault` }) };
+    },
+    enableMfa(userId, code) { const m = getMfaFull.get(userId); const secret = m?.mfa_pending_secret || m?.mfa_secret; if (!secret) return { error: "enroll first" }; if (!verifyTotp(secret, code)) return { error: "invalid MFA code" }; db.prepare(`update admin_users set mfa_secret=?, mfa_pending_secret=null, mfa_enabled=1, updated_at=? where id=?`).run(secret, now(), userId); return { ok: true }; },
     disableMfa(userId, code) { const m = getMfaFull.get(userId); if (!m?.mfa_secret) return { error: "MFA not configured" }; if (!verifyTotp(m.mfa_secret, code)) return { error: "invalid MFA code" }; db.prepare(`update admin_users set mfa_enabled=0, updated_at=? where id=?`).run(now(), userId); return { ok: true }; },
     authenticate(bearer) {
       if (!/^[A-Fa-f0-9]{64}$/.test(bearer || "")) return null;

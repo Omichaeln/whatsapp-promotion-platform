@@ -4,4 +4,4 @@
 
 **Restore:** stop the service; copy the backup database and media into place; start; the worker resumes leases and outstanding jobs; idempotency keys prevent double messages/awards; run `GET /api/audit/verify` and the draw verifier for any executed draws.
 
-**Rollback of a release:** deploy the previous artifact; migrations are expand-only from 007 onward (008 rebuilt `draws` with identical columns, compatible with the previous code). Reverting code never removes entries or reseeds prizes.
+**Rollback of a release:** deploy the previous artifact; migrations are expand-only from 007 onward and compatible with the previous code — there was never a rebuild of `draws` (the plan was rejected, ADR-0007), so do not go looking for one. What 008–010 actually added is listed in `docs/release/migrations.md`: a partial UNIQUE index on `audit_events(prev_hash)`, the nullable `draws.seed_commitment`, and `canonical_receipts.receipt_no_norm` with its index. The previous release ignores all three; nothing needs reverting by hand. Reverting code never removes entries or reseeds prizes.

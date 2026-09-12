@@ -76,19 +76,33 @@ export function openDb(file) {
 
 /** Apply pending ordered migrations; records applied hashes in schema_meta. */
 export function migrate(db, dir = MIGRATIONS_DIR, log = console.log) {
-  const applied = new Set();
-  try {
-    const row = db.prepare(`select value from schema_meta where key='migrations'`).get();
-    if (row) for (const m of row.value.split(",")) applied.add(m);
-  } catch { db.exec("create table if not exists schema_meta (key text primary key, value text not null)"); }
+  const readApplied = () => {
+    const set = new Set();
+    try {
+      const row = db.prepare(`select value from schema_meta where key='migrations'`).get();
+      if (row) for (const m of row.value.split(",")) set.add(m);
+    } catch { db.exec("create table if not exists schema_meta (key text primary key, value text not null)"); }
+    return set;
+  };
+  let applied = readApplied();
   const files = fs.readdirSync(dir).filter(f => f.endsWith(".sql")).sort();
   const fresh = applied.size === 0;
   let count = 0;
   for (const f of files) {
     if (applied.has(f)) continue;
     const sql = fs.readFileSync(path.join(dir, f), "utf8");
-    db.exec("begin");
+    // The ledger was read once, before anything was applied, outside any
+    // transaction. Two migrators starting together (a deploy restart while an
+    // operator runs `npm run migrate`, or the server and the standalone worker)
+    // therefore both saw the same pending file and both applied it — and
+    // replaying a migration is not idempotent (007 and 009 ADD COLUMN), so the
+    // loser died with "duplicate column name" and burned a restart attempt.
+    // BEGIN IMMEDIATE takes the write lock BEFORE the ledger is re-read, so the
+    // second migrator waits on busy_timeout and then sees the file as applied.
+    db.exec("begin immediate");
     try {
+      applied = readApplied();
+      if (applied.has(f)) { db.exec("rollback"); continue; }   // the other migrator won the race
       db.exec(sql);
       const list = [...applied, f].sort().join(",");
       db.prepare(`insert or replace into schema_meta (key, value) values ('migrations', ?)`).run(list);
@@ -100,6 +114,17 @@ export function migrate(db, dir = MIGRATIONS_DIR, log = console.log) {
       throw new Error(`migration ${f} failed: ${e.message}`);
     }
   }
+  // schema_version was hand-maintained: 005 wrote '5' with `insert or replace`
+  // and 007's `insert or ignore` was then a no-op, so the post-deploy check
+  // documented in docs/release/migrations.md reported 5 on a fully migrated
+  // database and an operator could not tell it from one stuck at 005. Derive it
+  // from the ledger instead, so no future migration has to remember to bump it.
+  const version = String(Math.max(0, ...[...applied].map((f) => Number(String(f).slice(0, 3))).filter(Number.isFinite)));
+  try {
+    if (db.prepare(`select value from schema_meta where key='schema_version'`).get()?.value !== version) {
+      db.prepare(`insert or replace into schema_meta (key, value) values ('schema_version', ?)`).run(version);
+    }
+  } catch { /* schema_meta absent: nothing was applied */ }
   if (count > 0 || fresh) log?.(`[db] applied ${count} migration(s)`);
   else log?.(`[db] schema up to date`);
   return count;

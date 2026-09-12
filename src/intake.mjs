@@ -40,8 +40,14 @@ export function createIntake({ db, conversation, outbox, pipeline, domain, trans
     try {
       let result;
       if (ev.event_kind.startsWith("delivery.status:")) {
-        outbox.markDelivery(ev.provider_message_id, ev.event_kind.split(":")[1], { errorCode: payload.raw?.errors?.[0]?.code || null, at: payload.timestamp });
-        result = { delivery: true };
+        const matched = outbox.markDelivery(ev.provider_message_id, ev.event_kind.split(":")[1], { errorCode: payload.raw?.errors?.[0]?.code || null, at: payload.timestamp });
+        // A status for a provider message id we do not hold is silently dropped
+        // (the event is still 'processed'). Count it: a non-zero rate means the
+        // outbound ledger and the provider have diverged — e.g. an operator
+        // Retry replaced provider_message_id, so the first send's statuses can
+        // never be matched again — and that must not be invisible.
+        if (!matched) domain.metric("inbound.delivery_status_unmatched", 1, { status: ev.event_kind.split(":")[1] });
+        result = { delivery: true, matched };
       } else {
         let mediaBytes = null;
         if (ev.event_kind === "message.image" || ev.event_kind === "message.document") {
@@ -118,22 +124,53 @@ export function createIntake({ db, conversation, outbox, pipeline, domain, trans
     for (let i = 0; i < max; i++) { const r = await processNextJob(); if (!r) break; n++; }
     return n;
   }
+  /**
+   * Terminate rows abandoned mid-processing at the attempts cap.
+   *
+   * `attempts` is bumped when the LEASE is taken, but 'dead' is only written by
+   * the catch block — which never runs when the process itself dies (OOM in
+   * OCR/sharp, container kill, redeploy mid-job). After 5 abandoned leases on an
+   * event (6 on a job) the row sits in 'processing' with an expired lease at the
+   * cap, where `attempts < N` in the selectors above hides it for ever: no
+   * decision, no reply to the participant, no dead-letter alert, and nothing in
+   * the ops queue screen (which lists dead/failed) to act on. Write the terminal
+   * state explicitly — and clear the stale lease — so the row is recoverable.
+   */
+  function sweepStranded({ eventAttempts = 5, jobAttempts = 6 } = {}) {
+    const t = now();
+    const events = db.prepare(`select id, attempts from channel_events where status='processing' and lease_until is not null and lease_until < ? and attempts >= ?`).all(t, eventAttempts);
+    for (const e of events) {
+      db.prepare(`update channel_events set status='dead', lease_until=null, error=? where id=?`).run(`abandoned mid-processing after ${e.attempts} leases (worker died before finishing)`, e.id);
+      domain.alert({ kind: "inbound.dead_letter", severity: "critical", message: `inbound event ${e.id} dead-lettered: abandoned mid-processing after ${e.attempts} leases`, runbook: "docs/runbooks/queue-replay.md" });
+    }
+    const jobs = db.prepare(`select id, kind, attempts from jobs where status='processing' and lease_until is not null and lease_until < ? and attempts >= ?`).all(t, jobAttempts);
+    for (const j of jobs) {
+      db.prepare(`update jobs set status='dead', lease_until=null, run_after=null, last_error=? where id=?`).run(`abandoned mid-processing after ${j.attempts} leases (worker died before finishing)`, j.id);
+      domain.alert({ kind: "jobs.dead_letter", severity: "critical", message: `job ${j.id} (${j.kind}) dead: abandoned mid-processing after ${j.attempts} leases`, runbook: "docs/runbooks/queue-replay.md" });
+    }
+    return { events: events.length, jobs: jobs.length };
+  }
+  // An expired 'processing' lease is a crashed worker, never a live one, so an
+  // operator must be able to recover such a row even before the sweeper has run.
   function replay(eventId, actorId) {
-    const r = db.prepare(`update channel_events set status='received', attempts=0, lease_until=null, error=null where id=? and status in ('dead','failed')`).run(eventId);
+    const r = db.prepare(`update channel_events set status='received', attempts=0, lease_until=null, error=null where id=? and (status in ('dead','failed') or (status='processing' and lease_until is not null and lease_until < ?))`).run(eventId, now());
     if (r.changes) domain.audit({ actorType: "admin", actorId, action: "inbound.replay", targetType: "channel_event", targetId: eventId });
     return r.changes > 0;
   }
   function retryJob(jobId, actorId) {
-    const r = db.prepare(`update jobs set status='pending', attempts=0, lease_until=null, run_after=null where id=? and status in ('dead','failed')`).run(jobId);
+    const r = db.prepare(`update jobs set status='pending', attempts=0, lease_until=null, run_after=null where id=? and (status in ('dead','failed') or (status='processing' and lease_until is not null and lease_until < ?))`).run(jobId, now());
     if (r.changes) domain.audit({ actorType: "admin", actorId, action: "job.retry", targetType: "job", targetId: jobId });
     return r.changes > 0;
   }
   function stats() {
     const ev = Object.fromEntries(db.prepare(`select status, count(*) n from channel_events group by status`).all().map((r) => [r.status, r.n]));
     const jobs = Object.fromEntries(db.prepare(`select status, count(*) n from jobs group by status`).all().map((r) => [r.status, r.n]));
-    return { events: ev, jobs, oldestEvent: db.prepare(`select received_at from channel_events where status in ('received','failed') order by received_at limit 1`).get()?.received_at || null, oldestJob: db.prepare(`select created_at from jobs where status in ('pending','failed') order by created_at limit 1`).get()?.created_at || null };
+    // 'processing' counts as backlog: a row stuck there (crashed worker, expired
+    // lease) is exactly the backlog the inbound.backlog alert exists to report,
+    // and excluding it made the alert blind to the worst case.
+    return { events: ev, jobs, oldestEvent: db.prepare(`select received_at from channel_events where status in ('received','failed','processing') order by received_at limit 1`).get()?.received_at || null, oldestJob: db.prepare(`select created_at from jobs where status in ('pending','failed','processing') order by created_at limit 1`).get()?.created_at || null };
   }
-  return { receive, processNext, processNextJob, drain, replay, retryJob, stats };
+  return { receive, processNext, processNextJob, drain, replay, retryJob, stats, sweepStranded };
 }
 
 function redact(raw) { try { const s = JSON.stringify(raw); return JSON.parse(s.length > 4000 ? s.slice(0, 4000) : s); } catch { return null; } }

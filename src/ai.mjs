@@ -175,7 +175,10 @@ Rules: category by business intent; "routine_report" only for internal team figu
       const text = ctx.length > 160 ? ctx.slice(0, 160) + "…" : ctx;
       return { text: draftFor(text, ""), made_by: "fallback" };
     }
-    const ask = String(instruction || "").trim() || (current ? "Rework the draft to be tighter." : "Draft the reply this conversation is waiting for.");
+    // context and current are already sliced; instruction was not, and
+    // /api/nl forwards the raw request field as the instruction — so an
+    // oversized body became an oversized (billable) prompt.
+    const ask = String(instruction || "").trim().slice(0, 2000) || (current ? "Rework the draft to be tighter." : "Draft the reply this conversation is waiting for.");
     let body;
     try {
       if (usage) { const b = await usage.block(); if (b) return { status: b.status, error: b.body.message, made_by: "blocked" }; }
@@ -208,6 +211,9 @@ Rules: category by business intent; "routine_report" only for internal team figu
   async function ask(question, contextRows) {
     if (hasKey) {
       try {
+        // Every other model path checks the budget first; without this one the
+        // cap could be spent by whatever wires this up next.
+        if (usage) { const blocked = await usage.block(); if (blocked) throw new Error(blocked.body.message); }
         const body = await chat([
           { role: "system", content: "You are the operations copilot for a WhatsApp promotion platform. Answer concisely from the data provided. Plain text, no markdown headers." },
           { role: "user", content: `DATA:\n${String(contextRows || "").slice(0, 8000)}\n\nQUESTION: ${question}` },

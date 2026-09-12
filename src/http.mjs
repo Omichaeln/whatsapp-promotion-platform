@@ -30,7 +30,16 @@ export function readBody(req, limit = 5 * 1024 * 1024) {
 }
 export async function readJson(req, limit) { const b = await readBody(req, limit); if (!b.length) return {}; try { return JSON.parse(b.toString("utf8")); } catch { throw E.badRequest("invalid JSON body"); } }
 export function send(res, status, obj, headers = {}) { res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff", ...headers }); res.end(JSON.stringify(obj)); }
-export function page(url, { max = 200, def = 50 } = {}) { const limit = Math.min(max, Math.max(1, Number(url.searchParams.get("limit") || def))); const offset = Math.max(0, Number(url.searchParams.get("offset") || 0)); return { limit, offset, next: (rows) => (rows.length === limit ? offset + limit : null) }; }
+// `?limit=abc` used to reach SQLite as NaN ("datatype mismatch"), so every paged
+// endpoint answered 500 INTERNAL — and logged a stack trace — for what is only a
+// malformed query parameter. A non-integer value is the caller's mistake: say so.
+const count = (url, name, fallback) => {
+  const raw = url.searchParams.get(name);
+  if (raw == null || raw === "") return fallback;
+  if (!/^\d+$/.test(raw.trim())) throw E.badRequest(`${name} must be a non-negative integer`);
+  return Number(raw.trim());
+};
+export function page(url, { max = 200, def = 50 } = {}) { const limit = Math.min(max, Math.max(1, count(url, "limit", def))); const offset = Math.max(0, count(url, "offset", 0)); return { limit, offset, next: (rows) => (rows.length === limit ? offset + limit : null) }; }
 export const str = (v, max = 200) => (v == null ? null : String(v).slice(0, max));
 
 export function createRouter({ auth, log = console }) {
@@ -56,9 +65,14 @@ export function createRouter({ auth, log = console }) {
     const t0 = Date.now();
     const match = routes.find((r) => r.method === req.method && r.re.test(url.pathname));
     if (!match) return false;
-    const params = {}; const m = url.pathname.match(match.re); match.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+    const params = {}; const m = url.pathname.match(match.re);
     let user = null;
     try {
+      // Decoding inside the envelope: `GET /api/receipts/%` made
+      // decodeURIComponent throw a URIError *outside* this try, so an
+      // unauthenticated caller got a bare 500 with no correlationId in the body
+      // and no access-log line. A malformed path segment is a 400.
+      match.keys.forEach((k, i) => { try { params[k] = decodeURIComponent(m[i + 1]); } catch { throw E.badRequest(`malformed path parameter: ${k}`); } });
       if (match.meta.roles !== "public") {
         const bearer = (req.headers.authorization || "").replace(/^Bearer\s+/i, "") || (match.meta.allowTokenQuery ? url.searchParams.get("token") || "" : "");
         const session = auth.authenticate(bearer);
@@ -82,8 +96,14 @@ export function createRouter({ auth, log = console }) {
   return { add, dispatch, routes };
 }
 
-/** OpenAPI 3.0 document from the route table (schemas are descriptive; see docs/api). */
-export function openapi(routes, { title = "WhatsApp Promotion Platform API", version = "2.0.0" } = {}) {
+/**
+ * OpenAPI 3.0 document from the route table (schemas are descriptive; see docs/api).
+ * `extraPaths` carries the endpoints handled before the router (the provider
+ * webhook and the health probes): docs/api.md names them as part of the live
+ * contract, but they are not routes, so a client generated from this document
+ * could not call them at all.
+ */
+export function openapi(routes, { title = "WhatsApp Promotion Platform API", version = "2.0.0", extraPaths = {} } = {}) {
   const paths = {};
   for (const r of routes) {
     const p = r.pathPattern.replace(/:([a-zA-Z_]+)/g, "{$1}");
@@ -93,8 +113,11 @@ export function openapi(routes, { title = "WhatsApp Promotion Platform API", ver
       security: r.meta.roles === "public" ? [] : [{ bearer: [] }],
       "x-roles": r.meta.roles, parameters: [...r.keys.map((k) => ({ name: k, in: "path", required: true, schema: { type: "string" } })), ...Object.entries(r.meta.query || {}).map(([k, d]) => ({ name: k, in: "query", schema: { type: "string" }, description: d }))],
       ...(r.meta.body ? { requestBody: { content: { "application/json": { schema: r.meta.body } } } } : {}),
-      responses: { 200: { description: "OK" }, 400: { $ref: "#/components/responses/Error" }, 401: { $ref: "#/components/responses/Error" }, 403: { $ref: "#/components/responses/Error" }, 404: { $ref: "#/components/responses/Error" }, 409: { $ref: "#/components/responses/Error" } },
+      // A route that answers with CSV, an image or SVG must say so: a generated
+      // client that parses the receipt image or the export as JSON just throws.
+      responses: { 200: { description: "OK", ...(r.meta.produces ? { content: Object.fromEntries([].concat(r.meta.produces).map((t) => [t, { schema: /^(text\/|application\/json)/.test(t) ? { type: "string" } : { type: "string", format: "binary" } }])) } : {}) }, 400: { $ref: "#/components/responses/Error" }, 401: { $ref: "#/components/responses/Error" }, 403: { $ref: "#/components/responses/Error" }, 404: { $ref: "#/components/responses/Error" }, 409: { $ref: "#/components/responses/Error" }, 413: { $ref: "#/components/responses/Error" }, ...(r.meta.rateLimited ? { 429: { $ref: "#/components/responses/Error" } } : {}), 500: { $ref: "#/components/responses/Error" } },
     };
   }
+  for (const [p, ops] of Object.entries(extraPaths)) paths[p] = { ...(paths[p] || {}), ...ops };
   return { openapi: "3.0.3", info: { title, version, description: "Errors: { error: { code, message, correlationId } }. Pagination: ?limit&offset. Unknown body fields ignored. Idempotency: webhook events by provider message id; outbound by idempotency key; approval replay idempotent." }, components: { securitySchemes: { bearer: { type: "http", scheme: "bearer" } }, responses: { Error: { description: "Error envelope", content: { "application/json": { schema: { type: "object", properties: { error: { type: "object", properties: { code: { type: "string" }, message: { type: "string" }, correlationId: { type: "string" } } } } } } } } } }, paths };
 }

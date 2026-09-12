@@ -38,7 +38,11 @@ export function createDeskStore(db, now = nowIso) {
       const where = query.where || "";
       const params = query.params || [];
       const limit = Number(query.limit || 200);
-      if (!/^(where\s)?\w/.test(where.trim())) throw new Error("invalid where clause");
+      // The guard is the only defence against SQL injection through the
+      // interpolated `where` string, so it stays — but an ABSENT clause is
+      // legitimate ("give me the latest messages"). Rejecting "" made every
+      // call to GET /api/desk/messages, which passes no clause, a blanket 500.
+      if (where.trim() && !/^(where\s)?\w/.test(where.trim())) throw new Error("invalid where clause");
       return db.prepare(`select * from desk_messages ${where} order by timestamp desc limit ?`).all(...params, limit);
     },
     unprocessed({ cutoffIso, limit = 800 }) {

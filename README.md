@@ -43,7 +43,7 @@ Sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD` from `.env` (defaults: `admin@exam
 
 ## Deployment (Railway)
 
-`Procfile` → `src/bootstrap.mjs` (migrate → non-production sample seed → server + worker → optional `SEED_POPULATED=true` journeys). Mount a volume at `/app/data`. Full procedure and live test: `docs/release/railway-deploy.md`. Set `ENVIRONMENT`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `IDENTITY_KEY`, `AUDIT_CHECKPOINT_KEY`; for the client's number set `WHATSAPP_TRANSPORT=cloud-api` and the `META_*` variables (`docs/integrations/whatsapp.md`). Production refuses the simulator transport/extractor, sample seeding and dev keys.
+`Procfile` → `src/bootstrap.mjs` (migrate → non-production sample seed → server + worker → optional `SEED_POPULATED=true` journeys). Mount a volume at `/app/data`. Full procedure and live test: `docs/release/railway-deploy.md`. Set `ENVIRONMENT`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `IDENTITY_KEY`, `AUDIT_CHECKPOINT_KEY`; for the client's number set `WHATSAPP_TRANSPORT=cloud-api` and the `META_*` variables (`docs/integrations/whatsapp.md`). Production refuses the simulator transport and extractor, sample seeding and dev keys at boot: `validateConfig` requires `WHATSAPP_TRANSPORT=cloud-api` (with `PUBLIC_BASE_URL`) and `AUDIT_CHECKPOINT_KEY` when `ENVIRONMENT=production`, and the server throws on any of those rather than starting — so a production service left on the simulator fails its deploy with the reason in the log instead of reporting healthy. Sample seeding is refused by `src/bootstrap.mjs` and the sample-data guard.
 
 ## License
 

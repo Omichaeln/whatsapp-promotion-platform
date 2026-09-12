@@ -55,11 +55,21 @@ export function prizeCodeFor(rank, plan) {
   return plan.tiers.at(-1)?.code || "P1";
 }
 export function planFrom(prizeConfig = {}, drawConfig = {}) {
-  const src = prizeConfig.prizes?.length ? prizeConfig : drawConfig;
-  const tiers = (src.prizes || []).map((p) => ({ code: p.code || "P1", label: p.label || p.code || "Prize", count: Number(p.count ?? p.per_week ?? 1) }));
+  // Resolve FIELD BY FIELD, not by picking one source object. Choosing a whole
+  // source on `prizes?.length` silently discarded every other period override:
+  // a period set to { alternates_per_winner: 3, one_prize_per_participant: false }
+  // (tiers inherited from the campaign) resolved byte-identically to {}, so the
+  // week ran with the campaign's alternates and cap and nothing reported it.
+  const pick = (k, dflt) => prizeConfig[k] ?? drawConfig[k] ?? dflt;
+  const prizes = prizeConfig.prizes?.length ? prizeConfig.prizes : (drawConfig.prizes || []);
+  const tiers = prizes.map((p) => ({ code: p.code || "P1", label: p.label || p.code || "Prize", count: Number(p.count ?? p.per_week ?? 1) }));
   const totalWinners = tiers.reduce((a, t) => a + t.count, 0);
-  const alternatesPerWinner = Number(src.alternates_per_winner ?? 1);
-  return { tiers, totalWinners, alternatesPerWinner, totalAlternates: Number(src.total_alternates ?? totalWinners * alternatesPerWinner), onePrizePerParticipant: src.one_prize_per_participant !== false, winnerExclusion: src.winner_exclusion || "none" };
+  const alternatesPerWinner = Number(pick("alternates_per_winner", 1));
+  // A period that states alternates_per_winner without a total is overriding the
+  // alternate policy: derive the total from ITS rate rather than inheriting the
+  // campaign's fixed total, which would cancel the override it just made.
+  const totalAlternates = prizeConfig.total_alternates ?? (prizeConfig.alternates_per_winner != null ? totalWinners * alternatesPerWinner : drawConfig.total_alternates ?? totalWinners * alternatesPerWinner);
+  return { tiers, totalWinners, alternatesPerWinner, totalAlternates: Number(totalAlternates), onePrizePerParticipant: pick("one_prize_per_participant", true) !== false, winnerExclusion: pick("winner_exclusion", null) || "none" };
 }
 export const outputHashOf = (output) => sha256(canonicalJson(output));
 export const snapshotHashOf = (snapshot) => sha256(canonicalJson(snapshot));
@@ -67,6 +77,8 @@ export const snapshotHashOf = (snapshot) => sha256(canonicalJson(snapshot));
 export function createDrawService(db, { domain, randomBytes = 32, now = nowIso } = {}) {
   const get = db.prepare(`select d.*, coalesce(cp.code, d.draw_period) as period_code, cp.label as period_label from draws d left join campaign_periods cp on cp.id = d.period_id where d.id = ?`);
   const cands = db.prepare(`select * from draw_candidates where draw_id = ? order by position`);
+  /** Who froze the candidate pool. Recorded at freeze; execute() preserves it while overwriting operator_id. */
+  const frozenBy = (d) => { try { return JSON.parse(d.evidence_json || "{}").frozen_by || null; } catch { return null; } };
 
   /** Cutoff barrier + eligibility (pure read). */
   function barrier(campaignId, periodId) {
@@ -80,14 +92,25 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
     if (existing) blockers.push({ code: "DRAW_EXISTS", detail: existing });
     const campaign = domain.getCampaign(campaignId);
     const plan = planFrom(JSON.parse(period.prize_config_json || "{}"), JSON.parse(campaign.draw_config_json || "{}"));
-    const rows = db.prepare(`select e.id, e.participant_id, e.weight_units from entries e join participants p on p.id=e.participant_id where e.campaign_id=? and e.period_code=? and e.status='active' and p.status='active' order by e.id`).all(campaignId, period.code);
+    // Select on entries alone and filter the participant status HERE: the old
+    // inner join on p.status='active' dropped the entries of withdrawn and
+    // erased participants before `exclusions` was built, so they appeared in
+    // neither the snapshot, the candidate rows nor the signed freeze payload —
+    // an evidence pack with an unexplained shortfall against "entries in W-1".
+    const rows = db.prepare(`select e.id, e.participant_id, e.weight_units, e.campaign_version_id, p.status as participant_status from entries e left join participants p on p.id=e.participant_id where e.campaign_id=? and e.period_code=? and e.status='active' order by e.id`).all(campaignId, period.code);
     const exclusions = [];
-    let eligible = rows;
+    // reason carries a status word only — the snapshot is exported in the bundle handed to the client
+    let eligible = rows.filter((r) => { if (r.participant_status === "active") return true; exclusions.push({ entryId: r.id, reason: `participant_${r.participant_status || "missing"}` }); return false; });
     if (plan.winnerExclusion === "campaign") {
       const prior = new Set(db.prepare(`select w.participant_id from winners w join draws d on d.id=w.draw_id where d.campaign_id=? and d.status in ('approved','published') and w.status not in ('replaced','rejected','expired','ineligible')`).all(campaignId).map((r) => r.participant_id));
-      eligible = rows.filter((r) => { if (prior.has(r.participant_id)) { exclusions.push({ entryId: r.id, reason: "prior_winner" }); return false; } return true; });
+      eligible = eligible.filter((r) => { if (prior.has(r.participant_id)) { exclusions.push({ entryId: r.id, reason: "prior_winner" }); return false; } return true; });
     }
     const distinct = new Set(eligible.map((r) => r.participant_id)).size;
+    // A campaign or period with no prize tiers plans ZERO winners, and every
+    // count check below passes vacuously (`n < 0` is false). Without this the
+    // week freezes, executes, is approved, published and verified while awarding
+    // nobody, and DRAW_EXISTS then blocks a corrective draw.
+    if (plan.totalWinners < 1) blockers.push({ code: "NO_PRIZE_PLAN", detail: { tiers: plan.tiers.length, totalWinners: plan.totalWinners } });
     if (eligible.length === 0) blockers.push({ code: "NO_CANDIDATES" });
     else if (plan.onePrizePerParticipant ? distinct < plan.totalWinners : eligible.length < plan.totalWinners) blockers.push({ code: "INSUFFICIENT_CANDIDATES", detail: { eligibleEntries: eligible.length, distinctParticipants: distinct, required: plan.totalWinners } });
     return { period, plan, blockers, eligible, exclusions, ok: blockers.length === 0 };
@@ -106,7 +129,17 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
       const priorCount = db.prepare(`select count(*) n from draws where period_id=?`).get(periodId).n;
       const label = priorCount ? `${b.period.code}#${priorCount + 1}` : b.period.code;
       const candidates = b.eligible.map((e) => ({ entryId: e.id, participantId: e.participant_id, weightUnits: Number(e.weight_units || 1) }));
-      const snapshot = { drawId, campaignId, periodCode: b.period.code, rulesVersion: version?.config_hash || null, plan: b.plan, candidates, exclusions: b.exclusions };
+      // `rulesVersion` is the version ACTIVE AT FREEZE, which is not necessarily
+      // the version each entry was judged under (a manager may have activated a
+      // new version after the entries were awarded). State both facts instead of
+      // letting one stand in for the other, so the evidence pack cannot be read
+      // as "these entries were judged under this rule set".
+      const byVersion = new Map();
+      for (const e of b.eligible) byVersion.set(e.campaign_version_id || null, (byVersion.get(e.campaign_version_id || null) || 0) + 1);
+      const candidateRulesVersions = [...byVersion.entries()]
+        .sort((x, y) => String(x[0]).localeCompare(String(y[0])))   // deterministic: the snapshot is hashed
+        .map(([vid, n]) => ({ versionId: vid, configHash: vid ? domain.getVersion(vid)?.config_hash || null : null, entries: n }));
+      const snapshot = { drawId, campaignId, periodCode: b.period.code, rulesVersion: version?.config_hash || null, activeVersionAtFreeze: version?.config_hash || null, candidateRulesVersions, plan: b.plan, candidates, exclusions: b.exclusions };
       const snapshotHash = snapshotHashOf(snapshot);
       // The seed must be COMMITTED before any result exists: sha256(seed) goes
       // into the draw row and into the hash-chained draw.frozen audit payload,
@@ -119,8 +152,17 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
       const ins = db.prepare(`insert into draw_candidates (id, draw_id, position, entry_id, status, exclusion_reason) values (?,?,?,?,?,?)`);
       candidates.forEach((c, i) => ins.run(id("cand"), drawId, i, c.entryId, "eligible", null));
       b.exclusions.forEach((x, i) => ins.run(id("cand"), drawId, 100000 + i, x.entryId, "excluded", x.reason));
+      // A replacement must name what it replaces. Only rerun() linked the chain,
+      // so the plain void -> freeze path produced a draw labelled "#n" whose
+      // bundle reported supersedes: null and disclosed nothing about the
+      // execution(s) already seen and discarded.
+      const prior = db.prepare(`select id from draws where period_id=? and id<>? order by created_at desc, rowid desc limit 1`).get(periodId, drawId);
+      if (prior) {
+        db.prepare(`update draws set supersedes=? where id=?`).run(prior.id, drawId);
+        db.prepare(`update draws set superseded_by=? where id=?`).run(drawId, prior.id);
+      }
       domain.setPeriodStatus(periodId, "closed", actorId);
-      domain.audit({ actorType: "admin", actorId, action: "draw.frozen", targetType: "draw", targetId: drawId, payload: { periodCode: b.period.code, candidates: candidates.length, exclusions: b.exclusions.length, snapshotHash, seedCommitment, override } });
+      domain.audit({ actorType: "admin", actorId, action: "draw.frozen", targetType: "draw", targetId: drawId, payload: { periodCode: b.period.code, candidates: candidates.length, exclusions: b.exclusions.length, snapshotHash, seedCommitment, override, supersedes: prior?.id || null } });
       return get.get(drawId);
     });
   }
@@ -170,6 +212,12 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
       if (d.status === "approved" && d.approver_id === approverId) return d; // idempotent replay
       if (d.status !== "executed") throw Object.assign(new Error(`draw cannot be approved (status=${d.status})`), { code: "CONFLICT" });
       if (d.operator_id === approverId) throw Object.assign(new Error("the user who executed the draw cannot approve it"), { code: "SOD" });
+      // execute() overwrites operator_id with the EXECUTOR, and execution is a
+      // pure function of (snapshot, committed seed, plan) — the executor has no
+      // discretion at all. Freeze is the step that picks the candidate pool and
+      // waives barriers, so the freezer must not be the second pair of eyes
+      // either; otherwise the person who chose the pool approves their own work.
+      if (frozenBy(d) && frozenBy(d) === approverId) throw Object.assign(new Error("the user who froze the candidate pool cannot approve the draw"), { code: "SOD" });
       if (expectedOutputHash && expectedOutputHash !== d.output_hash) throw Object.assign(new Error("result changed since you reviewed it; reload"), { code: "CONFLICT" });
       // verify integrity before approving
       const check = verifyStored(d);
@@ -182,6 +230,11 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
   }
   function reject(drawId, approverId, reason) {
     const d = get.get(drawId); if (!d || d.status !== "executed") throw Object.assign(new Error("only executed draws can be rejected"), { code: "CONFLICT" });
+    // Rejecting is the mirror of approving and discards a result that has
+    // already been seen; without the same separation of duties one person could
+    // reject their own draw and re-freeze for a fresh seed.
+    if (d.operator_id === approverId) throw Object.assign(new Error("the user who executed the draw cannot reject it"), { code: "SOD" });
+    if (frozenBy(d) && frozenBy(d) === approverId) throw Object.assign(new Error("the user who froze the candidate pool cannot reject the draw"), { code: "SOD" });
     db.prepare(`update draws set status='voided', voided_at=?, voided_by=?, void_reason=? where id=?`).run(now(), approverId, reason, drawId);
     domain.setPeriodStatus(d.period_id, "closed", approverId);
     domain.audit({ actorType: "admin", actorId: approverId, action: "draw.rejected", targetType: "draw", targetId: drawId, reason });
@@ -200,7 +253,11 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
   function voidDraw(drawId, actorId, reason, approvedBy) {
     const d = get.get(drawId); if (!d) throw Object.assign(new Error("draw not found"), { code: "NOT_FOUND" });
     if (!reason) throw new Error("reason required");
-    if (["approved", "published"].includes(d.status) && (!approvedBy || approvedBy === actorId)) throw Object.assign(new Error("voiding an approved draw requires a second, different approver"), { code: "SOD" });
+    // 'executed' belongs in this list: the winners are readable as soon as the
+    // draw is executed, so a single actor could void a result they had already
+    // seen, re-freeze for a fresh seed and repeat until the outcome suited them.
+    // A frozen draw has produced no result yet, so abandoning one stays single-actor.
+    if (["executed", "approved", "published"].includes(d.status) && (!approvedBy || approvedBy === actorId)) throw Object.assign(new Error(`voiding a ${d.status} draw requires a second, different approver`), { code: "SOD" });
     db.prepare(`update draws set status='voided', voided_at=?, voided_by=?, void_reason=? where id=?`).run(now(), actorId, `${reason} (approved by ${approvedBy || "n/a"})`, drawId);
     db.prepare(`update winners set status='replaced', publication_state='withdrawn' where draw_id=? and status not in ('collected')`).run(drawId);
     domain.setPeriodStatus(d.period_id, "closed", actorId);
@@ -236,16 +293,32 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
   /** Export the audit bundle for independent verification (scripts/verify-draw-bundle.mjs). */
   function bundle(drawId, actorId) {
     const d = get.get(drawId); if (!d) throw Object.assign(new Error("draw not found"), { code: "NOT_FOUND" });
-    const checkpoint = domain.auditService.checkpoint(actorId);
     const events = db.prepare(`select id, actor_type, actor_id, action, target_type, target_id, reason, request_id, scope, correlation_id, prev_hash, entry_hash, payload_json, created_at from audit_events where target_type='draw' and target_id=? order by id`).all(drawId);
-    domain.audit({ actorType: "admin", actorId, action: "draw.bundle_exported", targetType: "draw", targetId: drawId });
+    // The exported events are SELF-certifying: entry_hash = sha256(prev + body)
+    // needs no key, so whoever holds the file can rewrite "who executed this
+    // draw" and recompute the hash, and every check still agreed. Commit the
+    // exported events' hashes to the chain FIRST (this manifest event), then
+    // sign the head: the manifest's own entry_hash is covered by the HMAC
+    // checkpoint, and the tail below proves the manifest is an ancestor of that
+    // signed head. Editing any exported event now contradicts a hash that
+    // cannot be forged without AUDIT_CHECKPOINT_KEY.
+    const manifest = domain.audit({ actorType: "admin", actorId, action: "draw.bundle_exported", targetType: "draw", targetId: drawId,
+      payload: { events: events.map((e) => ({ id: e.id, entryHash: e.entry_hash })), snapshotHash: d.snapshot_hash, outputHash: d.output_hash } });
+    const checkpoint = domain.auditService.checkpoint(actorId);
+    const tail = checkpoint && manifest?.id
+      ? db.prepare(`select id, prev_hash, entry_hash, payload_json from audit_events where id >= ? and id <= ? order by id`).all(manifest.id, checkpoint.uptoId)
+      : [];
     return {
       bundle_version: VERIFIER_VERSION, exported_at: now(), exported_by: actorId,
-      draw: { id: d.id, campaign_id: d.campaign_id, period: d.period_code, draw_label: d.draw_period, status: d.status, algorithm: d.algorithm, snapshot_hash: d.snapshot_hash, output_hash: d.output_hash, seed_commitment: d.seed_commitment, operator_id: d.operator_id, approver_id: d.approver_id, executed_at: d.executed_at, approved_at: d.approved_at, published_at: d.published_at, rules_version: d.config_hash, supersedes: d.supersedes, superseded_by: d.superseded_by },
+      draw: { id: d.id, campaign_id: d.campaign_id, period: d.period_code, draw_label: d.draw_period, status: d.status, algorithm: d.algorithm, snapshot_hash: d.snapshot_hash, output_hash: d.output_hash, seed_commitment: d.seed_commitment, operator_id: d.operator_id, frozen_by: frozenBy(d), approver_id: d.approver_id, executed_at: d.executed_at, approved_at: d.approved_at, published_at: d.published_at, rules_version: d.config_hash, supersedes: d.supersedes, superseded_by: d.superseded_by, barrier: JSON.parse(d.barrier_json || "null") },
       snapshot: JSON.parse(d.snapshot_json), seed_hex: d.status === "frozen" ? null : d.seed_hex,   // pre-execution randomness is never exported
       output: d.output_json ? JSON.parse(d.output_json) : null,
       attempts: db.prepare(`select actor_id, outcome, detail, created_at from draw_attempts where draw_id=? order by created_at`).all(drawId),
+      // Every draw ever frozen for this period, so a "#n" replacement cannot
+      // hide the executions that were discarded before it.
+      period_draws: d.period_id ? db.prepare(`select id, draw_period as draw_label, status, snapshot_hash, output_hash, operator_id, approver_id, voided_by, void_reason, voided_at, supersedes, superseded_by, created_at from draws where period_id=? order by created_at`).all(d.period_id) : [],
       audit_events: events, audit_checkpoint: checkpoint,
+      audit_anchor: manifest?.id ? { manifest_event_id: manifest.id, chain_tail: tail } : null,
     };
   }
 

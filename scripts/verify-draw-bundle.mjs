@@ -42,6 +42,13 @@ ok("bundle version", b.bundle_version === "draw-verifier/2", b.bundle_version);
 ok("snapshot digest", sha(canon(snap)) === d.snapshot_hash, d.snapshot_hash);
 ok("snapshot names this draw", snap.drawId === d.id && snap.periodCode === d.period);
 ok("candidates unique", new Set(snap.candidates.map((c) => c.entryId)).size === snap.candidates.length, snap.candidates.length);
+// `rules_version` names the version ACTIVE AT FREEZE; the versions the entries
+// were actually judged under are listed separately. Check the disclosure is
+// complete so it cannot be trimmed to hide a rules change mid-period.
+if (Array.isArray(snap.candidateRulesVersions)) {
+  ok("disclosed candidate rules versions cover every candidate", snap.candidateRulesVersions.reduce((a, v) => a + Number(v.entries || 0), 0) === snap.candidates.length,
+    snap.candidateRulesVersions.map((v) => `${v.configHash || "none"}:${v.entries}`).join(", ") || "none");
+}
 if (d.status === "frozen") { ok("no result yet (frozen)", b.output == null && b.seed_hex == null, "randomness withheld until execution"); }
 else {
   ok("seed present", typeof b.seed_hex === "string" && b.seed_hex.length >= 32);
@@ -58,7 +65,16 @@ else {
   const recomputed = { algorithm: d.algorithm, sequence: ordered.map((s) => s.entryId), winners: sel.winners, alternates: sel.alternates, plan: snap.plan };
   ok("output digest", sha(canon(recomputed)) === d.output_hash, d.output_hash);
   ok("stored output equals recomputation", JSON.stringify(recomputed) === JSON.stringify(b.output));
-  ok("winner count matches plan", sel.winners.length === Math.min(snap.plan.totalWinners, sel.winners.length) && (b.output?.winners?.length ?? -1) === sel.winners.length, `${sel.winners.length}/${snap.plan.totalWinners}`);
+  // `winners.length === Math.min(totalWinners, winners.length)` was a tautology:
+  // it held for ANY winner count, so a draw run against an empty prize plan
+  // (0 winners) verified clean while awarding nobody. A short draw is still
+  // legitimate — freeze() accepts an override on INSUFFICIENT_CANDIDATES — so
+  // the bound is "at most the plan, and the plan awards at least one prize".
+  ok("winner count within a plan that awards prizes", snap.plan.totalWinners > 0 && sel.winners.length <= snap.plan.totalWinners && (b.output?.winners?.length ?? -1) === sel.winners.length, `${sel.winners.length}/${snap.plan.totalWinners}`);
+  if (snap.plan.totalWinners > 0 && sel.winners.length < snap.plan.totalWinners) {
+    const bar = d.barrier || {};
+    ok("fewer winners than planned (short candidate pool — informational)", true, JSON.stringify({ blockers: (bar.blockers || []).map((x) => x.code), overridden: bar.overridden ?? null }));
+  }
   ok("alternate count within plan", (b.output?.alternates?.length ?? 0) <= snap.plan.totalAlternates);
   ok("winners are eligible candidates", sel.winners.every((w) => snap.candidates.some((c) => c.entryId === w.entryId)));
   ok("one prize per participant", !snap.plan.onePrizePerParticipant || new Set(sel.winners.map((w) => w.participantId)).size === sel.winners.length);
@@ -105,20 +121,75 @@ if (frozen) {
 if (executed && d.output_hash) {
   ok("output digest matches the signed execute event", (executed.payload?.outputHash ?? executed.outputHash) === d.output_hash, d.output_hash);
 }
-ok("audit trail has freeze+execute(+approve)", ["draw.frozen", "draw.executed"].every((a) => events.some((e) => e.action === a)) && (d.status === "executed" || events.some((e) => e.action === "draw.approved") || d.status === "frozen"));
+// The required actions depend on the STATUS. Demanding draw.executed for every
+// bundle made a frozen draw — the pre-commitment evidence, deliberately
+// exported with the randomness withheld — always report FAILED.
+const NEEDED = { frozen: ["draw.frozen"], executing: ["draw.frozen"], executed: ["draw.frozen", "draw.executed"],
+  approved: ["draw.frozen", "draw.executed", "draw.approved"], published: ["draw.frozen", "draw.executed", "draw.approved"] };
+const need = NEEDED[d.status] || ["draw.frozen"];
+const missing = need.filter((a) => !events.some((e) => e.action === a));
+ok(`audit trail has ${need.map((a) => a.replace("draw.", "")).join("+")}`, missing.length === 0, missing.length ? `missing ${missing.join(", ")}` : `status ${d.status}`);
+if (d.status === "voided") ok("voided draw records why", events.some((e) => ["draw.voided", "draw.rejected"].includes(e.action)));
 if (["approved", "published"].includes(d.status)) {
   // Separation of duties proven from the signed audit body, not from the draw row.
   const approvals = events.filter((e) => e.action === "draw.approved").map((e) => { try { return JSON.parse(e.payload_json); } catch { return null; } }).filter(Boolean);
   const signedApprover = approvals.length ? (approvals[approvals.length - 1].actorId ?? null) : null;
-  ok("approval is attributable in the signed chain", !!signedApprover || unattributed > 0, signedApprover || "no signed approval event");
+  // No escape for legacy bodies: a bundle whose approval carries no signed
+  // attribution cannot prove who approved the draw, which is the whole point.
+  ok("approval is attributable in the signed chain", !!signedApprover, signedApprover || "no signed approval event (v1 body: attribution is outside the hash)");
   if (signedApprover) {
     ok("signed approver matches the draw record", signedApprover === d.approver_id, `${signedApprover} / ${d.approver_id}`);
     ok("signed approver differs from the operator", signedApprover !== d.operator_id, `${d.operator_id} / ${signedApprover}`);
+    // Freeze chooses the candidate pool and waives barriers; execution is
+    // deterministic. An approver who also froze the pool is not a second pair
+    // of eyes, and the draw row alone never showed who froze it.
+    const signedFreezer = frozen ? (frozen.actorId ?? null) : null;
+    if (signedFreezer) ok("signed approver differs from the user who froze the pool", signedApprover !== signedFreezer, `${signedFreezer} / ${signedApprover}`);
   }
+}
+// A "#n" label means earlier draws for this period were discarded. They must be
+// disclosed, otherwise a re-rolled draw looks like a first and only draw.
+const seq = /#(\d+)$/.exec(String(d.draw_label || ""));
+if (seq) {
+  const others = (b.period_draws || []).filter((x) => x.id !== d.id);
+  ok("replacement draw discloses its predecessors", others.length >= Number(seq[1]) - 1,
+    `${others.length} predecessor(s) disclosed for ${d.draw_label}; supersedes ${d.supersedes || "(none)"}`);
 }
 if (b.audit_checkpoint) {
   const expected = crypto.createHmac("sha256", checkpointKey || "unsigned").update(`${b.audit_checkpoint.uptoId}|${b.audit_checkpoint.headHash}`).digest("hex");
   ok("audit checkpoint signature", expected === b.audit_checkpoint.signature, checkpointKey ? "keyed" : "unsigned key (set --checkpoint-key)");
+}
+// Every hash above is unkeyed: entry_hash = sha256(prev + body) is recomputable
+// by anyone, so editing an event body and rewriting its hash left the whole
+// bundle self-consistent and "verified". The anchor is the only thing here that
+// an editor cannot forge: the export commits the exported events' hashes to the
+// chain as `draw.bundle_exported`, and the HMAC-signed checkpoint covers that
+// event's own hash through the exported tail. With a key supplied, an
+// unanchored bundle proves nothing about who did what and must NOT pass.
+if (checkpointKey) {
+  const a = b.audit_anchor, ckp = b.audit_checkpoint;
+  const tail = a?.chain_tail || [];
+  let anchorOk = !!(a && ckp && tail.length), why = a ? "" : "no audit anchor in this bundle: the exported events are not tied to the signed checkpoint";
+  if (anchorOk) {
+    for (const [i, e] of tail.entries()) {
+      if (sha((e.prev_hash || "") + String(e.payload_json)) !== e.entry_hash) { anchorOk = false; why = `anchor event ${e.id} does not recompute`; break; }
+      if (i > 0 && e.prev_hash !== tail[i - 1].entry_hash) { anchorOk = false; why = `anchor chain breaks at event ${e.id}`; break; }
+    }
+  }
+  const last = tail[tail.length - 1];
+  if (anchorOk && (last.entry_hash !== ckp.headHash || Number(last.id) !== Number(ckp.uptoId))) { anchorOk = false; why = "the anchor chain does not end at the signed checkpoint head"; }
+  let man = null;
+  if (anchorOk) {
+    try { man = JSON.parse(tail[0].payload_json); } catch { /* reported below */ }
+    if (!man || man.action !== "draw.bundle_exported" || man.targetId !== d.id || Number(tail[0].id) !== Number(a.manifest_event_id)) { anchorOk = false; why = "the anchor does not start at this draw's export manifest"; }
+  }
+  if (anchorOk) {
+    const listed = (man.payload?.events || []).map((e) => `${e.id}:${e.entryHash}`).sort();
+    const exported = events.map((e) => `${e.id}:${e.entry_hash}`).sort();
+    if (JSON.stringify(listed) !== JSON.stringify(exported)) { anchorOk = false; why = "the exported audit events differ from the set committed to the signed chain"; }
+    if (anchorOk && (man.payload?.snapshotHash !== d.snapshot_hash || (man.payload?.outputHash ?? null) !== (d.output_hash ?? null))) { anchorOk = false; why = "the draw digests differ from those committed to the signed chain"; }
+  }
+  ok("audit events anchored to the signed checkpoint", anchorOk, anchorOk ? `${events.length} event(s) committed before the head was signed` : why);
 }
 const failed = checks.filter((c) => !c.pass);
 console.log(JSON.stringify({ draw: d.id, status: d.status, verified: failed.length === 0, checks }, null, 2));

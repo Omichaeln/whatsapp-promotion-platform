@@ -18,6 +18,12 @@
 // not consume the UAT-reserved fixtures. --no-draw leaves the un-drawn sample
 // period (W-1) for the human UAT draw steps; without it the first run against a
 // deployment executes that draw end to end.
+//
+// A run that could not exercise a group records a SKIP row per check and sets
+// `complete_evidence: false`. Such a run is NOT release evidence (a second run
+// against the same deployment finds no un-drawn period and skips the whole draw
+// and winner groups): take the evidence run against a deployment where those
+// groups actually execute.
 import fs from "node:fs";
 import crypto from "node:crypto";
 
@@ -29,6 +35,14 @@ if (!BASE || !ADMIN_EMAIL || !ADMIN_PASSWORD) { console.error("BASE_URL, ADMIN_E
 const results = []; let current = "setup";
 const rec = (name, pass, detail = "", skipped = false) => { results.push({ group: current, name, status: skipped ? "SKIP" : pass ? "PASS" : "FAIL", detail: String(detail ?? "").slice(0, 300) }); console.log(`${skipped ? "SKIP" : pass ? "PASS" : "FAIL"}  [${current}] ${name}${detail ? " — " + String(detail).slice(0, 160) : ""}`); return !!pass; };
 const group = (g) => { current = g; };
+// Every check that does NOT run gets its own SKIP row. A whole group silently
+// vanishing from the report (the normal second run against a deployment whose
+// only un-drawn period is gone) is indistinguishable, in the evidence JSON,
+// from a group that ran and passed — the banner still reads "0 failed".
+const skipChecks = (g, names, why) => { const prev = current; group(g); for (const n of names) rec(n, false, why, true); group(prev); };
+const DRAW_CHECKS = ["barrier passes for the candidate period", "freeze candidates (draw officer)", "draw officer cannot approve (separation of duties)", "execute with committed seed -> output hash", "approval with a mismatching expected hash refused", "independent approver approves against the output hash", "stored draw re-verifies deterministically", "publish draw materialises winners (fulfilment role)"];
+const WINNER_CHECKS = ["winners listed for the draw", "notify winner -> claim reference + deadline, message queued", "invalid transition (notified -> collected) refused", "verified", "accepted with a collection outlet", "collected with fulfilment reference", "second collection refused", "publish winner (projection only)", "public list shows only name initial, town, prize, week", "participant menu 6 lists the published week", "participant menu 6 shows the published winner"];
+const skipDrawAndWinners = (why) => { skipChecks("draw", DRAW_CHECKS, why); skipChecks("winners", WINNER_CHECKS, why); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function api(method, path, { token = null, body = null, raw = false, headers = {} } = {}) {
   const res = await fetch(BASE + path, { method, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body ? { "content-type": "application/json" } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(60_000) });
@@ -155,9 +169,16 @@ try {
   const s1c = await submitReceipt(admin, P2, "sunrise westgate harare", img1); rec("same receipt from another phone -> DUPLICATE (cross-phone re-use blocked)", s1c.receipt?.status === "DUPLICATE", `${s1c.ref} -> ${s1c.receipt?.status}`);
   const one = await submitReceipt(admin, P2, "sunrise westgate harare", await renderReceipt({ layout: "A", no: `${run.slice(-5)}2`, date: dmy, items: [SUGAR(1), BREAD] })); rec("one pack -> NOT_QUALIFIED below_minimum_quantity", one.receipt?.status === "NOT_QUALIFIED" && one.receipt?.reason_code === "below_minimum_quantity", `${one.ref} -> ${one.receipt?.status} ${one.receipt?.reason_code}`);
   const noise = await submitReceipt(admin, P2, "sunrise westgate harare", await noiseImage()); rec("non-receipt photo -> REUPLOAD_REQUIRED", noise.receipt?.status === "REUPLOAD_REQUIRED", `${noise.ref} -> ${noise.receipt?.status} ${noise.receipt?.reason_code || ""}`);
-  const badBytes = await sim(admin, P2, Buffer.from("this is not an image"), "image/jpeg"); rec("malformed upload refused with guidance (not stored as a receipt)", /couldn't be used|not.*used|try again|photo/i.test(badBytes.text), badBytes.text.split("\n")[0]);
+  // `photo` alone matched the ordinary "send a PHOTO of your receipt" prompt,
+  // so this check passed even when the malformed upload was accepted silently.
+  const badBytes = await sim(admin, P2, Buffer.from("this is not an image"), "image/jpeg"); rec("malformed upload refused with guidance (not stored as a receipt)", /couldn't be used|couldn't download|could not be used/i.test(badBytes.text), badBytes.text.split("\n")[0]);
   const amb = await submitReceipt(admin, P2, "valuemart westgate harare", await renderReceipt({ layout: "B", no: `${run.slice(-5)}3`, date: "11/01/2026", items: [SUGAR(2), BREAD] })); rec("date readable both ways (11/01/2026) -> REVIEW_REQUIRED, never auto-decided", amb.receipt?.status === "REVIEW_REQUIRED", `${amb.ref} -> ${amb.receipt?.status} ${amb.receipt?.reason_code || ""}`);
-  const mine = await sim(admin, P1, "7"); rec("menu 7: own entry status", /1 qualified|entries|entry/i.test(mine.text), mine.text.split("\n")[0]);
+  // The HOME menu itself contains "7. My entries", so /entries|entry/i matched
+  // even when the status flow never ran. Assert the participant's own data
+  // instead: the entry count the ledger reports and this run's receipt
+  // reference, neither of which can appear in the main menu.
+  const mineApi = await api("GET", `/api/entries?participant=${p1?.id}`, { token: admin }); const activeEntries = (mineApi.json?.entries || []).filter((e) => e.status === "active").length;
+  const mine = await sim(admin, P1, "7"); rec("menu 7: own entry status (ledger count + this run's receipt reference)", new RegExp(`\\b${activeEntries}\\b`).test(mine.text) && !!s1.ref && mine.text.includes(s1.ref), mine.text.split("\n").slice(0, 2).join(" | "));
   const mech = await sim(admin, P1, "3"); const terms = await sim(admin, P1, "4"); const prizes = await sim(admin, P1, "5"); const winnersMenu = await sim(admin, P1, "6"); rec("menu 3/4/5/6: mechanics, terms, prizes, winners", [mech, terms, prizes, winnersMenu].every((m) => m.status === 200 && m.text.length > 20), `winners: ${winnersMenu.text.split("\n")[0]}`);
   const help = await sim(admin, P1, "help"); const menu = await sim(admin, P1, "menu"); rec("HELP and MENU keywords", help.status === 200 && /1\./.test(menu.text), menu.text.split("\n")[0]);
 
@@ -192,18 +213,21 @@ try {
   for (const p of perRows) { if (drawn.has(p.id)) continue; const b = await api("GET", `/api/campaigns/${campaign.id}/periods/${p.id}/barrier`, { token: admin }); if (b.json?.ok) { candidate = { period: p, barrier: b.json }; break; } else if (p.code === "W-1") rec(`barrier W-1 reports blockers`, true, (b.json?.blockers || []).map((x) => x.code).join(",") || `HTTP ${b.status}`, true); }
   rec("existing draws listed with period codes and status", drawsList.ok, (drawsList.json?.draws || []).map((d) => `${d.period_code}:${d.status}`).join(" "));
   const existingPublished = (drawsList.json?.draws || []).find((d) => d.status === "published");
-  if (existingPublished) { const v = await api("GET", `/api/draws/${existingPublished.id}/verify`, { token: admin }); rec("stored published draw re-verifies (seed, snapshot, output hashes)", v.ok && (v.json?.ok ?? v.json?.verified ?? true), JSON.stringify(v.json || {}).slice(0, 120)); const bundle = await api("GET", `/api/draws/${existingPublished.id}/bundle`, { token: admin }); rec("bundle export for the independent verifier", bundle.ok && bundle.json?.bundle_version && bundle.json?.audit_checkpoint, `${bundle.json?.bundle_version} events=${(bundle.json?.audit_events || []).length}`); }
-  if (NO_DRAW) rec("draw execution", false, "--no-draw: sample period left for the human UAT", true);
-  else if (!candidate) rec("draw execution", false, "no closed period with a passing barrier (already drawn on this deployment)", true);
-  else if (!(staff.draw && staff.approver && staff.ops)) rec("draw execution", false, "staff accounts missing", true);
+  // `?? true` used to pass any 200 whose body carried neither key, so a verify
+  // endpoint that changed shape (or returned an error object) still scored PASS.
+  if (existingPublished) { const v = await api("GET", `/api/draws/${existingPublished.id}/verify`, { token: admin }); rec("stored published draw re-verifies (seed, snapshot, output hashes)", v.ok && (v.json?.ok === true || v.json?.verified === true), JSON.stringify(v.json || {}).slice(0, 120)); const bundle = await api("GET", `/api/draws/${existingPublished.id}/bundle`, { token: admin }); rec("bundle export for the independent verifier", bundle.ok && bundle.json?.bundle_version && bundle.json?.audit_checkpoint, `${bundle.json?.bundle_version} events=${(bundle.json?.audit_events || []).length}`); }
+  else { rec("stored published draw re-verifies (seed, snapshot, output hashes)", false, "no published draw on this deployment", true); rec("bundle export for the independent verifier", false, "no published draw on this deployment", true); }
+  if (NO_DRAW) { rec("draw execution", false, "--no-draw: sample period left for the human UAT", true); skipDrawAndWinners("--no-draw"); }
+  else if (!candidate) { rec("draw execution", false, "no closed period with a passing barrier (already drawn on this deployment)", true); skipDrawAndWinners("no un-drawn period with a passing barrier"); }
+  else if (!(staff.draw && staff.approver && staff.ops)) { rec("draw execution", false, "staff accounts missing", true); skipDrawAndWinners("staff accounts missing"); }
   else {
-    const { period, barrier } = candidate; rec(`barrier ${period.code} passes`, true, `eligible=${barrier.eligible} distinct=${barrier.distinctParticipants} winners planned=${barrier.plan?.totalWinners}`);
+    const { period, barrier } = candidate; rec("barrier passes for the candidate period", true, `${period.code}: eligible=${barrier.eligible} distinct=${barrier.distinctParticipants} winners planned=${barrier.plan?.totalWinners}`);
     const fz = await api("POST", "/api/draws", { token: staff.draw.token, body: { campaign_id: campaign.id, period_id: period.id } }); const draw = fz.json?.draw; rec("freeze candidates (draw officer)", fz.status === 201 && draw?.snapshot_hash, `status=${draw?.status} snapshot=${(draw?.snapshot_hash || "").slice(0, 12)}`);
     const selfApprove = await api("POST", `/api/draws/${draw?.id}/approve`, { token: staff.draw.token, body: {} }); rec("draw officer cannot approve (separation of duties)", selfApprove.status === 403 || selfApprove.status === 409, `HTTP ${selfApprove.status}`);
     const ex = await api("POST", `/api/draws/${draw?.id}/execute`, { token: staff.draw.token }); const executed = ex.json?.draw; rec("execute with committed seed -> output hash", ex.ok && executed?.output_hash, `status=${executed?.status} output=${(executed?.output_hash || "").slice(0, 12)}`);
     const wrongHash = await api("POST", `/api/draws/${draw?.id}/approve`, { token: staff.approver.token, body: { expected_output_hash: "0000", note: "smoke" } }); rec("approval with a mismatching expected hash refused", !wrongHash.ok, `HTTP ${wrongHash.status}`);
     const ap = await api("POST", `/api/draws/${draw?.id}/approve`, { token: staff.approver.token, body: { expected_output_hash: executed?.output_hash, note: "smoke approval" } }); rec("independent approver approves against the output hash", ap.ok && ap.json?.draw?.status === "approved", `status=${ap.json?.draw?.status}`);
-    const ver = await api("GET", `/api/draws/${draw?.id}/verify`, { token: admin }); rec("stored draw re-verifies deterministically", ver.ok && (ver.json?.ok ?? ver.json?.verified ?? true), JSON.stringify(ver.json || {}).slice(0, 120));
+    const ver = await api("GET", `/api/draws/${draw?.id}/verify`, { token: admin }); rec("stored draw re-verifies deterministically", ver.ok && (ver.json?.ok === true || ver.json?.verified === true), JSON.stringify(ver.json || {}).slice(0, 120));
     const pubDraw = await api("POST", `/api/draws/${draw?.id}/publish`, { token: staff.ops.token }); const created = Array.isArray(pubDraw.json?.winners) ? pubDraw.json.winners.length : Number(pubDraw.json?.winners || 0); rec("publish draw materialises winners (fulfilment role)", pubDraw.ok && (created > 0 || pubDraw.json?.idempotent), `winners created=${created} status=${pubDraw.json?.draw?.status}`);
     group("winners");
     const wl = await api("GET", `/api/winners?draw=${draw?.id}`, { token: staff.ops.token }); const w = (wl.json?.winners || []).find((x) => x.status === "selected") || wl.json?.winners?.[0];
@@ -217,8 +241,18 @@ try {
       const c2 = await api("POST", `/api/winners/${w.id}/transition`, { token: staff.ops.token, body: { status: "collected", fulfilment_ref: "again" } }); rec("second collection refused", !c2.ok, `HTTP ${c2.status}`);
       const pw = await api("POST", `/api/winners/${w.id}/publish`, { token: staff.ops.token }); rec("publish winner (projection only)", pw.ok, `HTTP ${pw.status}`);
       const pub2 = await api("GET", `/api/winners/public?period=${encodeURIComponent(period.code)}`); const row = (pub2.json?.winners || [])[0]; rec("public list shows only name initial, town, prize, week", pub2.ok && row && Object.keys(row).sort().join(",") === "location,name,period,prize,rank" && /^\S+ \S\.$/.test(row.name), JSON.stringify(row || {}));
-      const wmenu = await sim(admin, P1, "6"); rec("participant menu 6 lists the published week", /W-|week|winner/i.test(wmenu.text), wmenu.text.split("\n")[0]);
-    }
+      // "No winners have been published yet" matches /winner/i, so the old
+      // matcher scored PASS whether publication reached the participant channel
+      // or not. Assert the success shape instead: an option for THIS period,
+      // and the masked name the public projection just returned.
+      const wmenu = await sim(admin, P1, "6");
+      const marks = [period.label, period.code].filter(Boolean);
+      const optLine = wmenu.text.split("\n").find((l) => /^\s*\d+\./.test(l) && marks.some((m) => l.includes(m)));
+      const optNo = (optLine?.match(/^\s*(\d+)\./) || [])[1];
+      rec("participant menu 6 lists the published week", !!optNo, optLine || wmenu.text.split("\n")[0]);
+      const wlist = optNo ? await sim(admin, P1, optNo) : null;
+      rec("participant menu 6 shows the published winner", !!row?.name && !!wlist && wlist.text.includes(row.name), (wlist?.text || "").split("\n").slice(0, 2).join(" | ") || "week never listed");
+    } else skipChecks("winners", WINNER_CHECKS.filter((n) => n !== "winners listed for the draw"), "no winner row returned for the executed draw");
   }
 
   // ===== 9. operations views
@@ -241,6 +275,12 @@ try {
 } catch (e) { rec("aborted", false, e.message); }
 
 const summary = { base_url: BASE, started_at: startedAt, finished_at: new Date().toISOString(), pass: results.filter((r) => r.status === "PASS").length, fail: results.filter((r) => r.status === "FAIL").length, skip: results.filter((r) => r.status === "SKIP").length, results };
+// A run with skips is a partial run. The exit code stays 0 — skipping the draw
+// group is the DESIGNED second-run behaviour and failing it would only teach
+// people to pass a suppression flag — but a reader of the JSON (and of this
+// banner) must not mistake it for full release evidence.
+summary.complete_evidence = summary.skip === 0;
 console.log(`\n${summary.pass} passed, ${summary.fail} failed, ${summary.skip} skipped`);
+if (summary.skip) console.log(`WARNING: ${summary.skip} checks did not run against this deployment — see the SKIP rows. Release evidence must come from a run where the draw and winner groups executed.`);
 if (OUT) { fs.writeFileSync(OUT, JSON.stringify(summary, null, 2)); console.log(`written ${OUT}`); }
 process.exit(summary.fail ? 1 : 0);

@@ -28,8 +28,14 @@ export function createOutbox(db, now = nowIso) {
       const row = byKey.get(idempotencyKey);
       if (row) return { existed: true, id: row.id, key: idempotencyKey };
       const outId = id("out");
+      // payload_json holds the MESSAGE ONLY. Routing metadata (recipient, kind,
+      // idempotency key) lives in its own columns: it used to be spread into the
+      // same object, so for kind='template' the internal idempotency key and the
+      // phone uid ended up inside Meta's `template` object on the wire — unknown
+      // params Graph may reject with a 400, which this adapter treats as
+      // permanent and would fail every winner notification of a live draw.
       const envelope = typeof payload === "string" ? { body: payload } : { ...payload };
-      insert.run(outId, provider, waPhoneUid, kind, JSON.stringify({ ...envelope, waPhoneUid, kind, idempotencyKey }), idempotencyKey, "pending", now(), purpose, campaignId, correlationId, templateName);
+      insert.run(outId, provider, waPhoneUid, kind, JSON.stringify(envelope), idempotencyKey, "pending", now(), purpose, campaignId, correlationId, templateName);
       return { id: outId, key: idempotencyKey };
     },
     /**
@@ -72,7 +78,19 @@ export function createOutbox(db, now = nowIso) {
       const ts = at || now();
       if (status === "delivered") db.prepare(`update outbound_messages set status=case when status='read' then status else 'delivered' end, delivered_at=coalesce(delivered_at, ?) where id=?`).run(ts, row.id);
       else if (status === "read") db.prepare(`update outbound_messages set status='read', read_at=coalesce(read_at, ?), delivered_at=coalesce(delivered_at, ?) where id=?`).run(ts, ts, row.id);
-      else if (status === "failed") db.prepare(`update outbound_messages set status='permanent_failure', error_code=?, last_error='provider reported failure' where id=?`).run(errorCode, row.id);
+      else if (status === "failed") {
+        // Provider statuses are not ordered: a 'failed' can arrive after the
+        // recipient has already read the message. Overwriting a proven
+        // delivered/read state destroyed that evidence AND unlocked the console
+        // Retry button (the runbook tells operators to retry permanent_failure),
+        // which re-sent a winner notification someone had already read.
+        const code = providerErrorCode(errorCode);
+        if (row.status === "delivered" || row.status === "read") {
+          db.prepare(`update outbound_messages set last_error=?, error_code=coalesce(error_code, ?) where id=?`).run(`provider reported failure after ${row.status}; ignored (delivery already proven)`, code, row.id);
+        } else {
+          db.prepare(`update outbound_messages set status='permanent_failure', error_code=?, last_error='provider reported failure' where id=?`).run(code, row.id);
+        }
+      }
       else if (status === "sent") db.prepare(`update outbound_messages set sent_at=coalesce(sent_at, ?) where id=?`).run(ts, row.id);
       return true;
     },
@@ -85,7 +103,12 @@ export function createOutbox(db, now = nowIso) {
     stats() {
       const rows = db.prepare(`select status, count(*) n from outbound_messages group by status`).all();
       const oldest = db.prepare(`select created_at from outbound_messages where status in ('pending','retryable_failure') order by created_at limit 1`).get()?.created_at || null;
-      return { byStatus: Object.fromEntries(rows.map((r) => [r.status, r.n])), oldestPending: oldest };
+      // A policy-blocked row (TEMPLATE_REQUIRED, OUTBOUND_PAUSED) sits in
+      // retryable_failure, which the outbound.failures alert does not count — a
+      // message could be held indefinitely with nobody told. Surface the age of
+      // the oldest held row so housekeeping can alert on it.
+      const held = db.prepare(`select created_at from outbound_messages where status='retryable_failure' order by created_at limit 1`).get()?.created_at || null;
+      return { byStatus: Object.fromEntries(rows.map((r) => [r.status, r.n])), oldestPending: oldest, oldestHeld: held };
     },
     list({ status = null, limit = 100 } = {}) {
       return status ? db.prepare(`select id, wa_phone_uid, kind, purpose, status, attempts, last_error, error_code, provider_message_id, created_at, sent_at, delivered_at from outbound_messages where status=? order by created_at desc limit ?`).all(status, limit)
@@ -95,3 +118,16 @@ export function createOutbox(db, now = nowIso) {
 }
 
 function backoff(attempts) { return new Date(Date.now() + Math.min(2 ** attempts, 300) * 1000 + Math.floor(Math.random() * 1000)).toISOString(); }
+
+/**
+ * One shape for error_code whatever the source. The send path records Meta
+ * errors as `META_<code>`; the delivery-status path bound the raw JSON number
+ * into a TEXT column, which node:sqlite stores as '131047.0', so no console
+ * filter on a documented Meta code could ever match either form.
+ */
+function providerErrorCode(raw) {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = typeof raw === "number" ? raw : (/^\d+(\.0+)?$/.test(String(raw)) ? Number(raw) : NaN);
+  if (Number.isFinite(n)) return `META_${Math.trunc(n)}`;
+  return String(raw).startsWith("META_") ? String(raw) : String(raw).slice(0, 60);
+}

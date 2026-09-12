@@ -13,6 +13,14 @@ import { hamming, PROBABLE_DUPLICATE_DIST } from "./media.mjs";
  * branches), so the key always includes outlet and date. Credit is enforced by
  * the UNIQUE(campaign_id, canonical_key) constraint on canonical_receipts and
  * UNIQUE(canonical_receipt_id) on entries — never by application checks alone.
+ *
+ * The TOTAL is in the key for historical reasons but is NOT part of the
+ * identity: it is the least reliable field on the slip (a faded TOTAL line, an
+ * extra "TOTAL" row, one misread digit). Matching on the key alone let one
+ * purchase mint two identities — "…|004512|" from the photo whose total could
+ * not be read and "…|004512|620" from a second photo of the SAME slip — and
+ * credited it twice. claim() therefore resolves a canonical row on the stable
+ * identity (outlet + date + receipt number) whatever the total reads.
  */
 export const normaliseReceiptNo = (n) => String(n ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 
@@ -31,6 +39,14 @@ export function createDuplicateDetector({ db, phashDistance = PROBABLE_DUPLICATE
   const byPrintedIdentity = db.prepare(`select * from canonical_receipts
     where campaign_id = ? and txn_date = ? and receipt_no_norm = ? and coalesce(total_minor, -1) = coalesce(?, -1)
       and coalesce(outlet_id, '') != coalesce(?, '')`);
+  // Same outlet, same day, same printed receipt number: one till slip. The
+  // total is evidence recorded alongside the identity, never part of it, so a
+  // row whose total was unreadable (or read differently) still resolves here.
+  // A credited row wins over a pending one so the duplicate/ownership path
+  // sees the claim that actually holds the entry.
+  const byOutletIdentity = db.prepare(`select * from canonical_receipts
+    where campaign_id = ? and outlet_id = ? and txn_date = ? and receipt_no_norm = ?
+    order by case when status = 'credited' then 0 else 1 end, created_at limit 1`);
 
   return {
     /** Exact byte repeat of a prior submission in this campaign. */
@@ -61,6 +77,19 @@ export function createDuplicateDetector({ db, phashDistance = PROBABLE_DUPLICATE
       return out.sort((a, b) => a.distance - b.distance).slice(0, 5);
     },
     canonical(campaignId, key) { return key ? byCanonical.get(campaignId, key) : null; },
+    /**
+     * The canonical row for this purchase. Tries the exact key first, then the
+     * printed identity at the SAME outlet ignoring the total, so a receipt
+     * whose total was unreadable and a second photograph of the same slip
+     * whose total was readable resolve to ONE identity instead of two.
+     */
+    claim(campaignId, { outletId, date, receiptNo, totalMinor }) {
+      const key = canonicalKeyOf({ outletId, date, receiptNo, totalMinor });
+      const exact = key ? byCanonical.get(campaignId, key) : null;
+      if (exact) return exact;
+      if (!outletId || !date || !receiptNo) return null;
+      return byOutletIdentity.get(campaignId, outletId, date, normaliseReceiptNo(receiptNo)) || null;
+    },
   };
 }
 

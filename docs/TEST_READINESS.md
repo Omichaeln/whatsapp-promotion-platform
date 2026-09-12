@@ -1,12 +1,12 @@
 # Test readiness statement
 
-Build: branch `claude/funny-brown-r7wpo9`, 10 September 2026 (code commit `f0a7f7a8f4fdbd5f2a57fd12f8359d29d25a3ab5`; the pull request carries the full history). This statement is an engineering self-assessment with evidence; it is not a client sign-off.
+Build: branch `claude/funny-brown-r7wpo9`; this revision of the statement was written against commit `86189c3` (12 September 2026) and the pull request carries the full history. The evidence artefacts under `docs/testing/evidence/` were produced at the earlier commit `f0a7f7a8f4fdbd5f2a57fd12f8359d29d25a3ab5` and have **not** been regenerated since — where a row below cites one, read it as evidence for that commit, not for the branch tip. Regenerating the evidence set (`docs/testing/evidence/README.md` lists the exact commands) is a prerequisite for hand-over. This statement is an engineering self-assessment with evidence; it is not a client sign-off.
 
 ## Readiness at the three levels
 
 | Level | Status | What supports it | What is missing |
 |---|---|---|---|
-| Locally testable (developer / internal QA) | **reached** | clean checkout → `npm ci`, `npm run preflight`, `npm run migrate`, `npm run seed`, `npm start`; 46/46 automated tests green (`evidence/test-results.txt`); real OCR on 40 fixtures with 0 false awards (`evidence/receipt-benchmark.json`); seeded sample campaign with 80 outlets, 12 participants, one published draw, winners in every state; console, simulator, verifier, restore rehearsal, load benchmark all run in this build | — |
+| Locally testable (developer / internal QA) | **reached** | clean checkout → `npm ci`, `npm run preflight`, `npm run migrate`, `npm run seed`, `npm start`; the automated suite green at the recorded run (`evidence/test-results.txt`: 46 tests, 9 suites, `exit=0`) — that recording predates `test/audit-integrity.test.mjs`, `test/media-limits.test.mjs` and the later audit-fix cases, so it does not attest the tree being handed over and must be regenerated with `npm test`; real OCR on 40 fixtures with 0 false awards (`evidence/receipt-benchmark.json`); seeded sample campaign with 80 outlets, 12 participants, one published draw, winners in every state; console, simulator, verifier, restore rehearsal, load benchmark all run in this build | — |
 | Integrated client testing (real phones, client-owned WhatsApp number) | **not reached** | Cloud API transport, webhook verification, media download, template gating and status ingestion are implemented and tested against simulated Meta payloads (T-28) | Meta assets from the client (WABA, phone number id, permanent token, app secret, verify token, public HTTPS webhook URL, approved winner template); a live round-trip has **not** been performed from this environment (graph.facebook.com is not reachable from the build sandbox). Receipt extraction is real (tesseract.js) but validated on a synthetic corpus only; the client corpus benchmark is outstanding. CRM: no vendor selected (D-19); the webhook adapter is verified against the local contract receiver only |
 | Production | **not reached** | activation validator (`src/activation.mjs`, T-36) enforces the gate server-side | all 22 client decisions are `open`; sample markers present; secrets, MFA enrolment for privileged staff, backup schedule, alert routing, hosting restore drill, DPA/processor list, approved copy and template |
 
@@ -23,7 +23,7 @@ Per the build brief, the system is **not** described as ready for integrated cli
 | Simulator extractor | `src/extract/simulator.mjs` | TEST ONLY; refused outside `local` | used by the fast test suites only |
 | CRM | `src/crm.mjs` (canonical events, versioned outbox, read-back, reconcile) + `scripts/crm-receiver.mjs` | **not_configured** (`CRM_PROVIDER=none`); webhook adapter **verified against the local contract receiver only** | `test/crm-reliability.test.mjs` T-26/T-27; D-19 |
 | Hosting (Railway) | `Procfile` → `src/bootstrap.mjs`, volume at `/app/data`, `SEED_POPULATED` journeys | **not deployed from this environment** (Railway API, dashboard and app URL unreachable from the sandbox); the Railway start command was rehearsed locally under `ENVIRONMENT=staging` and the 95-check live test passed | `docs/release/railway-deploy.md`, `evidence/remote-smoke-staging-rehearsal.txt` |
-| Database | `node:sqlite` WAL, expand-only migrations 001–007 | verified locally, migration rehearsal on populated v1 data | `evidence/migration-rehearsal.json`, `evidence/restore-rehearsal.json` |
+| Database | `node:sqlite` WAL, expand-only migrations 001–011 | verified locally, migration rehearsal on populated v1 data | `evidence/migration-rehearsal.json`, `evidence/restore-rehearsal.json` |
 
 ## Access for testers (local / any deployment of this branch)
 
