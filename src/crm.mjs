@@ -1,4 +1,6 @@
+import crypto from "node:crypto";
 import { id, nowIso } from "./db.mjs";
+import { canonicalJson } from "./audit.mjs";
 
 /**
  * CRM integration (spec §16). Canonical events -> versioned outbox -> adapter
@@ -76,9 +78,26 @@ export function createCrm({ db, cfg, domain, now = nowIso, adapter = null, envir
     const key = externalKey(entityType, entityId);
     const mapped = mapEntity(entityType, { ...payload, externalKey: key, participantKey: payload.participantId ? externalKey("participant", payload.participantId) : payload.participantKey, winnerKey: payload.winnerId ? externalKey("winner", payload.winnerId) : undefined });
     const eid = id("crm");
+    const payloadHash = hash(mapped);
     const r = db.prepare(`insert or ignore into crm_events (id, provider, entity_type, entity_id, entity_version, event_type, mapping_version, external_key, payload_json, payload_hash, status, created_at, correlation_id)
-      values (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(eid, ad.name, entityType, entityId, entityVersion, eventType, MAPPING_VERSION, key, JSON.stringify(mapped), hash(mapped), "pending", now(), correlationId);
-    return r.changes ? { id: eid, externalKey: key } : { existed: true, externalKey: key };
+      values (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(eid, ad.name, entityType, entityId, entityVersion, eventType, MAPPING_VERSION, key, JSON.stringify(mapped), payloadHash, "pending", now(), correlationId);
+    if (r.changes) return { id: eid, externalKey: key };
+    // INSERT OR IGNORE hit UNIQUE (entity_type, entity_id, entity_version,
+    // event_type). Re-emitting the SAME payload is a benign idempotent repeat.
+    // A DIFFERENT payload under the same version means a distinct event is
+    // being thrown away, which the CRM would never learn about — that is data
+    // loss and must be loud, not a silent no-op.
+    const existing = db.prepare(`select id, payload_hash from crm_events where entity_type=? and entity_id=? and entity_version=? and event_type=?`)
+      .get(entityType, entityId, entityVersion, eventType);
+    const comparable = !!existing && /^[0-9a-f]{64}$/.test(String(existing.payload_hash || ""));
+    const collision = comparable && existing.payload_hash !== payloadHash;
+    if (collision) {
+      domain?.alert?.({ kind: "crm.event_dropped", severity: "critical", runbook: "docs/runbooks/crm-reconciliation.md",
+        message: `CRM ${entityType} ${entityId} version ${entityVersion} was dropped: a different payload already holds that version`,
+        detail: { entityType, entityId, entityVersion, eventType, existingEventId: existing.id } });
+      domain?.metric?.("crm.event_dropped", 1, { entityType });
+    }
+    return { existed: true, externalKey: key, collision, existingId: existing?.id || null };
   }
 
   async function deliverOne({ leaseSeconds = 60 } = {}) {
@@ -145,4 +164,14 @@ export function createCrm({ db, cfg, domain, now = nowIso, adapter = null, envir
   return { emit, deliverOne, reconcile, reconcileView, retry, list, health: () => ad.health(), adapter: ad, mappingPreview: (t, p) => mapEntity(t, { ...p, externalKey: externalKey(t, p.id || "example") }) };
 }
 
-function hash(o) { return Buffer.from(JSON.stringify(o)).toString("base64").slice(0, 32); }
+/**
+ * Digest of a mapped payload, used to tell a benign idempotent re-emit from a
+ * DIFFERENT event colliding on an already-used version.
+ *
+ * This was previously `base64(JSON.stringify(o)).slice(0, 32)` — the first 24
+ * bytes of the payload, not a digest. Every mapped payload begins with the same
+ * `{"external_key":"<env>:<type>:<id>"...` prefix, so two completely different
+ * events for one entity produced identical `payload_hash` values and nothing
+ * comparing them could ever see a difference.
+ */
+function hash(o) { return crypto.createHash("sha256").update(canonicalJson(o)).digest("hex"); }

@@ -171,6 +171,15 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
       db.prepare(`update receipts set fingerprint=?, extracted_outlet_text=?, outlet_match_json=? where id=?`).run(key, x.merchant?.rawText || null, JSON.stringify(x.merchant?.candidates || []), receiptId);
     }
     db.prepare(`update receipts set status=?, reason_code=?, decided_by=?, decided_at=?, canonical_receipt_id=coalesce(?, canonical_receipt_id), row_version=row_version+1 where id=?`).run(disposition, reason, decidedBy, now(), canonicalId, receiptId);
+    // The CRM versions a submission by the receipt's DECISION counter, not by
+    // the extraction attempt. attemptNo counts validation_results rows, and a
+    // reviewer's decision writes none, so an automatic pass and the reviewer's
+    // decision that followed it both emitted entity_version = 1. crm_events has
+    // UNIQUE (entity_type, entity_id, entity_version, event_type) and emit()
+    // uses INSERT OR IGNORE, so every human decision was silently dropped and
+    // the CRM kept the receipt as REVIEW_REQUIRED for ever. row_version is
+    // bumped on every decision, so it is monotonic and collision-free.
+    const decisionVersion = getReceipt.get(receiptId).row_version;
 
     let entryId = null;
     if (disposition === DISPOSITION.QUALIFIED) {
@@ -189,7 +198,7 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
       db.prepare(`update canonical_receipts set status=case when status='credited' then status else 'pending' end where id=?`).run(canonicalId);
     }
     domain.audit({ actorType: isReview ? "admin" : "system", actorId: decidedBy, action: `receipt.${disposition.toLowerCase()}`, targetType: "receipt", targetId: receiptId, reason, correlationId, payload: { entryId, canonicalId, note, rules: v?.rules?.filter((rr) => rr.outcome !== "pass").map((rr) => `${rr.rule}:${rr.outcome}`) } });
-    crm?.emit({ entityType: "submission", entityId: receiptId, entityVersion: attemptNo, payload: { participantId: r.participant_id, campaignCode: domain.getCampaign(r.campaign_id)?.code, reference: shortRef(receiptId), outletCode: domain.getOutlet(r.selected_outlet_id)?.outlet_code, status: disposition, reason, intakeAt: r.intake_at }, correlationId });
+    crm?.emit({ entityType: "submission", entityId: receiptId, entityVersion: decisionVersion, payload: { participantId: r.participant_id, campaignCode: domain.getCampaign(r.campaign_id)?.code, reference: shortRef(receiptId), outletCode: domain.getOutlet(r.selected_outlet_id)?.outlet_code, status: disposition, reason, intakeAt: r.intake_at }, correlationId });
 
     // participant outcome message (single, idempotent per decision)
     const phone = domain.getParticipant(r.participant_id)?.wa_phone_uid;
