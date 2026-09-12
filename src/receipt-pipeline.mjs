@@ -19,6 +19,8 @@ import { renderCopy, reasonLabel, shortRef } from "./copy.mjs";
 export const RECEIPT_STATUS = { RECEIVED: "received", PROCESSING: "processing", DELAYED: "delayed", ...DISPOSITION };
 const TERMINAL = new Set(["QUALIFIED", "NOT_QUALIFIED", "DUPLICATE", "REVIEW_REQUIRED", "REUPLOAD_REQUIRED"]);
 const REVIEW_SLA_HOURS = 24;
+/** Hold code for automated participant messages parked during a support handoff. */
+export const HANDOFF_HELD = "HANDOFF_HELD";
 
 export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, outbox, domain, crm = null, log = console, now = nowIso }) {
   const getReceipt = db.prepare(`select * from receipts where id = ?`);
@@ -252,7 +254,7 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
     db.prepare(`update receipts set status=?, reason_code=?, row_version=row_version+1 where id=?`).run(RECEIPT_STATUS.DELAYED, why, receiptId);
     domain.audit({ actorType: "system", actorId: "pipeline", action: "receipt.delayed", targetType: "receipt", targetId: receiptId, reason: why });
     const phone = domain.getParticipant(r.participant_id)?.wa_phone_uid;
-    if (phone) outbox.enqueueWhatsApp({ waPhoneUid: phone, kind: "text", purpose: "receipt_outcome", campaignId: r.campaign_id, payload: renderCopy(pinnedContent(r), "delayed", { reference: shortRef(receiptId) }), idempotencyKey: `receipt:${receiptId}:delayed` });
+    if (phone) outbox.enqueueWhatsApp({ waPhoneUid: phone, kind: "text", purpose: "receipt_outcome", campaignId: r.campaign_id, payload: renderCopy(pinnedContent(r), "delayed", { reference: shortRef(receiptId) }), idempotencyKey: `receipt:${receiptId}:delayed`, holdUntil: handoffHold(r.campaign_id, phone), holdCode: HANDOFF_HELD });
     // retry job with backoff (bounded: 6 attempts ~ 1h). An attempt is the first
     // extraction plus every retry THIS function queued, and nothing else: the
     // retry jobs carry a marker so the count cannot pick up the job submit()
@@ -267,6 +269,40 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
     if (transient && attempts < 6) db.prepare(`insert into jobs (id, kind, payload_json, status, run_after, created_at) values (?,?,?,?,?,?)`).run(id("job"), "receipt.process", retryPayload, "pending", new Date(Date.now() + Math.min(2 ** attempts, 20) * 60_000).toISOString(), now());
     else domain.alert({ kind: "receipt.stuck", dedupeKey: `receipt.stuck:${receiptId}`, severity: "critical", message: transient ? `receipt ${receiptId} delayed after ${attempts} attempts` : `receipt ${receiptId} delayed: ${why} is not retryable — extraction needs an operator fix`, runbook: "docs/runbooks/media-and-extraction.md" });
     return { receiptId, decision: RECEIPT_STATUS.DELAYED, reason: why };
+  }
+
+  /**
+   * While an operator owns the conversation, an AUTOMATED participant message is
+   * held instead of delivered. copy.mjs promises exactly this ("Automatic replies
+   * are paused until they close the conversation") and it was not kept: a
+   * participant who typed "support" while their receipt was still in the queue
+   * was contradicted mid-dispute by "Thank you for entering...", and the
+   * operator's transcript was interleaved with messages they did not send and
+   * could not suppress. Held at ENQUEUE (releaseHandoff flushes it), never as a
+   * retryable policy block — outbox.mjs does not apply MAX_ATTEMPTS on that
+   * branch, so an open-ended handoff would churn the row on every tick. The hold
+   * expires after one service window, where the worker's TEMPLATE_REQUIRED rule
+   * decides what can still be sent, so a message can never be held for ever.
+   */
+  function handoffHold(campaignId, phone) {
+    if (!campaignId || !phone) return null;
+    try {
+      if (!domain.getSession(campaignId, phone)?.handoff_owner) return null;
+      // The hold must expire while the message is still SENDABLE. WhatsApp
+      // refuses free-form text more than 24h after the participant's last
+      // message, and the worker makes such a row terminal once it is a window
+      // old — so a flat 24h hold ended exactly at the window's close and the
+      // outcome was dropped instead of merely delayed. A claimed handoff never
+      // times out, so that silence was permanent: the participant was never told
+      // whether their receipt qualified. Hold only until an hour before the
+      // window shuts, and if that moment has already passed, do not hold at all
+      // — an outcome arriving mid-handoff is better than none arriving.
+      const last = db.prepare(`select received_at from channel_events where wa_phone_uid=? and event_kind like 'message.%' order by received_at desc limit 1`).get(phone);
+      const lastMs = last ? Date.parse(last.received_at) : NaN;
+      const windowShuts = Number.isFinite(lastMs) ? lastMs + 24 * 3600_000 : Date.now() + 24 * 3600_000;
+      const until = Math.min(Date.now() + 24 * 3600_000, windowShuts - 3600_000);
+      return until > Date.now() ? new Date(until).toISOString() : null;
+    } catch { return null; }
   }
 
   /** Shared integrity path for automatic and reviewer decisions (inside a tx). */
@@ -320,7 +356,7 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
     // participant whose receipt was re-reviewed and CREDITED was only ever told
     // "does not qualify" while silently holding a draw entry.
     const phone = domain.getParticipant(r.participant_id)?.wa_phone_uid;
-    if (phone) outbox.enqueueWhatsApp({ waPhoneUid: phone, kind: "text", purpose: "receipt_outcome", campaignId: r.campaign_id, correlationId, payload: outcomeCopy(r, disposition, reason, isReview, rules), idempotencyKey: `receipt:${receiptId}:outcome:v${decisionVersion}` });
+    if (phone) outbox.enqueueWhatsApp({ waPhoneUid: phone, kind: "text", purpose: "receipt_outcome", campaignId: r.campaign_id, correlationId, payload: outcomeCopy(r, disposition, reason, isReview, rules), idempotencyKey: `receipt:${receiptId}:outcome:v${decisionVersion}`, holdUntil: handoffHold(r.campaign_id, phone), holdCode: HANDOFF_HELD });
     return { receiptId, decision: disposition, reason, entryId, canonicalId, receipt: getReceipt.get(receiptId) };
   }
 

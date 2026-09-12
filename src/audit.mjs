@@ -111,21 +111,42 @@ export function createAudit(db, { checkpointKey = "", now = nowIso } = {}) {
     return { ok: broken.length === 0, total: rows.length, unattributed, broken: broken.slice(0, 50), brokenCount: broken.length, head: prev };
   }
 
-  /** Sign the current head so it can be retained outside the database. */
+  /**
+   * Sign the current head so it can be retained outside the database.
+   *
+   * With no AUDIT_CHECKPOINT_KEY there is NO SIGNATURE. It used to sign with the
+   * literal fallback key "unsigned", which anyone who can rewrite the chain can
+   * also recompute — and the independent verifier, run without a key, computed
+   * the same value and reported "audit checkpoint signature: pass", positively
+   * asserting that the one control designed to survive a privileged operator
+   * rewriting the audit log was intact. An unsigned checkpoint now says so:
+   * signature null (the column is NOT NULL, so the row keeps a self-describing
+   * sentinel that cannot be mistaken for an HMAC) and signed:false, which a
+   * verifier must fail on rather than recompute.
+   */
+  const UNSIGNED = "UNSIGNED: no AUDIT_CHECKPOINT_KEY was configured when this checkpoint was written";
   function checkpoint(actorId = "system") {
     const last = db.prepare(`select id, entry_hash from audit_events order by id desc limit 1`).get();
     if (!last) return null;
-    const signature = crypto.createHmac("sha256", checkpointKey || "unsigned").update(`${last.id}|${last.entry_hash}`).digest("hex");
+    const signature = checkpointKey ? crypto.createHmac("sha256", checkpointKey).update(`${last.id}|${last.entry_hash}`).digest("hex") : null;
     const cid = id("ckp");
     db.prepare(`insert into audit_checkpoints (id, upto_id, head_hash, signature, created_by, created_at) values (?,?,?,?,?,?)`)
-      .run(cid, last.id, last.entry_hash, signature, actorId, now());
+      .run(cid, last.id, last.entry_hash, signature ?? UNSIGNED, actorId, now());
     return { id: cid, uptoId: last.id, headHash: last.entry_hash, signature, signed: !!checkpointKey };
   }
 
+  /**
+   * signatureOk is never true "by agreement on a publicly known fallback key":
+   * with no configured key, or against a checkpoint that carries no HMAC, there
+   * is nothing to check and the answer is false. (The return shape is left
+   * alone — callers deep-equal it — so a caller that needs to tell "unsigned"
+   * from "forged" reads `signed` on the checkpoint itself.)
+   */
   function verifyCheckpoint(ckp) {
-    const expected = crypto.createHmac("sha256", checkpointKey || "unsigned").update(`${ckp.uptoId ?? ckp.upto_id}|${ckp.headHash ?? ckp.head_hash}`).digest("hex");
-    const given = String(ckp.signature || "");
-    const signatureOk = expected.length === given.length && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(given));
+    const given = String(ckp?.signature || "");
+    const verifiable = !!checkpointKey && /^[0-9a-f]{64}$/.test(given);
+    const expected = verifiable ? crypto.createHmac("sha256", checkpointKey).update(`${ckp.uptoId ?? ckp.upto_id}|${ckp.headHash ?? ckp.head_hash}`).digest("hex") : null;
+    const signatureOk = verifiable && expected.length === given.length && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(given));
     const row = db.prepare(`select entry_hash from audit_events where id = ?`).get(ckp.uptoId ?? ckp.upto_id);
     return { signatureOk, headMatches: row?.entry_hash === (ckp.headHash ?? ckp.head_hash) };
   }

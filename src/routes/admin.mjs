@@ -1,6 +1,6 @@
 import { E, page, str } from "../http.mjs";
 import { signMediaUrl, verifyMediaSig } from "../media.mjs";
-import { validateActivation } from "../activation.mjs";
+import { validateActivation, validateVersionContentRules } from "../activation.mjs";
 import { csvCell } from "../services.mjs";
 import { shortRef } from "../copy.mjs";
 import { ALL_ROLES } from "../auth.mjs";
@@ -19,6 +19,18 @@ export function registerAdminRoutes(r, S) {
   // cache, or be sniffed into another content type.
   const CSV_HEADERS = { "content-type": "text/csv", "cache-control": "no-store", "x-content-type-options": "nosniff" };
   const campaignOr404 = (id) => { const c = domain.getCampaign(id); if (!c) throw E.notFound("campaign not found"); return c; };
+  /**
+   * Decisions the design reserves for a NAMED business role. platform_admin is a
+   * technical role that implies campaign_manager/support/auditor (auth.mjs), which
+   * on these three routes meant the person who deploys the app and holds the
+   * database could unmask any national ID and could remove or restore any entry
+   * from the draw pool alone — deciding who is eligible for the weekly draw while
+   * the draw itself still looked correctly two-person. The implication is dropped
+   * HERE ONLY: every read route keeps it (the console relies on it, and a read is
+   * audited), and a platform_admin who also genuinely holds the business role
+   * still passes.
+   */
+  const requireLiteral = (user, ...roles) => { if (!auth.hasLiteralRole(user, ...roles)) throw E.forbidden(`requires one of: ${roles.join(", ")} (platform_admin does not imply it for this action)`); };
   const activeCampaignId = () => db.prepare(`select id from campaigns where status in ('active','paused') order by created_at desc limit 1`).get()?.id || null;
 
   // ---- auth / self ----------------------------------------------------------
@@ -85,7 +97,23 @@ export function registerAdminRoutes(r, S) {
   r.add("GET", "/api/campaigns/:id/versions", { roles: any, ...T("campaigns") }, ({ params }) => ({ versions: domain.listVersions(params.id).map((v) => ({ id: v.id, version_no: v.version_no, status: v.status, frozen_at: v.frozen_at, frozen_by: v.frozen_by, config_hash: v.config_hash, content: JSON.parse(v.content_json || "{}"), rules: JSON.parse(v.rules_json || "{}"), flags: JSON.parse(v.flags_json || "{}") })) }));
   r.add("POST", "/api/campaigns/:id/versions", { roles: A.CM, ...T("campaigns") }, async ({ user, params, body }) => { const b = await body(); campaignOr404(params.id); const vid = b.from_active ? domain.newVersionFrom(params.id, b, user.id) : domain.createVersion(params.id, { content: b.content || {}, rules: b.rules || {}, flags: b.flags || {} }, user.id); return { __status: 201, body: { versionId: vid } }; });
   r.add("PATCH", "/api/campaigns/:id/versions/:vid", { roles: A.CM, ...T("campaigns") }, async ({ user, params, body }) => { const b = await body(); versionOr404(params.vid, { draft: true }); return { version: domain.updateDraftVersion(params.vid, { content: b.content, rules: b.rules, flags: b.flags }, user.id) }; });
-  r.add("POST", "/api/campaigns/:id/versions/:vid/activate", { roles: A.CM, ...T("campaigns") }, ({ user, params }) => { versionOr404(params.vid, { campaignId: params.id, draft: true }); const v = domain.activateVersion(params.id, params.vid, user.id); return { versionId: v.id, status: v.status, config_hash: v.config_hash }; });
+  r.add("POST", "/api/campaigns/:id/versions/:vid/activate", { roles: A.CM, ...T("campaigns") }, ({ user, params }) => {
+    const c = campaignOr404(params.id);
+    const target = versionOr404(params.vid, { campaignId: params.id, draft: true });
+    // Swapping the live rule set is an activation too. The production gate used
+    // to cover only the draft -> active STATUS transition, so once a campaign was
+    // live a single campaign_manager could install a version that loosened the
+    // rules (one pack qualifies) or dropped the terms URL, with no validation at
+    // all. Only the content/rules checks are re-run, against the version being
+    // INSTALLED (see validateVersionContentRules), so a mid-campaign correction
+    // is not blocked by an unrelated provider blip.
+    if (["active", "paused"].includes(c.status) && domain.environment() === "production") {
+      const v = validateVersionContentRules({ domain, campaignId: params.id, version: target });
+      if (!v.ok) throw E.conflict("production activation blocked: this version would change the live rules", { failures: v.failures });
+    }
+    const v = domain.activateVersion(params.id, params.vid, user.id);
+    return { versionId: v.id, status: v.status, config_hash: v.config_hash };
+  });
   // periods
   r.add("GET", "/api/campaigns/:id/periods", { roles: any, ...T("campaigns") }, ({ params }) => ({ periods: domain.listPeriods(params.id).map((p) => ({ ...p, prize_config: JSON.parse(p.prize_config_json || "{}") })) }));
   r.add("POST", "/api/campaigns/:id/periods", { roles: A.CM, ...T("campaigns") }, async ({ user, params, body }) => { const b = await body(); campaignOr404(params.id);
@@ -127,7 +155,7 @@ export function registerAdminRoutes(r, S) {
     return { participant: { id: p.id, first_name: p.first_name, surname: p.surname, location: p.location, status: p.status, phone: domain.maskPhone(p.wa_phone_uid), identity_masked: p.identity_masked, created_at: p.created_at, row_version: p.row_version, marketing_consent: !!p.marketing_consent }, enrollments, submissions, entries };
   });
   r.add("PATCH", "/api/participants/:id", { roles: [...A.SU, ...A.CM], ...T("participants") }, async ({ user, params, body }) => { const b = await body(); return { participant: mask(domain.updateParticipant(params.id, { firstName: str(b.first_name, 60), surname: str(b.surname, 60), location: str(b.location, 80) }, user.id, str(b.reason, 200) || "support correction")) }; });
-  r.add("POST", "/api/participants/:id/reveal-identity", { roles: [...A.WO, ...A.AU], ...T("participants") }, async ({ user, params, body }) => { const b = await body(); if (!b.reason) throw E.badRequest("reason required"); const v = domain.revealIdentity(params.id, user.id, str(b.reason, 200)); return { identity: v }; });
+  r.add("POST", "/api/participants/:id/reveal-identity", { roles: [...A.WO, ...A.AU], ...T("participants") }, async ({ user, params, body }) => { requireLiteral(user, ...A.WO, ...A.AU); const b = await body(); if (!b.reason) throw E.badRequest("reason required"); const v = domain.revealIdentity(params.id, user.id, str(b.reason, 200)); return { identity: v }; });
   r.add("POST", "/api/participants/:id/withdraw", { roles: [...A.SU, ...A.PA], ...T("participants") }, async ({ user, params, body }) => { const b = await body(); const p = domain.getParticipant(params.id); if (!p) throw E.notFound(); return { participant: mask(domain.withdrawParticipant(p.wa_phone_uid, user.id, str(b.reason, 200) || "support request")) }; });
   r.add("POST", "/api/participants/:id/anonymise", { roles: A.PA, ...T("participants") }, async ({ user, params, body }) => { const b = await body(); if (!b.reason) throw E.badRequest("reason required"); return { participant: mask(domain.anonymiseParticipant(params.id, user.id, str(b.reason, 200))) }; });
   r.add("POST", "/api/participants/:id/phone", { roles: [...A.SU, ...A.PA], ...T("participants") }, async ({ user, params, body }) => { const b = await body(); if (!b.phone || !b.reason) throw E.badRequest("phone and reason required"); return { participant: mask(domain.changePhone(params.id, b.phone, user.id, str(b.reason, 200))) }; });
@@ -177,8 +205,8 @@ export function registerAdminRoutes(r, S) {
   r.add("GET", "/api/entries", { roles: [...A.RV, ...A.SU, ...A.AU, ...A.CM, ...A.DO, ...A.DA, ...A.WO], ...T("entries"), query: { campaign: "", period: "", status: "", participant: "" } }, ({ url }) => { const q = url.searchParams; const pg = page(url); const where = ["1=1"], args = []; for (const [k, col] of [["campaign", "campaign_id"], ["period", "period_code"], ["status", "status"], ["participant", "participant_id"]]) if (q.get(k)) { where.push(`${col}=?`); args.push(q.get(k)); } const rows = db.prepare(`select * from entries where ${where.join(" and ")} order by created_at desc limit ? offset ?`).all(...args, pg.limit, pg.offset).map((e) => ({ ...e, reference: shortRef(e.receipt_id) })); return { entries: rows, next: pg.next(rows) }; });
   r.add("GET", "/api/entries/:id", { roles: [...A.RV, ...A.SU, ...A.AU, ...A.CM, ...A.DO, ...A.DA, ...A.WO], ...T("entries") }, ({ params }) => { const e = db.prepare(`select * from entries where id=?`).get(params.id); if (!e) throw E.notFound(); return { entry: { ...e, reference: shortRef(e.receipt_id) }, events: db.prepare(`select * from entry_events where entry_id=? order by created_at`).all(e.id), receipt: db.prepare(`select id, status, reason_code, selected_outlet_id, period_code, canonical_receipt_id, campaign_version_id, decided_by, decided_at from receipts where id=?`).get(e.receipt_id), validation: db.prepare(`select attempt_no, extractor_provider, extractor_version, decision, created_at from validation_results where receipt_id=? order by attempt_no`).all(e.receipt_id), canonical: db.prepare(`select * from canonical_receipts where id=?`).get(e.canonical_receipt_id), rules_version: domain.getVersion(e.campaign_version_id)?.config_hash, draws: db.prepare(`select d.id, d.draw_period, d.status, c.status as candidate_status from draw_candidates c join draws d on d.id=c.draw_id where c.entry_id=?`).all(e.id), audit: db.prepare(`select action, actor_id, reason, created_at from audit_events where (target_type='entry' and target_id=?) or (target_type='receipt' and target_id=?) order by id`).all(e.id, e.receipt_id) }; });
   const entryOr404 = (eid) => { if (!db.prepare(`select 1 from entries where id=?`).get(eid)) throw E.notFound("entry not found"); };
-  r.add("POST", "/api/entries/:id/disqualify", { roles: [...A.RV, ...A.CM], ...T("entries") }, async ({ user, params, body }) => { const b = await body(); entryOr404(params.id); return pipeline.disqualifyEntry(params.id, { actorId: user.id, reason: str(b.reason, 300), approvedBy: str(b.approved_by, 60), note: str(b.note, 500) }); });
-  r.add("POST", "/api/entries/:id/reinstate", { roles: [...A.RV, ...A.CM], ...T("entries") }, async ({ user, params, body }) => { const b = await body(); entryOr404(params.id); return pipeline.reinstateEntry(params.id, { actorId: user.id, reason: str(b.reason, 300), approvedBy: str(b.approved_by, 60) }); });
+  r.add("POST", "/api/entries/:id/disqualify", { roles: [...A.RV, ...A.CM], ...T("entries") }, async ({ user, params, body }) => { const b = await body(); entryOr404(params.id); requireLiteral(user, ...A.RV, ...A.CM); return pipeline.disqualifyEntry(params.id, { actorId: user.id, reason: str(b.reason, 300), approvedBy: str(b.approved_by, 60), note: str(b.note, 500) }); });
+  r.add("POST", "/api/entries/:id/reinstate", { roles: [...A.RV, ...A.CM], ...T("entries") }, async ({ user, params, body }) => { const b = await body(); entryOr404(params.id); requireLiteral(user, ...A.RV, ...A.CM); return pipeline.reinstateEntry(params.id, { actorId: user.id, reason: str(b.reason, 300), approvedBy: str(b.approved_by, 60) }); });
 
   // ---- draws ---------------------------------------------------------------------------
   r.add("GET", "/api/campaigns/:id/draws", { roles: [...A.DO, ...A.DA, ...A.AU, ...A.WO, ...A.CM], ...T("draws") }, ({ params }) => ({ draws: drawService.list(params.id) }));

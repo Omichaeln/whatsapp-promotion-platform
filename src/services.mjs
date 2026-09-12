@@ -350,6 +350,32 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { c
           A({ actorType: "participant", actorId: pid, action: "participant.register", targetType: "participant", targetId: pid, payload: { phone: maskPhone(phoneUid), identityProvided: !!identity } });
         }
         p = getParticipantByPhone.get(phoneUid);
+        // One national ID, several phones. The keyed fingerprint was written and
+        // indexed but never read by anything, so three SIMs and one ID produced
+        // three independent participants, each accumulating entries and each
+        // entering the weekly sortition separately — one_prize_per_participant is
+        // enforced per participant id, so one human could hold several chances
+        // and win twice in a week, with no alert, no review task and nothing a
+        // reviewer could see. Whether a second registration should be REFUSED is
+        // an open client decision (D-08 participant caps, D-10 household rules,
+        // D-16 one prize per participant), and coding a hard block in would
+        // pre-empt it — a lost SIM legitimately re-registers. So this detects and
+        // names it for a human and changes no outcome. The fingerprint normalises
+        // case, spacing and punctuation (normIdentity), so "63-123456 X 07" and
+        // "63123456X07" match.
+        if (identity) {
+          const fp = identityFingerprint(identity);
+          const others = db.prepare(`select id, wa_phone_uid from participants where identity_fp=? and id<>? and status='active'`).all(fp, p.id);
+          if (others.length) {
+            domain.alert({
+              kind: "participant.identity_reuse", dedupeKey: `participant.identity_reuse:${fp}`, severity: "warning",
+              message: `the same identity number is registered on ${others.length + 1} phone numbers (${[p, ...others].map((x) => maskPhone(x.wa_phone_uid)).join(", ")}): each is a separate participant in the draw`,
+              detail: { participantIds: [p.id, ...others.map((o) => o.id)], identityMasked: maskIdentity(identity) },
+              runbook: "docs/runbooks/review-operations.md",
+            });
+            A({ actorType: "participant", actorId: p.id, action: "participant.identity_reuse", targetType: "participant", targetId: p.id, payload: { others: others.map((o) => o.id) } });
+          }
+        }
         // legacy consent row (kept for compatibility) + campaign enrollment
         db.prepare(`insert into consents (id, participant_id, terms_version, privacy_version, channel, accepted_at) values (?,?,?,?,?,?)`).run(id("con"), p.id, termsVersion || "unversioned", privacyVersion || "unversioned", channel, now());
         let enrollment = null;

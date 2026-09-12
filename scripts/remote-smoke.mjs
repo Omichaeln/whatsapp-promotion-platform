@@ -53,6 +53,7 @@ const CHECK = {
     mediaServed: "signed media link serves the image to the reviewer",
     mediaTampered: "tampered media signature refused even with a session",
     adminCannotDecide: "platform_admin cannot decide a review (reviewer role only)",
+    adminCannotDisqualify: "platform_admin cannot disqualify an entry (reviewer role only)",
     reviewerQualifies: "reviewer qualifies through the integrity path -> entry awarded",
     secondDecision: "second decision on the same receipt refused",
     outcomeMessage: "participant told the review outcome",
@@ -269,8 +270,16 @@ try {
     const rv = await api("POST", `/api/receipts/${amb.receipt.id}/review`, { token: staff.reviewer.token, body: { decision: "QUALIFIED", note: "smoke: date confirmed as 1 November" } }); rec(CHECK.review.reviewerQualifies, rv.ok && rv.json?.entryId, `HTTP ${rv.status} entry=${rv.json?.entryId || "none"}`);
     const again = await api("POST", `/api/receipts/${amb.receipt.id}/review`, { token: staff.reviewer.token, body: { decision: "NOT_QUALIFIED" } }); rec(CHECK.review.secondDecision, !again.ok, `HTTP ${again.status}`);
     await sleep(2500); const tr2 = await transcript(admin, P2); rec(CHECK.review.outcomeMessage, tr2.some((t) => /after review/i.test(t) && /qualif/i.test(t)), tr2.filter((t) => t.startsWith("out:receipt_outcome")).slice(-1)[0]);
-    if (rv.json?.entryId) { const dq = await api("POST", `/api/entries/${rv.json.entryId}/disqualify`, { token: admin, body: { reason: "smoke: disqualify then reinstate" } }); rec(CHECK.review.disqualify, dq.ok, `HTTP ${dq.status}`); const ri = await api("POST", `/api/entries/${rv.json.entryId}/reinstate`, { token: admin, body: { reason: "smoke: reinstated" } }); rec(CHECK.review.reinstate, ri.ok, `HTTP ${ri.status}`); }
-    else skipChecks("review", [CHECK.review.disqualify, CHECK.review.reinstate], "the review decision awarded no entry to disqualify");
+    if (rv.json?.entryId) {
+      // Driven as the REVIEWER, not the bootstrap admin. These two routes now
+      // require the role literally: platform_admin's implied authority no longer
+      // carries a decision that disqualifies a consumer's entry, so driving them
+      // with the admin token made the whole gate exit 1 on every deployment.
+      const dq = await api("POST", `/api/entries/${rv.json.entryId}/disqualify`, { token: staff.reviewer.token, body: { reason: "smoke: disqualify then reinstate" } }); rec(CHECK.review.disqualify, dq.ok, `HTTP ${dq.status}`);
+      const ri = await api("POST", `/api/entries/${rv.json.entryId}/reinstate`, { token: staff.reviewer.token, body: { reason: "smoke: reinstated" } }); rec(CHECK.review.reinstate, ri.ok, `HTTP ${ri.status}`);
+      const adminDq = await api("POST", `/api/entries/${rv.json.entryId}/disqualify`, { token: admin, body: { reason: "smoke: admin must not decide" } }); rec(CHECK.review.adminCannotDisqualify, adminDq.status === 403, `HTTP ${adminDq.status}`);
+    }
+    else skipChecks("review", [CHECK.review.disqualify, CHECK.review.reinstate, CHECK.review.adminCannotDisqualify], "the review decision awarded no entry to disqualify");
   } else skipChecks("review", Object.values(CHECK.review), "no uncertain receipt or reviewer account on this deployment");
 
   // ===== 7. support handoff and privacy
@@ -284,7 +293,9 @@ try {
     rec(CHECK.support.handoff, claim.ok && send.ok && release.ok && !/1\. Register/.test(during.text) && /1\./.test(after.text), `claim=${claim.status} send=${send.status} release=${release.status} during handoff: "${during.text.split("\n")[0].slice(0, 80)}"`);
   }
   else skipChecks("support", Object.values(CHECK.support), "no support account on this deployment");
-  if (p1) { const reveal = await api("POST", `/api/participants/${p1.id}/reveal-identity`, { token: admin, body: { reason: "smoke: winner verification test" } }); rec(CHECK.privacy.reveal, reveal.ok && /TESTSMK/.test(JSON.stringify(reveal.json)), `HTTP ${reveal.status}`); const aud = await api("GET", `/api/audit-events?target_id=${p1.id}`, { token: admin }); rec(CHECK.privacy.auditTrail, aud.ok && JSON.stringify(aud.json).includes("reveal"), `${(aud.json?.events || aud.json?.audit_events || []).length} events`); }
+  // Unmasking a national identifier is winner_ops or support work; platform_admin
+// no longer inherits it, so the admin token would 403 here.
+if (p1) { const revealToken = staff.ops?.token || staff.support?.token || admin; const reveal = await api("POST", `/api/participants/${p1.id}/reveal-identity`, { token: revealToken, body: { reason: "smoke: winner verification test" } }); rec(CHECK.privacy.reveal, reveal.ok && /TESTSMK/.test(JSON.stringify(reveal.json)), `HTTP ${reveal.status}`); const aud = await api("GET", `/api/audit-events?target_id=${p1.id}`, { token: admin }); rec(CHECK.privacy.auditTrail, aud.ok && JSON.stringify(aud.json).includes("reveal"), `${(aud.json?.events || aud.json?.audit_events || []).length} events`); }
   else skipChecks("support", Object.values(CHECK.privacy), "no participant record for this run");
 
   // ===== 8. draws and winners

@@ -36,8 +36,26 @@ export function createIntake({ db, conversation, outbox, pipeline, domain, trans
     const phone = normalizePhone(ev.phoneUid) || null;
     const cid = ev.correlationId || `corr_${id("").slice(1)}`;
     const eid = id("cev");
-    const r = insert.run(eid, provider, ev.providerAccount || "default", String(ev.providerMessageId), kind, phone, JSON.stringify({ text: ev.text || "", mediaId: ev.mediaId || null, status: ev.status || null, raw: ev.raw ? redact(ev.raw) : null, timestamp: ev.timestamp || null, inlineMediaB64: ev.inlineMediaB64 || null, mime: ev.mime || null }), ev.mediaId || null, "received", now(), cid);
+    // A MESSAGE with no usable channel identity is recorded and stopped here.
+    // channel_events.wa_phone_uid is nullable but conversation_sessions.wa_phone_uid
+    // is NOT NULL, so a null sender id (normalizePhone refuses anything outside
+    // 8..15 digits — e.g. an 18-digit group/@lid jid from the linked-device
+    // transport) used to be written as NULL, blow up the session INSERT inside
+    // conversation.handle, retry five times, dead-letter with a CRITICAL alert
+    // and never reply to anybody. It is not a queue failure and it is not
+    // retryable: terminate it as 'ignored' with the raw id kept for diagnosis,
+    // and warn once. Delivery statuses are deliberately exempt — they are
+    // matched on provider_message_id and carry no sender.
+    const unusableSender = !phone && kind.startsWith("message.");
+    const rawSender = String(ev.phoneUid ?? "").slice(0, 64);
+    const r = insert.run(eid, provider, ev.providerAccount || "default", String(ev.providerMessageId), kind, phone, JSON.stringify({ text: ev.text || "", mediaId: ev.mediaId || null, status: ev.status || null, raw: ev.raw ? redact(ev.raw) : null, timestamp: ev.timestamp || null, inlineMediaB64: unusableSender ? null : (ev.inlineMediaB64 || null), mime: ev.mime || null, ...(unusableSender ? { rawSenderId: rawSender } : {}) }), ev.mediaId || null, unusableSender ? "ignored" : "received", now(), cid);
     if (!r.changes) return { accepted: false, duplicate: true };
+    if (unusableSender) {
+      db.prepare(`update channel_events set error=?, processed_at=? where id=?`).run(`unusable sender id "${rawSender}": not an addressable phone number, so no reply could ever be delivered`, now(), eid);
+      domain.metric("inbound.unusable_sender", 1, { kind });
+      domain.alert({ kind: "inbound.unusable_sender", dedupeKey: `inbound.unusable_sender:${provider}`, severity: "warning", message: `inbound ${kind} from an unusable sender id (${rawSender ? domain.maskPhone(rawSender) : "empty"}) ignored: it is not an addressable phone number (check the transport's sender-id mapping)`, runbook: "docs/runbooks/queue-replay.md" });
+      return { accepted: false, ignored: true, id: eid, correlationId: cid, reason: "unusable_sender_id" };
+    }
     domain.metric("inbound.received", 1, { kind });
     return { accepted: true, id: eid, correlationId: cid };
   }

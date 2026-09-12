@@ -93,6 +93,21 @@ export function createAuth(db, { now = nowIso, bootstrap = null, audit = null } 
       const have = JSON.parse(user.roles || "[]");
       return roles.some((r) => have.includes(r) || (have.includes(ROLES.PLATFORM_ADMIN) && ADMIN_IMPLIES.has(r)));
     },
+    /**
+     * The same check with platform_admin's implications NOT applied, for the few
+     * decisions this module's header reserves for a named business role: the
+     * technical administrator is explicitly not one of them (§5.8, §13). Used by
+     * unmasking a national ID and by disqualifying/reinstating an entry, where
+     * the implication let the person who deploys the app decide, alone, who is
+     * eligible for the weekly draw while the draw itself still looked
+     * two-person. READ routes keep the implication: the console needs them and
+     * every one of those actions is audited.
+     */
+    hasLiteralRole(user, ...roles) {
+      if (!user) return false;
+      const have = JSON.parse(user.roles || "[]");
+      return roles.some((r) => have.includes(r));
+    },
     roles: (user) => JSON.parse(user?.roles || "[]"),
     /** Create a named account with a temporary password that must be changed at first login. */
     createUser({ email, name, password, roles = [], createdBy = "system", mustChangePassword = true }) {

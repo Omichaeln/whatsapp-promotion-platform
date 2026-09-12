@@ -1,5 +1,6 @@
 import { normalizePhone, nowIso } from "./db.mjs";
 import { renderCopy, shortRef } from "./copy.mjs";
+import { HANDOFF_HELD } from "./receipt-pipeline.mjs";
 
 /**
  * Conversation state machine (spec §8, §9). State is persisted per campaign +
@@ -91,7 +92,7 @@ function parseWord(t) {
 // OUTLET_* pickers, where free text is a branch search.
 const CLAIM_STATES = new Set(["HOME", "SUPPORT", "ENTRY_RECEIPT", "WINNERS"]);
 
-export function createConversationService({ db, domain, receiptPipeline, winners = null, crm = null, now = nowIso, log = console }) {
+export function createConversationService({ db, domain, receiptPipeline, winners = null, crm = null, outbox = null, now = nowIso, log = console }) {
   const activeCampaign = () => db.prepare(`select * from campaigns where status in ('active','paused','closed') order by case status when 'active' then 0 when 'paused' then 1 else 2 end, created_at desc limit 1`).get() || null;
   const copy = (campaignId, key, vars) => renderCopy(campaignId ? domain.versionContent(campaignId) : {}, key, vars);
   const ctxOf = (s) => { try { return JSON.parse(s?.context_json || "{}"); } catch { return {}; } };
@@ -176,6 +177,7 @@ export function createConversationService({ db, domain, receiptPipeline, winners
       const stale = session.handoff_owner === "queue" && since > 0 && Date.parse(now()) - since > HANDOFF_QUEUE_TIMEOUT_MS;
       if (!stale) return reply("SUPPORT", [copy(cid, "support_active")]);
       domain.setSession(cid, pUid, { state: "HOME", context: {}, participantId: participant?.id || null, handoffOwner: null, handoffSince: null });
+      flushHeld(pUid);
       domain.audit({ actorType: "system", actorId: "system", action: "support.auto_release", targetType: "conversation", targetId: pUid, reason: "unclaimed support handoff timed out" });
       return reply("HOME", [copy(cid, "support_timeout"), menu(campaign)]);
     }
@@ -538,9 +540,20 @@ export function createConversationService({ db, domain, receiptPipeline, winners
     if (s && s.active_receipt_id === receiptId) domain.setSession(r.campaign_id, p.wa_phone_uid, { context: { ...JSON.parse(s.context_json || "{}"), lastOutcome: { receiptId, decision: result?.decision } }, activeReceiptId: null });
   }
 
+  /**
+   * Automated participant messages produced WHILE the operator owned the
+   * conversation were held by the pipeline (receipt-pipeline.handoffHold), so
+   * handing the conversation back has to deliver them — otherwise the outcome of
+   * a receipt decided during the handoff would sit unsent until the hold expired.
+   */
+  function flushHeld(phoneUid) {
+    try { return outbox?.releaseHold?.({ waPhoneUid: normalizePhone(phoneUid) || phoneUid, code: HANDOFF_HELD }) || 0; }
+    catch (e) { log?.error?.("[conversation] release held outbound", e.message); return 0; }
+  }
+
   /** Operator handoff controls. */
   function claimHandoff(campaignId, phoneUid, operatorId) { domain.setSession(campaignId, phoneUid, { handoffOwner: operatorId, handoffSince: now() }); domain.audit({ actorType: "admin", actorId: operatorId, action: "support.claim", targetType: "conversation", targetId: normalizePhone(phoneUid) }); }
-  function releaseHandoff(campaignId, phoneUid, operatorId) { domain.setSession(campaignId, phoneUid, { state: "HOME", handoffOwner: null, handoffSince: null }); domain.audit({ actorType: "admin", actorId: operatorId, action: "support.release", targetType: "conversation", targetId: normalizePhone(phoneUid) }); }
+  function releaseHandoff(campaignId, phoneUid, operatorId) { domain.setSession(campaignId, phoneUid, { state: "HOME", handoffOwner: null, handoffSince: null }); flushHeld(phoneUid); domain.audit({ actorType: "admin", actorId: operatorId, action: "support.release", targetType: "conversation", targetId: normalizePhone(phoneUid) }); }
 
   return { handle, onReceiptOutcome, claimHandoff, releaseHandoff, services: {} };
 }

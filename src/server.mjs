@@ -145,7 +145,7 @@ export async function createServer({ config, log = console, transport: transport
     else if (cfg.whatsappTransport === "linked-device") transport = new LinkedDeviceTransport({ authDir: cfg.baileysAuthDir, deskStore: desk, onActivity: activity, log });
     else transport = new SimulatorTransport();
   }
-  const conversation = createConversationService({ db, domain, receiptPipeline: pipeline, winners, crm, log });
+  const conversation = createConversationService({ db, domain, receiptPipeline: pipeline, winners, crm, outbox, log });
   conversation.services = { winners, mediaStore };
   const intake = createIntake({ db, conversation, outbox, pipeline, domain, transport, log });
   if (transport instanceof LinkedDeviceTransport) {
@@ -318,6 +318,10 @@ export async function createServer({ config, log = console, transport: transport
         let payload; try { payload = JSON.parse(raw.toString("utf8")); } catch { return send(res, 400, { error: { code: "VALIDATION", message: "bad payload" } }); }
         const events = transport.parseInbound ? transport.parseInbound(payload) : (payload.events || []).map((e) => ({ ...e, provider: "simulator", inlineMediaB64: payload.media?.[e.providerMessageId] || null }));
         let accepted = 0, deduped = 0;
+        // An event intake refused outright (no addressable sender, intake.mjs) is
+        // counted with the replays: it is terminal either way, so the provider
+        // must still get a 200 and never retry it. The reason is on the event row
+        // and in the inbound.unusable_sender alert.
         try { for (const ev of events) { const r = intake.receive(ev); if (r.accepted) accepted++; else deduped++; } }
         catch (e) { log.error?.("[webhook] persist failed", e.message); return send(res, 503, { error: { code: "INTAKE_UNAVAILABLE", message: "could not persist event; retry" } }); }
         return send(res, 200, { received: events.length, accepted, deduped });

@@ -324,7 +324,11 @@ describe("remote-smoke evidence rows (scripts/remote-smoke.mjs)", () => {
       assert.ok(checks.some((c) => c.group === g), `group ${g} has no named checks`);
       assert.ok(src.includes(`Object.values(CHECK.${g})`), `group ${g} has no whole-group SKIP path`);
     }
-    assert.equal(checks.filter((c) => c.group === "review").length, 12, "all twelve review checks are named, not collapsed into one coarse row");
+    // A floor, not an equality: the point is that the twelve checks the coarse
+    // "review workflow" row used to hide are each named, and adding a thirteenth
+    // (the negative case proving platform_admin cannot disqualify) must not fail
+    // a test about naming.
+    assert.ok(checks.filter((c) => c.group === "review").length >= 12, "the twelve review checks the coarse row hid must each be named");
     assert.ok(!src.includes(`rec("review workflow"`), "the coarse 'review workflow' row hid twelve checks behind one SKIP");
     for (const c of checks) {
       const ref = `CHECK.${c.group}.${c.key}`;

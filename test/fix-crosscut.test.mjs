@@ -4,6 +4,12 @@
 // to FAIL against the tree before the fix that accompanies it.
 import { describe, it, assert, buildApp } from "./helpers.mjs";
 import { createAttemptThrottle } from "../src/server.mjs";
+import { createAudit } from "../src/audit.mjs";
+import { openDb, migrate } from "../src/db.mjs";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 
 describe("crosscut — login throttle (round-3 reviewer problems 2 and 3)", () => {
   it("guessing cannot flood the map and keep its own hard ceiling down at the same time", () => {
@@ -164,6 +170,237 @@ describe("crosscut — a second reviewer decision must reach the participant (pi
       const bodies = h.db.prepare(`select payload_json from outbound_messages where idempotency_key like ? order by created_at`).all(`receipt:${sub.receiptId}:outcome:%`).map((m) => JSON.parse(m.payload_json).body);
       assert.equal(bodies.length, 3, `one message per decision, got ${JSON.stringify(bodies)}`);
       assert.ok(/after review/i.test(bodies[2]) && /entry has been added/i.test(bodies[2]), `the participant must be told they are in the draw: ${JSON.stringify(bodies)}`);
+    } finally { await h.close(); }
+  });
+});
+
+describe("crosscut — an inbound event with no addressable sender (schema-3)", () => {
+  it("is ignored with the raw id kept, not dead-lettered after five retries", async () => {
+    const h = await buildApp({ seed: false });
+    try {
+      // an 18-digit group/@lid jid: normalizePhone refuses anything outside 8..15
+      // digits, and the NULL it used to write violated
+      // conversation_sessions.wa_phone_uid NOT NULL inside conversation.handle
+      const r = h.app.intake.receive({ provider: "simulator", providerMessageId: "crosscut_badsender_1", phoneUid: "120363043211234567", type: "message.text", text: "hi", timestamp: new Date().toISOString() });
+      assert.equal(r.accepted, false);
+      assert.equal(r.ignored, true);
+      await h.app.intake.drain(); await h.app.worker.tick();
+      const ev = h.db.prepare(`select status, attempts, error, payload_json, wa_phone_uid from channel_events where provider_message_id='crosscut_badsender_1'`).get();
+      assert.equal(ev.status, "ignored", `status=${ev.status} error=${ev.error}`);
+      assert.equal(ev.attempts, 0, "no lease is ever taken, so nothing burns the retry ladder");
+      assert.equal(JSON.parse(ev.payload_json).rawSenderId, "120363043211234567", "the raw id is kept for diagnosis");
+      const alerts = h.db.prepare(`select kind, severity from alerts`).all();
+      assert.deepEqual(alerts.map((a) => [a.kind, a.severity]), [["inbound.unusable_sender", "warning"]], "one warning, not a critical dead-letter");
+    } finally { await h.close(); }
+  });
+});
+
+describe("crosscut — the technical admin has no prize or review authority (authz-6)", { timeout: 180_000 }, () => {
+  it("platform_admin cannot unmask a national ID or move an entry in or out of the draw pool", async () => {
+    const h = await buildApp({ extractor: "simulator" });
+    try {
+      const admin = await h.login("admin@x.test", "TestAdminPassword123");
+      assert.deepEqual(h.app.auth.listUsers().find((u) => u.email === "admin@x.test").roles, JSON.stringify(["platform_admin"]));
+      const phone = "263771000995";
+      await h.register(phone, { first: "Held", last: "Barred", identity: "TESTAZ6ID1" });
+      const sub = await h.submit(phone, await h.simImage(h.simReceipt({ no: "990011", packs: 2 })));
+      assert.equal(sub.receipt.status, "QUALIFIED", JSON.stringify(sub.receipt));
+      const p = h.domain.getParticipantByPhone(phone);
+      const entry = h.db.prepare(`select id from entries where receipt_id=?`).get(sub.receiptId);
+
+      const reveal = await h.api(`/api/participants/${p.id}/reveal-identity`, { method: "POST", token: admin, body: { reason: "probe" } });
+      assert.equal(reveal.status, 403, `the plaintext identity must not be readable: ${JSON.stringify(reveal.data)}`);
+      const dq = await h.api(`/api/entries/${entry.id}/disqualify`, { method: "POST", token: admin, body: { reason: "probe" } });
+      assert.equal(dq.status, 403, JSON.stringify(dq.data));
+      assert.equal(h.db.prepare(`select status from entries where id=?`).get(entry.id).status, "active", "the entry is still in the pool");
+      const ri = await h.api(`/api/entries/${entry.id}/reinstate`, { method: "POST", token: admin, body: { reason: "probe" } });
+      assert.equal(ri.status, 403, JSON.stringify(ri.data));
+
+      // ...while the technical routes a platform admin genuinely needs still work
+      for (const p2 of ["/api/audit/verify", "/api/queue", "/api/integrations", "/api/audit-events"]) {
+        assert.equal((await h.api(p2, { token: admin })).status, 200, `${p2} must stay open to the technical admin`);
+      }
+      // ...and the named business role still decides
+      const reviewer = await h.staffToken("reviewer@example.test");
+      assert.equal((await h.api(`/api/entries/${entry.id}/disqualify`, { method: "POST", token: reviewer, body: { reason: "genuine reviewer decision" } })).status, 200);
+      const wops = await h.staffToken("fulfilment@example.test");
+      const ok = await h.api(`/api/participants/${p.id}/reveal-identity`, { method: "POST", token: wops, body: { reason: "prize handover" } });
+      assert.equal(ok.status, 200, JSON.stringify(ok.data));
+      assert.equal(ok.data.identity, "TESTAZ6ID1");
+    } finally { await h.close(); }
+  });
+});
+
+describe("crosscut — an unsigned audit checkpoint says so (ops-4)", () => {
+  it("no AUDIT_CHECKPOINT_KEY means no signature, and nothing reports it as verified", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wpp-ckp-"));
+    try {
+      const db = openDb(path.join(dir, "a.db"));
+      migrate(db, undefined, () => {});
+      const unkeyed = createAudit(db, { checkpointKey: "" });
+      unkeyed.record({ actorType: "system", actorId: "sys", action: "draw.executed", targetType: "draw", targetId: "drw_1", payload: {} });
+      const ckp = unkeyed.checkpoint("usr_auditor");
+      assert.equal(ckp.signed, false);
+      assert.equal(ckp.signature, null, "an unkeyed deployment must not fabricate an HMAC a stranger can recompute");
+      // the literal fallback key "unsigned" must not verify anything
+      const forged = crypto.createHmac("sha256", "unsigned").update(`${ckp.uptoId}|${ckp.headHash}`).digest("hex");
+      assert.notEqual(forged, ckp.signature);
+      const v = unkeyed.verifyCheckpoint({ ...ckp, signature: forged });
+      assert.equal(v.signatureOk, false, "a signature computed with the public fallback key is not a signature");
+      const own = unkeyed.verifyCheckpoint(ckp);
+      assert.equal(own.signatureOk, false);
+      assert.equal(own.headMatches, true, "the head it pins is still the head; only the signature is missing");
+      assert.equal(db.prepare(`select signature from audit_checkpoints where id=?`).get(ckp.id).signature.startsWith("UNSIGNED"), true, "the retained row explains itself");
+      // ...while a keyed deployment is unchanged
+      const keyed = createAudit(db, { checkpointKey: "test-checkpoint-key" });
+      const k = keyed.checkpoint("usr_auditor");
+      assert.match(k.signature, /^[0-9a-f]{64}$/);
+      assert.deepEqual(keyed.verifyCheckpoint(k), { signatureOk: true, headMatches: true });
+      db.close();
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("crosscut — swapping the live rules is an activation too (ops-7)", { timeout: 120_000 }, () => {
+  it("a production campaign's rules cannot be replaced by a version that fails the content/rules checks", async () => {
+    const h = await buildApp({ seed: true });
+    try {
+      const manager = await h.staffToken("manager@example.test");
+      // a live campaign with a rule set that passes the four content/rules checks
+      const clean = { products: [{ code: "P1", name: "Qualifying pack 2kg", aliases: ["qualifying pack"], pack_grams: 2000, qualifying: true }], primary_rule: { min_packs: 2, pack_grams: 2000, min_total_grams: 4000 } };
+      const content = { terms_url: "https://promo.example.com/terms", terms_version: "T1", privacy_version: "P1", winner_template_name: "winner_contact_v1" };
+      const good = (await h.api(`/api/campaigns/${h.campaign.id}/versions`, { method: "POST", token: manager, body: { content, rules: clean } })).data.versionId;
+      assert.equal((await h.api(`/api/campaigns/${h.campaign.id}/versions/${good}/activate`, { method: "POST", token: manager })).status, 200);
+      h.db.prepare(`update campaigns set status='active' where id=?`).run(h.campaign.id);
+      h.db.prepare(`update schema_meta set value='production' where key='environment'`).run();
+      try {
+        // (a) the rules the client approved are dropped: no qualifying products
+        const noProducts = (await h.api(`/api/campaigns/${h.campaign.id}/versions`, { method: "POST", token: manager, body: { content, rules: { primary_rule: { min_packs: 1 } } } })).data.versionId;
+        const r1 = await h.api(`/api/campaigns/${h.campaign.id}/versions/${noProducts}/activate`, { method: "POST", token: manager });
+        assert.equal(r1.status, 409, `the swap must be refused: ${JSON.stringify(r1.data)}`);
+        assert.ok(r1.data.error.failures.some((f) => f.code === "RULES_PRODUCTS"), JSON.stringify(r1.data.error.failures));
+        // (b) the terms URL disappears
+        const noTerms = (await h.api(`/api/campaigns/${h.campaign.id}/versions`, { method: "POST", token: manager, body: { content: { terms_version: "T2" }, rules: clean } })).data.versionId;
+        const r2 = await h.api(`/api/campaigns/${h.campaign.id}/versions/${noTerms}/activate`, { method: "POST", token: manager });
+        assert.equal(r2.status, 409);
+        assert.ok(r2.data.error.failures.some((f) => f.code === "CONTENT_TERMS"));
+        // (c) sample product aliases are reintroduced
+        const sample = (await h.api(`/api/campaigns/${h.campaign.id}/versions`, { method: "POST", token: manager, body: { content, rules: { ...clean, products: [{ code: "GC", name: "Goldcane Brown Sugar 2kg", aliases: ["goldcane brown sugar"], pack_grams: 2000, qualifying: true }] } } })).data.versionId;
+        assert.equal((await h.api(`/api/campaigns/${h.campaign.id}/versions/${sample}/activate`, { method: "POST", token: manager })).status, 409);
+        assert.equal(h.domain.getActiveVersion(h.campaign.id).id, good, "the live version is untouched by every refused swap");
+        // ...and a legitimate mid-campaign correction still goes through, even
+        // though the simulated transport/extractor would fail the full gate
+        const fix = (await h.api(`/api/campaigns/${h.campaign.id}/versions`, { method: "POST", token: manager, body: { content: { ...content, terms_version: "T2" }, rules: clean } })).data.versionId;
+        const ok = await h.api(`/api/campaigns/${h.campaign.id}/versions/${fix}/activate`, { method: "POST", token: manager });
+        assert.equal(ok.status, 200, `a typo fix must not be blocked by an unrelated provider check: ${JSON.stringify(ok.data)}`);
+      } finally { h.db.prepare(`update schema_meta set value='test' where key='environment'`).run(); }
+    } finally { await h.close(); }
+  });
+});
+
+describe("crosscut — one national ID on several phones is detected (tests-3)", { timeout: 180_000 }, () => {
+  it("a second registration with an ID already on file raises an operator alert and is audited", async () => {
+    const h = await buildApp({ extractor: "simulator" });
+    try {
+      // the same human, two SIMs, the same ID written differently (the channel
+      // only accepts letters, digits and dashes): the fingerprint normalises
+      // case and punctuation
+      await h.register("263771000801", { first: "Dup", last: "Onefile", identity: "63-123456X07" });
+      assert.equal(h.db.prepare(`select count(*) n from alerts where kind='participant.identity_reuse'`).get().n, 0, "the first registration is not suspicious");
+      await h.register("263771000802", { first: "Dup", last: "Onefile", identity: "63123456X07" });
+      const p1 = h.domain.getParticipantByPhone("263771000801"), p2 = h.domain.getParticipantByPhone("263771000802");
+      assert.equal(p1.identity_fp, p2.identity_fp, "the fingerprint matches across the two spellings (63-123456X07 vs 63123456X07)");
+      const alerts = h.db.prepare(`select kind, severity, message, detail_json from alerts where kind='participant.identity_reuse'`).all();
+      assert.equal(alerts.length, 1, "the reuse is reported");
+      assert.equal(alerts[0].severity, "warning");
+      assert.deepEqual(JSON.parse(alerts[0].detail_json).participantIds.sort(), [p1.id, p2.id].sort());
+      assert.ok(!/63.?123456X07/.test(alerts[0].message + alerts[0].detail_json), "and the alert never carries the plaintext ID");
+      assert.equal(h.db.prepare(`select count(*) n from audit_events where action='participant.identity_reuse'`).get().n, 1);
+      // the decision-neutral part: nothing is blocked, because D-08/D-10/D-16 are open
+      assert.equal(p2.status, "active");
+      const third = await h.register("263771000803", { first: "Dup", last: "Onefile", identity: "63123456X07" });
+      assert.ok(third, "a third registration still succeeds; the client decides whether it should not");
+      assert.match(h.db.prepare(`select message from alerts where kind='participant.identity_reuse'`).get().message, /3 phone numbers/, "the alert is refreshed, not swallowed");
+    } finally { await h.close(); }
+  });
+});
+
+describe("crosscut — handoff really does suspend automated outbound (conversation-7)", { timeout: 240_000 }, () => {
+  it("a receipt outcome decided during a support handoff is held, then delivered when the operator releases", async () => {
+    const h = await buildApp({ extractor: "simulator" });
+    try {
+      const phone = "263771000996";
+      await h.register(phone, { first: "Paused", last: "Replies", identity: "TESTCV7ID1" });
+      await h.selectOutlet(phone);
+      // the image arrives, and the participant asks for a human before the OCR
+      // job runs: the copy promises "Automatic replies are paused until they
+      // close the conversation"
+      const img = await h.simImage(h.simReceipt({ no: "660011", packs: 2 }));
+      await h.say(phone, "", { image: img, drain: false });
+      const sup = await h.say(phone, "support");
+      assert.match(sup.replies.join(" "), /Automatic replies are paused/);
+      assert.equal(h.domain.getSession(h.campaign.id, phone).handoff_owner, "queue");
+      // the worker now decides the receipt
+      await h.app.intake.drain(); await h.app.worker.tick(); await h.app.worker.tick();
+      const receiptId = h.db.prepare(`select id from receipts where participant_id=? order by intake_at desc limit 1`).get(h.domain.getParticipantByPhone(phone).id).id;
+      const outcome = () => h.db.prepare(`select status, next_attempt_at, error_code from outbound_messages where idempotency_key like ? order by created_at desc limit 1`).get(`receipt:${receiptId}:outcome:%`);
+      const row = outcome();
+      assert.ok(row, "the outcome message is queued");
+      assert.equal(row.status, "pending", "...but not delivered while an operator owns the conversation");
+      assert.equal(row.error_code, "HANDOFF_HELD");
+      assert.ok(Date.parse(row.next_attempt_at) > Date.now(), "held, not merely retried");
+      const delivered = () => h.app.transport.outbox.filter((m) => /entry has been added|does not qualify/i.test(String(m.payload || ""))).length;
+      assert.equal(delivered(), 0, "nothing contradicts the participant mid-dispute");
+      // the operator picks it up, answers, and hands the conversation back
+      const support = await h.staffToken("support@example.test");
+      assert.equal((await h.api(`/api/conversations/${phone}/claim`, { method: "POST", token: support })).status, 200);
+      await h.app.worker.tick();
+      assert.equal(delivered(), 0, "still held while the operator holds the conversation");
+      assert.equal((await h.api(`/api/conversations/${phone}/release`, { method: "POST", token: support })).status, 200);
+      assert.equal(outcome().next_attempt_at, null, "release un-holds it");
+      await h.app.worker.tick();
+      assert.equal(outcome().status, "sent");
+      assert.equal(delivered(), 1, "the held outcome is delivered once the conversation is handed back");
+    } finally { await h.close(); }
+  });
+});
+
+describe("crosscut — housekeeping consistency checks (round2-worker-review-check, schema-4 residue)", { timeout: 180_000 }, () => {
+  it("a receipt stuck in REVIEW_REQUIRED with no open review task is reported to operators", async () => {
+    const h = await buildApp({ extractor: "simulator" });
+    try {
+      const phone = "263771000997";
+      await h.register(phone, { first: "Orphan", last: "Review", identity: "TESTWR1ID1" });
+      const sub = await h.submit(phone, await h.simImage(h.simReceipt({ no: "550011", packs: 2 })));
+      h.app.worker.housekeeping();
+      assert.equal(h.db.prepare(`select count(*) n from alerts where kind='review.orphaned'`).get().n, 0, "a healthy tree raises nothing");
+      // the state the fix_note names: the receipt is back in REVIEW_REQUIRED while
+      // its review task is already decided, so no reviewer can see it and the
+      // period's freeze barrier counts it as unresolved for ever
+      h.db.prepare(`update receipts set status='REVIEW_REQUIRED' where id=?`).run(sub.receiptId);
+      h.db.prepare(`insert into review_tasks (id, receipt_id, state, decision, decided_by, decided_at, sla_due_at, created_at) values ('rvw_orphan', ?, 'decided', 'QUALIFIED', 'rev_1', ?, ?, ?)`).run(sub.receiptId, new Date().toISOString(), new Date().toISOString(), new Date().toISOString());
+      h.app.worker.housekeeping();
+      const a = h.db.prepare(`select severity, message, runbook from alerts where kind='review.orphaned'`).get();
+      assert.ok(a, "the inconsistency is named");
+      assert.equal(a.severity, "warning");
+      assert.match(a.message, /no open review task/);
+    } finally { await h.close(); }
+  });
+
+  it("planner statistics are refreshed by housekeeping, not only at a boot that saw an empty database", async () => {
+    const h = await buildApp({ extractor: "simulator" });
+    try {
+      // migrate() runs PRAGMA optimize at boot, when the database is still empty:
+      // it writes no usable statistics, so the duplicate-image index stayed inert
+      // until the process was restarted. The data below arrived after that boot.
+      const before = h.db.prepare(`select count(*) n from sqlite_stat1`).get().n;
+      h.app.worker.housekeeping();
+      const after = h.db.prepare(`select count(*) n from sqlite_stat1`).get().n;
+      assert.ok(after > before, `statistics must be picked up without a restart (${before} -> ${after})`);
+      // ...and it is bounded to one pass a day, not one per housekeeping tick
+      const again = h.db.prepare(`select count(*) n from sqlite_stat1`).get().n;
+      h.app.worker.housekeeping();
+      assert.equal(h.db.prepare(`select count(*) n from sqlite_stat1`).get().n, again);
     } finally { await h.close(); }
   });
 });

@@ -55,7 +55,17 @@ export function createOutbox(db, now = nowIso) {
   const reclaim = db.prepare(`update outbound_messages set status='unknown_outcome', lease_until=null, error_code=coalesce(error_code,'DISPATCH_INTERRUPTED'), last_error=? where id=? and status='sending'`);
 
   return {
-    enqueueWhatsApp({ waPhoneUid, kind = "text", payload, idempotencyKey, provider = "whatsapp", purpose = "reply", campaignId = null, correlationId = null, templateName = null }) {
+    /**
+     * `holdUntil` parks the row so no worker tick can pick it up before that
+     * instant (the selector requires next_attempt_at <= now). Used to keep an
+     * AUTOMATED participant message out of a conversation an operator has taken
+     * over — see receipt-pipeline's handoffHold — and released early by
+     * releaseHold() when the operator hands the conversation back. It is a hold,
+     * not a policy block: a blocked row burns an attempt on every tick and
+     * outbox.mjs never consults MAX_ATTEMPTS on that branch, so an indefinite
+     * handoff would have churned the row for ever.
+     */
+    enqueueWhatsApp({ waPhoneUid, kind = "text", payload, idempotencyKey, provider = "whatsapp", purpose = "reply", campaignId = null, correlationId = null, templateName = null, holdUntil = null, holdCode = "HELD" }) {
       if (!idempotencyKey) throw new Error("idempotencyKey required");
       const row = byKey.get(idempotencyKey);
       if (row) return { existed: true, id: row.id, key: idempotencyKey };
@@ -68,7 +78,8 @@ export function createOutbox(db, now = nowIso) {
       // permanent and would fail every winner notification of a live draw.
       const envelope = typeof payload === "string" ? { body: payload } : { ...payload };
       insert.run(outId, provider, waPhoneUid, kind, JSON.stringify(envelope), idempotencyKey, "pending", now(), purpose, campaignId, correlationId, templateName);
-      return { id: outId, key: idempotencyKey };
+      if (holdUntil) db.prepare(`update outbound_messages set next_attempt_at=?, error_code=? where id=?`).run(holdUntil, holdCode, outId);
+      return { id: outId, key: idempotencyKey, held: holdUntil || null };
     },
     /**
      * Deliver one message. `dispatch(row, payload)` must return
@@ -115,6 +126,15 @@ export function createOutbox(db, now = nowIso) {
       const rows = stalled.all(now(), limit);
       for (const r of rows) reclaim.run("process stopped after the message was handed to the provider: outcome unknown, check the provider log before Retry", r.id);
       return rows.length;
+    },
+    /**
+     * Release rows held for one recipient (the operator handed the conversation
+     * back): they become deliverable on the next tick, in the order they were
+     * queued. Only rows still pending and carrying this hold code are touched.
+     */
+    releaseHold({ waPhoneUid, code = "HELD" }) {
+      if (!waPhoneUid) return 0;
+      return db.prepare(`update outbound_messages set next_attempt_at=null, error_code=null where wa_phone_uid=? and status='pending' and error_code=? and next_attempt_at is not null`).run(waPhoneUid, code).changes;
     },
     /** Provider delivery callback (sent/delivered/read/failed) by provider message id. */
     markDelivery(providerMessageId, status, { errorCode = null, at = null } = {}) {
