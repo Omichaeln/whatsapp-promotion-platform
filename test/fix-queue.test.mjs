@@ -2,6 +2,7 @@
 // Each test was first run against the pre-fix code and observed to fail.
 import { buildApp, test, describe, it, assert, before, after } from "./helpers.mjs";
 import { createWorker } from "../src/worker.mjs";
+import { EVENT_MAX_ATTEMPTS, JOB_MAX_ATTEMPTS } from "../src/intake.mjs";
 import { CloudApiTransport } from "../src/transport/cloud-api.mjs";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -61,6 +62,60 @@ describe("fix-queue: durable intake", () => {
     assert.equal(h.app.intake.replay(ev.id, "adm"), true, "an expired 'processing' lease is a crashed worker, never a live one");
     assert.equal(h.db.prepare(`select status from channel_events where id=?`).get(ev.id).status, "received");
     await h.app.intake.drain();
+  });
+
+  it("durability-1: work a live worker is holding right now is not counted as backlog", async () => {
+    const h2 = await buildApp({ extractor: "simulator" });
+    try {
+      const ev = h2.app.intake.receive({ provider: "simulator", providerMessageId: `live_${Date.now()}`, phoneUid: "263771000903", type: "message.text", text: "hi" });
+      const job = `job_live_${Date.now()}`;
+      h2.db.prepare(`insert into jobs (id, kind, payload_json, status, attempts, lease_until, created_at) values (?,?,?,?,?,?,?)`)
+        .run(job, "media.purge", "{}", "processing", 1, new Date(Date.now() + 90_000).toISOString(), new Date().toISOString());
+      // leased by a worker that is still running: one OCR pass legitimately
+      // holds a lease for minutes, and inbound.backlog warns at five.
+      h2.db.prepare(`update channel_events set status='processing', attempts=1, lease_until=? where id=?`).run(new Date(Date.now() + 90_000).toISOString(), ev.id);
+      const live = h2.app.intake.stats();
+      assert.equal(live.oldestEvent, null, "a live lease is work in progress, not backlog");
+      assert.equal(live.oldestJob, null, "same for jobs");
+
+      // once the lease expires it IS a crashed worker, and that must be backlog
+      h2.db.prepare(`update channel_events set lease_until=? where id=?`).run(past(1000), ev.id);
+      h2.db.prepare(`update jobs set lease_until=? where id=?`).run(past(1000), job);
+      const stale = h2.app.intake.stats();
+      assert.ok(stale.oldestEvent, "an expired lease is a crashed worker: that is backlog");
+      assert.ok(stale.oldestJob, "same for jobs");
+    } finally { await h2.close(); }
+  });
+
+  it("durability-1: one attempts cap governs the selector and the sweeper, so no row falls between them", async () => {
+    const h2 = await buildApp({ extractor: "simulator" });
+    try {
+      h2.db.prepare(`delete from jobs`).run();
+      // One attempt below the cap: still the selector's business, not the
+      // sweeper's — terminating it here would throw away a legitimate retry.
+      const a = h2.app.intake.receive({ provider: "simulator", providerMessageId: `cap_a_${Date.now()}`, phoneUid: "263771000904", type: "message.text", text: "hi" });
+      h2.db.prepare(`update channel_events set status='processing', attempts=?, lease_until=? where id=?`).run(EVENT_MAX_ATTEMPTS - 1, past(60_000), a.id);
+      assert.equal(h2.app.intake.sweepStranded().events, 0, "below the cap a retry is still owed");
+      assert.equal((await h2.app.intake.processNext())?.id, a.id, "below the cap the selector must re-take the abandoned lease");
+
+      // At the cap the selector must refuse it and the sweeper must take it. A
+      // row neither of them covers is invisible for ever: no decision, no reply
+      // to the participant, no dead-letter alert.
+      const b = h2.app.intake.receive({ provider: "simulator", providerMessageId: `cap_b_${Date.now()}`, phoneUid: "263771000905", type: "message.text", text: "hi" });
+      h2.db.prepare(`update channel_events set status='processing', attempts=?, lease_until=? where id=?`).run(EVENT_MAX_ATTEMPTS, past(60_000), b.id);
+      assert.equal(await h2.app.intake.processNext(), null, "at the cap the selector is done with it");
+      assert.equal(h2.app.intake.sweepStranded().events, 1, "so the sweeper must terminate it");
+      assert.equal(h2.db.prepare(`select status from channel_events where id=?`).get(b.id).status, "dead");
+
+      const mk = (attempts) => { const jid = `job_cap_${attempts}_${Date.now()}`; h2.db.prepare(`insert into jobs (id, kind, payload_json, status, attempts, lease_until, created_at) values (?,?,?,?,?,?,?)`).run(jid, "media.purge", "{}", "processing", attempts, past(60_000), new Date().toISOString()); return jid; };
+      const ja = mk(JOB_MAX_ATTEMPTS - 1);
+      assert.equal(h2.app.intake.sweepStranded().jobs, 0, "below the cap a job retry is still owed");
+      assert.equal((await h2.app.intake.processNextJob())?.id, ja, "below the cap the job selector must re-take it");
+      const jb = mk(JOB_MAX_ATTEMPTS);
+      assert.equal(await h2.app.intake.processNextJob(), null, "at the cap the job selector is done with it");
+      assert.equal(h2.app.intake.sweepStranded().jobs, 1, "so the sweeper must terminate it");
+      assert.equal(h2.db.prepare(`select status from jobs where id=?`).get(jb).status, "dead");
+    } finally { await h2.close(); }
   });
 });
 
@@ -126,7 +181,8 @@ describe("fix-queue: outbound envelope, policy and delivery status", () => {
       // held for 40 minutes with nothing else wrong: the alert must fire
       h2.db.prepare(`update outbound_messages set created_at=?, next_attempt_at=null where id=?`).run(past(40 * 60_000), q.id);
       h2.app.worker.housekeeping();
-      assert.ok(h2.db.prepare(`select 1 from alerts where kind='outbound.failures'`).get(), "an indefinitely held message must raise an alert");
+      assert.ok(h2.db.prepare(`select 1 from alerts where kind='outbound.blocked'`).get(), "an indefinitely held message must raise an alert");
+      assert.equal(h2.db.prepare(`select count(*) n from alerts where kind='outbound.failures'`).get().n, 0, "a policy hold is not a provider outage");
 
       // held for longer than the window itself: it can never be delivered as
       // free-form text, so it must reach a terminal, operator-visible state
@@ -153,13 +209,25 @@ describe("fix-queue: outbound envelope, policy and delivery status", () => {
       asLiveProvider(h2.app.transport, true);
       const q = h2.app.outbox.enqueueWhatsApp({ waPhoneUid: phone, kind: "text", purpose: "reply", payload: "hello", idempotencyKey: `fixq:allow:${Date.now()}` });
       await h2.app.worker.tick();
-      assert.equal(h2.app.outbox.get(q.id).error_code, "RECIPIENT_NOT_ALLOWED", "an empty allowlist must mean 'nobody', not 'everybody'");
+      const blocked = h2.app.outbox.get(q.id);
+      assert.equal(blocked.error_code, "RECIPIENT_NOT_ALLOWED", "an empty allowlist must mean 'nobody', not 'everybody'");
       assert.equal(h2.app.transport.sentCount, 0);
+      // A missing allowlist is a configuration gap, not a bad message: burning
+      // the queue to permanent_failure would make an operator press Retry on
+      // every row by hand once the setting lands.
+      assert.equal(blocked.status, "retryable_failure", "an unset allowlist must HOLD the queue, not burn it");
 
+      // ...and the hold releases itself the moment the setting lands: no
+      // operator retry, only the backoff elapsing.
       h2.domain.setSetting("outbound.allowed_recipients", [phone], "test");
-      assert.equal(h2.app.outbox.retry(q.id), true);
+      h2.db.prepare(`update outbound_messages set next_attempt_at=null where id=?`).run(q.id);
       await h2.app.worker.tick();
       assert.equal(h2.app.outbox.get(q.id).status, "sent", "an explicitly designated test recipient is still reachable");
+
+      // an allowlist that exists and says no is a different answer: terminal.
+      const other = h2.app.outbox.enqueueWhatsApp({ waPhoneUid: "263771000993", kind: "text", purpose: "reply", payload: "nope", idempotencyKey: `fixq:allow2:${Date.now()}` });
+      await h2.app.worker.tick();
+      assert.equal(h2.app.outbox.get(other.id).status, "permanent_failure", "a number the allowlist excludes must not be retried for ever");
     } finally { await h2.close(); }
   });
 
@@ -204,6 +272,68 @@ describe("fix-queue: outbound envelope, policy and delivery status", () => {
     const failed = h.app.outbox.get(f.id);
     assert.equal(failed.status, "permanent_failure");
     assert.equal(failed.error_code, "META_470");
+  });
+
+  it("outbox-7: a withdrawal blocks the message without raising a provider-outage alert", async () => {
+    const h2 = await buildApp({ extractor: "simulator" });
+    try {
+      const phone = "263771000917";
+      await h2.register(phone, { first: "No", last: "More", identity: "TESTWD02X" });
+      const queued = h2.app.outbox.enqueueWhatsApp({ waPhoneUid: phone, kind: "text", purpose: "receipt_outcome", payload: "your receipt qualified", idempotencyKey: `fixq:consent2:${Date.now()}` });
+      h2.domain.withdrawParticipant(phone, "adm", "participant request");
+      await h2.app.worker.tick();
+      assert.equal(h2.app.outbox.get(queued.id).error_code, "CONSENT_WITHDRAWN");
+
+      h2.db.prepare(`delete from alerts`).run();
+      h2.app.worker.housekeeping();
+      // Support processing a withdrawal is routine privacy work. Counting the
+      // permanent_failure it produces as an outbound FAILURE pointed operators
+      // at provider-outage.md — check Meta's status page, rotate the token,
+      // retry the rows — every time someone opted out.
+      assert.equal(h2.db.prepare(`select count(*) n from alerts where kind='outbound.failures'`).get().n, 0, "a withdrawal is not a provider failure");
+
+      // a genuine provider failure on the same ledger still pages
+      const bad = h2.app.outbox.enqueueWhatsApp({ waPhoneUid: "263771000918", kind: "text", purpose: "reply", payload: "x", idempotencyKey: `fixq:prov:${Date.now()}` });
+      h2.db.prepare(`update outbound_messages set status='permanent_failure', error_code='META_131026' where id=?`).run(bad.id);
+      h2.app.worker.housekeeping();
+      assert.ok(h2.db.prepare(`select 1 from alerts where kind='outbound.failures'`).get(), "a real provider failure must still page");
+    } finally { await h2.close(); }
+  });
+
+  it("outbox-4: a paused campaign is held without paging, but a hold nobody can clear is alerted", async () => {
+    const h2 = await buildApp({ extractor: "simulator" });
+    try {
+      const cid = h2.campaign.id;
+      h2.domain.setSetting(`campaign:${cid}:pause`, { intake: false, auto_qualify: false, outbound: true, draws: false }, "test");
+      const p = h2.app.outbox.enqueueWhatsApp({ waPhoneUid: "263771000919", kind: "text", purpose: "receipt_outcome", campaignId: cid, payload: "outcome", idempotencyKey: `fixq:pause2:${Date.now()}` });
+      await h2.app.worker.tick();
+      assert.equal(h2.app.outbox.get(p.id).error_code, "OUTBOUND_PAUSED");
+
+      // A pause holds messages for exactly as long as the operator wants it to.
+      // Warning about it every hour, with the provider-outage runbook attached,
+      // is noise that buries the alerts that mean something.
+      h2.db.prepare(`update outbound_messages set created_at=? where id=?`).run(past(40 * 60_000), p.id);
+      h2.db.prepare(`delete from alerts`).run();
+      h2.app.worker.housekeeping();
+      assert.equal(h2.db.prepare(`select count(*) n from alerts where kind like 'outbound.%'`).get().n, 0, "a deliberate pause must not raise an alert at all");
+
+      // a transient provider retry sitting in backoff is not a hold either
+      const t = h2.app.outbox.enqueueWhatsApp({ waPhoneUid: "263771000922", kind: "text", purpose: "reply", payload: "x", idempotencyKey: `fixq:transient:${Date.now()}` });
+      h2.db.prepare(`update outbound_messages set status='retryable_failure', error_code=null, created_at=? where id=?`).run(past(40 * 60_000), t.id);
+      h2.app.worker.housekeeping();
+      assert.equal(h2.db.prepare(`select count(*) n from alerts where kind like 'outbound.%'`).get().n, 0, "ordinary backoff is not an indefinite hold");
+
+      // ...but a winner nobody can send to (window closed, no template) is
+      needsTemplateOutsideWindow(h2.app.transport, true);
+      try {
+        const w = h2.app.outbox.enqueueWhatsApp({ waPhoneUid: "263771000921", kind: "text", purpose: "winner_contact", payload: "you won", idempotencyKey: `fixq:hold2:${Date.now()}` });
+        await h2.app.worker.tick();
+        assert.equal(h2.app.outbox.get(w.id).error_code, "TEMPLATE_REQUIRED");
+        h2.db.prepare(`update outbound_messages set created_at=? where id=?`).run(past(40 * 60_000), w.id);
+        h2.app.worker.housekeeping();
+        assert.ok(h2.db.prepare(`select 1 from alerts where kind='outbound.blocked'`).get(), "a winner held with nothing sent must be surfaced");
+      } finally { needsTemplateOutsideWindow(h2.app.transport, false); }
+    } finally { await h2.close(); }
   });
 
   it("outbox-8: a delivery status for an unknown provider message id is counted, not silently dropped", async () => {

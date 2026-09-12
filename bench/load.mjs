@@ -28,6 +28,24 @@ const OUTLET_QUERY = { A: "sunrise westgate harare", B: "valuemart westgate hara
 export const RACE_SLIP = { no: "990100", date: "05/10/2026", unit: 3.1 };
 
 /**
+ * The printed receipt number for participant `i`'s upload `n`.
+ *
+ * `700000 + i * 100 + n` only stayed unique while a participant uploaded fewer
+ * than 100 slips (per = ceil(N/C)): at --receipts 600 --concurrency 2 the
+ * numbers of participants 1 and 2 overlapped, so the same number, date, layout
+ * and outlet were printed for two phones and the slip silently became a
+ * CROSS-PARTICIPANT duplicate — the run still gated green but the cohort counts
+ * in the report described a corpus that was not the one submitted. A block of
+ * 10 000 per participant, and a loud failure rather than a silent overlap if a
+ * run ever exhausts it or reaches the shared race slip.
+ */
+export function slipNo(i, n) {
+  const no = String(700000 + i * 10000 + n);
+  if (n >= 10000 || no === RACE_SLIP.no) throw new Error(`load harness: slip number space exhausted at participant ${i}, upload ${n} (${no})`);
+  return no;
+}
+
+/**
  * The receipt participant `i` submits on upload `k` of `per`, rendered fresh.
  *
  * Every participant used to cycle the SAME six fixture images, so all but the
@@ -49,7 +67,7 @@ export async function loadReceipt(i, k, per) {
   }
   const n = (per > 2 && k === per - 1) ? 1 : k;                    // last upload = this participant's own slip again
   const layout = ["A", "B", "C"][(i + n) % 3];
-  const no = String(700000 + i * 100 + n);
+  const no = slipNo(i, n);
   const date = `${String(5 + (n % 5)).padStart(2, "0")}/10/2026`;
   const lines = receiptText({ layout, branch: BRANCH, time: "14:22", no, date, items: [SUGAR(2, 3.1 + (n % 4) * 0.05), BREAD] });
   return { cohort: n === k ? "unique" : "self_duplicate", no, outletQuery: OUTLET_QUERY[layout], bytes: unique(await render(lines)) };
@@ -68,18 +86,48 @@ export async function loadReceipt(i, k, per) {
  * exactly as the duplicate resolver does. `double_qualified` catches the other
  * half: one receipt decided QUALIFIED twice (receipts.status is overwritten per
  * decision, so validation_results is where a second award is visible).
+ *
+ * WHAT THIS CANNOT SEE, AND WHAT IT THEREFORE DOES NOT FAIL A RUN ON. Rows
+ * whose printed identity is incomplete (the date or the receipt number was never
+ * read — the review path can credit such a row) used to be dropped from the
+ * grouping entirely, which is the very shape the race produces when one
+ * concurrent worker reads the slip less well than the other. They are grouped
+ * now, on the only evidence such a row carries: outlet, whatever of date/number
+ * was read, and the TOTAL (a row with neither a number nor a total can be
+ * matched to nothing, so it stands alone). But that evidence cannot tell one
+ * purchase credited twice from TWO REAL PURCHASES at the same outlet, on the
+ * same day, for the same total — the shapes are identical once the number is
+ * gone — so such a group is reported as `suspected_double_credits` and is NOT
+ * part of `double_credits`, which is what the gate exits on. Grouping them into
+ * the gate made `node bench/load.mjs` exit 1 on a corpus with nothing wrong in
+ * it. The MIXED pair — one row with the number, one without — cannot be grouped
+ * at all, for the same reason. `unidentified_credits` counts every row with an
+ * incomplete identity so both residual blind spots are numbers in the report
+ * rather than silences.
  */
 export function integrityFindings(db) {
-  const purchases = db.prepare(`select cr.campaign_id, cr.outlet_id, cr.txn_date, coalesce(cr.receipt_no_norm, upper(cr.receipt_no)) as no,
+  const groups = db.prepare(`select cr.campaign_id, cr.outlet_id, coalesce(cr.txn_date, '?') as txn_date,
+      coalesce(cr.receipt_no_norm, upper(cr.receipt_no)) as no,
+      case when cr.txn_date is null or coalesce(cr.receipt_no_norm, cr.receipt_no) is null
+           then coalesce(cast(cr.total_minor as text), 'row:' || cr.id) else '' end as tie,
       count(*) c, group_concat(e.id) entries
     from entries e join canonical_receipts cr on cr.id = e.canonical_receipt_id
-    where e.status = 'active' and cr.txn_date is not null and coalesce(cr.receipt_no_norm, cr.receipt_no) is not null
-    group by cr.campaign_id, cr.outlet_id, cr.txn_date, no having c > 1`).all();
+    where e.status = 'active'
+    group by cr.campaign_id, cr.outlet_id, txn_date, no, tie having c > 1`).all();
+  // `tie` is non-empty exactly when the printed identity is incomplete, i.e.
+  // when the grouping rests on the total and cannot distinguish one purchase
+  // from two. Those groups are evidence for a human, never a gate failure.
+  const purchases = groups.filter((g) => g.tie === "");
+  const suspected = groups.filter((g) => g.tie !== "");
   const qualifiedTwice = db.prepare(`select receipt_id, count(*) c from validation_results where decision = 'QUALIFIED' group by receipt_id having c > 1`).all();
+  const unidentified = db.prepare(`select count(*) n from entries e join canonical_receipts cr on cr.id = e.canonical_receipt_id
+    where e.status = 'active' and (cr.txn_date is null or coalesce(cr.receipt_no_norm, cr.receipt_no) is null)`).get().n;
   return {
     double_credits: purchases.length,
+    suspected_double_credits: suspected.length,
     double_qualified: qualifiedTwice.length,
-    detail: { purchases: purchases.slice(0, 5), receipts: qualifiedTwice.slice(0, 5).map((r) => r.receipt_id) },
+    unidentified_credits: unidentified,
+    detail: { purchases: purchases.slice(0, 5), suspected: suspected.slice(0, 5), receipts: qualifiedTwice.slice(0, 5).map((r) => r.receipt_id) },
   };
 }
 
@@ -121,7 +169,7 @@ if (isMain) {
   const report = {
     generated_at: new Date().toISOString(), machine: { cpus: os.cpus().length, model: os.cpus()[0]?.model, mem_gb: Math.round(os.totalmem() / 1e9), node: process.version },
     assumptions: { note: "engineering benchmark, NOT a client forecast (D-21)", receipts: N, concurrent_participants: C, extractor: "tesseract.js (real OCR, single WASM worker)", transport: "simulator (no provider latency)", corpus: "freshly rendered receipts: one shared slip per participant (concurrent claim race), the rest unique purchases, the last a repeat of the participant's own slip", cohorts },
-    results: { inbound_events: app.db.prepare(`select count(*) n from channel_events`).get().n, ingest_seconds: Number(((tIngest - t0) / 1000).toFixed(1)), total_seconds: Number(((tDone - t0) / 1000).toFixed(1)), webhook_ack_ms: { p50: pct(ackLat, 0.5), p95: pct(ackLat, 0.95), max: Math.max(...ackLat) }, decision_ms_from_intake: { p50: pct(decLat, 0.5), p95: pct(decLat, 0.95), max: decLat.length ? Math.max(...decLat) : null }, receipts_per_minute: Number((receipts.length / ((tDone - t0) / 60000)).toFixed(1)), by_status: byStatus, double_credits: integrity.double_credits, double_qualified: integrity.double_qualified, integrity_detail: integrity.detail, outbound: app.outbox.stats().byStatus, dead_letters: app.db.prepare(`select count(*) n from jobs where status='dead'`).get().n },
+    results: { inbound_events: app.db.prepare(`select count(*) n from channel_events`).get().n, ingest_seconds: Number(((tIngest - t0) / 1000).toFixed(1)), total_seconds: Number(((tDone - t0) / 1000).toFixed(1)), webhook_ack_ms: { p50: pct(ackLat, 0.5), p95: pct(ackLat, 0.95), max: Math.max(...ackLat) }, decision_ms_from_intake: { p50: pct(decLat, 0.5), p95: pct(decLat, 0.95), max: decLat.length ? Math.max(...decLat) : null }, receipts_per_minute: Number((receipts.length / ((tDone - t0) / 60000)).toFixed(1)), by_status: byStatus, double_credits: integrity.double_credits, suspected_double_credits: integrity.suspected_double_credits, double_qualified: integrity.double_qualified, unidentified_credits: integrity.unidentified_credits, integrity_detail: integrity.detail, outbound: app.outbox.stats().byStatus, dead_letters: app.db.prepare(`select count(*) n from jobs where status='dead'`).get().n },
     bottleneck: "OCR is CPU-bound and serialised on one WASM worker (~1 s per clear image); scale by running N worker processes or a tesseract worker pool; webhook acknowledgement is independent of OCR (durable intake).",
   };
   if (receipts.length < N) report.error = `only ${receipts.length}/${N} receipts were created; harness or flow problem`;

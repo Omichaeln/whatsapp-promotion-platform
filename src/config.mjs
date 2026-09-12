@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import util from "node:util";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -106,13 +107,82 @@ export function dataVolumeStatus(cfg) {
   return { checked: true, ok: fs.existsSync(marker), dir, marker, dbExists };
 }
 
-/** Stamp the volume (first provisioning, or adopting a volume that already holds the database). */
-export function markDataVolume(cfg) {
+/** Stamp the volume (first provisioning, or adopting a volume that already holds a live database). */
+export function markDataVolume(cfg, { provisionedBy = "adopted-live-database" } = {}) {
   const st = dataVolumeStatus(cfg);
   if (!st.checked || st.ok) return st;
   fs.mkdirSync(st.dir, { recursive: true });
-  fs.writeFileSync(st.marker, JSON.stringify({ id: crypto.randomBytes(8).toString("hex"), markedAt: new Date().toISOString(), database: cfg.database }, null, 2));
-  return { ...st, ok: true, written: true };
+  // provisionedBy is recorded so a later boot can tell an operator-forced
+  // VOLUME_INIT provisioning from an adoption, and warn about the first.
+  fs.writeFileSync(st.marker, JSON.stringify({ id: crypto.randomBytes(8).toString("hex"), markedAt: new Date().toISOString(), database: cfg.database, provisionedBy }, null, 2));
+  return { ...st, ok: true, written: true, provisionedBy };
+}
+
+/**
+ * Does this file hold a database a SERVICE has actually run against?
+ *
+ * "The file exists" was never evidence of a mounted volume: `npm run preflight`
+ * and `node src/db.js migrate` both open (and therefore create) the database,
+ * and docs/TEST_READINESS.md tells operators to run exactly
+ * `npm run preflight && npm run migrate && npm start`. One preflight run on a
+ * host whose volume was not mounted created promotions.db in the ephemeral
+ * container layer, and the next boot adopted that directory as "the volume" and
+ * booted green - the precise outcome the marker exists to prevent.
+ * Only src/server.mjs records schema_meta.environment, and only real traffic
+ * leaves campaigns/participants/audit rows behind, so either is proof that this
+ * directory survived a deployment. Opened read-only: proving a volume must
+ * never write to it.
+ */
+export function looksLikeLiveDatabase(file) {
+  if (!file || file === ":memory:" || !fs.existsSync(file)) return false;
+  let db = null;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+    const has = (t) => !!db.prepare(`select name from sqlite_master where type='table' and name=?`).get(t);
+    // schema_meta.environment is the ONLY evidence accepted, because only
+    // src/server.mjs writes it and only after a real boot. Accepting "some
+    // table holds a row" instead let `npm run seed` — step 3 of the documented
+    // deploy sequence — manufacture the evidence: it writes campaigns and
+    // participants into whatever directory it is pointed at, so the next boot
+    // adopted an ephemeral directory as though it were the mounted volume,
+    // which is the exact loss this guard exists to prevent.
+    return !!(has("schema_meta") && db.prepare(`select value from schema_meta where key='environment'`).get()?.value);
+  } catch {
+    // Unreadable/locked: treat as live rather than refuse a running deployment's
+    // boot on a database we simply could not inspect.
+    return true;
+  } finally { try { db?.close(); } catch { /* already closed */ } }
+}
+
+/**
+ * Prove (or provision) the data volume before anything opens the database.
+ * Returns { ok } - when ok is false the caller must refuse to boot: creating
+ * the database in ephemeral storage loses every participant, receipt, entry and
+ * audit row on the next deploy. Called by src/bootstrap.mjs; src/server.js and
+ * src/worker.js still only get the validateConfig refusal (see package notes).
+ */
+export function ensureDataVolume(cfg, { env = process.env, init = env.VOLUME_INIT, log = console } = {}) {
+  const vol = dataVolumeStatus(cfg);
+  const forced = /^(1|true|yes)$/i.test(String(init || ""));
+  if (!vol.checked || vol.ok) {
+    // VOLUME_INIT is re-read on every boot and stays set in a Railway variable
+    // group once used: left set, it re-marks whatever directory is mounted at
+    // VOLUME_PATH on every future deploy, so the check is silently off for ever.
+    // Only warn when the check is actually ON: with VOLUME_PATH empty the guard
+    // is deliberately disabled (local development), and an error-level line there
+    // is noise that teaches operators to ignore the real one.
+    if (vol.checked && vol.ok && forced) log.error(`[volume] VOLUME_INIT is still set and ${vol.dir} is already marked: UNSET VOLUME_INIT NOW - while it is set, any directory (including an ephemeral one after the volume is detached) is accepted as the persistent volume.`);
+    return { ...vol, ok: true };
+  }
+  const live = looksLikeLiveDatabase(cfg.database);
+  if (live || forced) {
+    const provisionedBy = live ? "adopted-live-database" : "VOLUME_INIT";
+    markDataVolume(cfg, { provisionedBy });
+    if (live) log.log(`[volume] marked data volume ${vol.dir} (adopted a database a service has already run against)`);
+    else log.error(`[volume] VOLUME_INIT provisioned ${vol.dir}: UNSET VOLUME_INIT NOW or the mounted-volume check is disabled on every future deploy.`);
+    return { ...vol, ok: true, marked: true, provisionedBy };
+  }
+  return { ...vol, ok: false, message: `${vol.dir} carries no ${VOLUME_MARKER} marker and holds no database any service has run against: the persistent volume is not mounted there. Refusing to create a database in ephemeral storage. Provision once with VOLUME_INIT=true, or set VOLUME_PATH= to disable this check.` };
 }
 
 /** Fail-fast checks for non-local environments (called by the server). */

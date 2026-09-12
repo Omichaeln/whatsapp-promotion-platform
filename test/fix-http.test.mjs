@@ -2,7 +2,7 @@
 // authenticated provider webhook outside developer environments, honest status
 // codes for operator mistakes, and response headers/contract accuracy.
 import { describe, it, before, after, assert, buildApp } from "./helpers.mjs";
-import { createServer } from "../src/server.mjs";
+import { createServer, createAttemptThrottle } from "../src/server.mjs";
 import { loadConfig } from "../src/config.mjs";
 import { SimulatorTransport } from "../src/transport/simulator.mjs";
 import fs from "node:fs";
@@ -40,6 +40,55 @@ describe("http surface: throttling, webhook authentication, status codes, header
     assert.ok(last.headers.get("retry-after"), "a throttled caller is told when to come back");
     // and the brake is per account: another staff login from the same source is unaffected
     assert.ok(await h.login("admin@x.test", "TestAdminPassword123"), "throttling one account must not lock out the rest");
+  });
+
+  it("a wrong-password flood cannot hold a named account out of the console", async () => {
+    // The brake ran *before* auth.login, so a correct credential could never get
+    // through it. Behind a proxy (TRUSTED_PROXY_HOPS=0 on the documented deploy)
+    // every caller shares one source address, so source+account collapses to
+    // per-account: five wrong passwords a minute against a known staff email
+    // locked the real holder out of the console for as long as the attacker
+    // cared to keep paying 5 requests/min.
+    const password = "StaffTestPassword123";
+    await h.staffToken("auditor@example.test");          // establishes the password (and clears the brake)
+    const codes = [];
+    for (let i = 0; i < 6; i++) codes.push((await h.api("/api/login", { method: "POST", body: { email: "auditor@example.test", password: "not-the-password" } })).status);
+    assert.ok(codes.includes(429), `wrong passwords are still throttled (got ${codes.join(",")})`);
+    const ok = await h.api("/api/login", { method: "POST", body: { email: "auditor@example.test", password } });
+    assert.equal(ok.status, 200, `the holder of the correct password must still get in (got ${ok.status} ${JSON.stringify(ok.data)})`);
+    assert.ok(ok.data.token, "and receives a session");
+    assert.equal((await h.api("/api/login", { method: "POST", body: { email: "auditor@example.test", password: "not-the-password" } })).status, 401, "a successful login clears the brake");
+  });
+
+  it("the attempt map is bounded, and bounding it is not a scan per attempt", () => {
+    // The previous bound deleted only keys whose window had already drained —
+    // inside one 60s window nothing is expirable — and ran that O(n) scan on
+    // every hit once over the cap: 30k logins with fresh emails left 60k
+    // entries and cost 1.7bn entry visits (33s of CPU), under exactly the
+    // rotating-email flood the bound exists to absorb.
+    const th = createAttemptThrottle({ windowMs: 60_000, maxKeys: 1_000 });
+    const t0 = Date.now();
+    for (let i = 0; i < 20_000; i++) { th.hit(`login:1.2.3.4|u${i}@x.test`, 5, 20); th.hit(`login:acct:u${i}@x.test`, 10, 60); }
+    const elapsed = Date.now() - t0;
+    assert.ok(th.size() <= 1_000, `40k attacker-chosen keys must not grow the map past its cap (got ${th.size()})`);
+    assert.ok(elapsed < 4_000, `bounding the map must not cost a full scan per attempt (took ${elapsed}ms for 40k)`);
+    // ...and the key actually under attack is the one that survives eviction
+    const victim = "login:acct:victim@x.test";
+    for (let i = 0; i < 5_000; i++) { th.hit(`login:acct:flood${i}@x.test`, 10, 60); th.hit(victim, 5, 20); }
+    assert.ok(th.hit(victim, 5, 20).soft > 0, "a key under active attack keeps its count through a key flood");
+  });
+
+  it("the contract does not advertise a request-body check the server does not make", async () => {
+    // The document published required:["email","password"] for POST /api/login,
+    // but dispatch never checks meta.body: an empty body answers 401 on purpose.
+    const doc = (await h.api("/api/openapi.json")).data;
+    const login = doc.paths["/api/login"].post.requestBody.content["application/json"].schema;
+    assert.ok(!login.required, "an unenforced `required` must not be published as if the server checked it");
+    assert.equal((await h.api("/api/login", { method: "POST", body: {} })).status, 401, "an empty login body stays 401 (never say which half was wrong)");
+    // where the document does publish `required`, the server really does answer 400
+    const st = doc.paths["/api/campaigns/{id}/status"].post.requestBody.content["application/json"].schema;
+    assert.deepEqual(st.required, ["status"]);
+    assert.equal((await h.api(`/api/campaigns/${h.campaign.id}/status`, { method: "POST", token: admin, body: {} })).status, 400, "a published required field is backed by a 400");
   });
 
   it("MFA verification is throttled, so the second factor cannot be brute-forced", async () => {

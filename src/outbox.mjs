@@ -13,6 +13,24 @@ import { id, nowIso } from "./db.mjs";
  */
 export const OUTBOUND_STATES = ["pending", "sending", "sent", "delivered", "read", "retryable_failure", "permanent_failure", "unknown_outcome"];
 const MAX_ATTEMPTS = 6;
+/**
+ * Codes THIS platform writes when it decides not to send. They are not provider
+ * trouble, so they must not be counted into the `outbound.failures` warning,
+ * whose runbook (provider-outage.md) tells an operator to check Meta's status
+ * page, rotate the access token and retry the rows: a participant exercising
+ * their right to withdraw, or a campaign an operator paused on purpose, would
+ * otherwise raise a provider-outage alarm every hour and teach operators to
+ * ignore the one alert that means WhatsApp is actually down.
+ */
+export const POLICY_BLOCK_CODES = ["CONSENT_WITHDRAWN", "RECIPIENT_NOT_ALLOWED", "OUTBOUND_PAUSED", "TEMPLATE_REQUIRED"];
+/**
+ * ...of those, the holds a human has to clear: nobody can send the message (the
+ * 24h window closed and no approved template is configured) or the deployment
+ * was never given an allowlist. A pause ends when the operator ends it and a
+ * withdrawal is permanent by design, so neither needs an alarm.
+ */
+const ACTIONABLE_HOLD_CODES = ["TEMPLATE_REQUIRED", "RECIPIENT_NOT_ALLOWED"];
+const inList = (xs) => xs.map(() => "?").join(",");
 
 export function createOutbox(db, now = nowIso) {
   const insert = db.prepare(`insert or ignore into outbound_messages
@@ -103,12 +121,25 @@ export function createOutbox(db, now = nowIso) {
     stats() {
       const rows = db.prepare(`select status, count(*) n from outbound_messages group by status`).all();
       const oldest = db.prepare(`select created_at from outbound_messages where status in ('pending','retryable_failure') order by created_at limit 1`).get()?.created_at || null;
-      // A policy-blocked row (TEMPLATE_REQUIRED, OUTBOUND_PAUSED) sits in
-      // retryable_failure, which the outbound.failures alert does not count — a
-      // message could be held indefinitely with nobody told. Surface the age of
-      // the oldest held row so housekeeping can alert on it.
-      const held = db.prepare(`select created_at from outbound_messages where status='retryable_failure' order by created_at limit 1`).get()?.created_at || null;
-      return { byStatus: Object.fromEntries(rows.map((r) => [r.status, r.n])), oldestPending: oldest, oldestHeld: held };
+      // A policy-blocked row sits in retryable_failure, which the failure alert
+      // does not count — a message could be held indefinitely with nobody told.
+      // Surface the age of the oldest hold SOMEONE CAN CLEAR only: an
+      // OUTBOUND_PAUSED row is held for exactly as long as the operator wants
+      // the campaign paused, and a row with no error_code is an ordinary
+      // transient provider retry sitting in backoff. Counting either made any
+      // pause longer than half an hour, and every provider blip, raise a warning
+      // on the hour.
+      const held = db.prepare(`select created_at from outbound_messages where status='retryable_failure' and error_code in (${inList(ACTIONABLE_HOLD_CODES)}) order by created_at limit 1`).get(...ACTIONABLE_HOLD_CODES)?.created_at || null;
+      // Failures the PROVIDER caused: everything terminal except our own policy
+      // decisions (see POLICY_BLOCK_CODES). unknown_outcome is always provider
+      // trouble — the call timed out after the message may have been accepted.
+      const providerFailures = db.prepare(`select count(*) n from outbound_messages where status='unknown_outcome' or (status='permanent_failure' and (error_code is null or error_code not in (${inList(POLICY_BLOCK_CODES)})))`).get(...POLICY_BLOCK_CODES).n;
+      // A message that can never now be delivered because the service window
+      // closed on it: the winner is marked 'notified' and nothing was sent.
+      // RECIPIENT_NOT_ALLOWED is deliberately absent — a permanent block on a
+      // number that is not a designated test recipient is the allowlist working.
+      const undeliverable = db.prepare(`select count(*) n from outbound_messages where status='permanent_failure' and error_code='TEMPLATE_REQUIRED'`).get().n;
+      return { byStatus: Object.fromEntries(rows.map((r) => [r.status, r.n])), oldestPending: oldest, oldestHeld: held, providerFailures, undeliverable };
     },
     list({ status = null, limit = 100 } = {}) {
       return status ? db.prepare(`select id, wa_phone_uid, kind, purpose, status, attempts, last_error, error_code, provider_message_id, created_at, sent_at, delivered_at from outbound_messages where status=? order by created_at desc limit ?`).all(status, limit)

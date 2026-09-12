@@ -70,9 +70,18 @@ export const DEFAULT_COPY = {
   cancel: "Cancelled. Reply MENU to start again.",
   // STOP is the universal WhatsApp opt-out; it used to be answered "Cancelled.
   // Reply MENU to start again." with the registration and consent still live.
-  opted_out: "You have been withdrawn from {campaign}. Your consent is recorded as withdrawn and you will not be entered into any further draws. If this was a mistake, reply SUPPORT and our team can restore your registration.",
+  // NOTE: neither key names a campaign. domain.withdrawParticipant closes EVERY
+  // consent and EVERY campaign enrolment for the number and sets the profile to
+  // 'withdrawn' globally, so "you have been withdrawn from {campaign}" told a
+  // participant enrolled in two promotions that one had ended when in fact both
+  // had — and this copy is the consent record the participant sees.
+  opted_out: "You have been withdrawn from our promotions. Your consent is recorded as withdrawn, your registration is closed and you will not be entered into any further draws. If this was a mistake, reply SUPPORT and our team can restore your registration.",
   opted_out_none: "You are not registered for {campaign}, so there is nothing to withdraw.",
-  registration_withdrawn: "Your details were removed from {campaign} at your request, so this number cannot be registered again automatically. Reply SUPPORT and our team will restore your registration.",
+  registration_withdrawn: "Your details were removed from our promotions at your request, so this number cannot be registered again automatically. Reply SUPPORT and our team will restore your registration.",
+  // A profile that is not active but was NOT withdrawn by the participant
+  // (suspended or blocked by staff, or any future status): saying "removed at
+  // your request" would be false and unexplainable at the support desk.
+  account_on_hold: "We can't continue with this number at the moment — the registration for it is on hold. Reply SUPPORT and our team will look into it for you.",
   something_went_wrong: "Sorry — something went wrong on our side and we could not complete that step. Please try again in a few minutes, or reply SUPPORT to speak to our team.",
   need_outlet_first: "Thanks for the photo. First tell us where you shopped — reply 2 to choose the outlet, then send the photo again.",
   claim_ack: "Thanks {first_name} — we have recorded your claim for {prize}. Our team will contact you on this number to verify your details. Please have your ID ready; we will confirm where and when to collect.",
@@ -103,6 +112,7 @@ export const DEFAULT_COPY = {
     ownership_dispute: "this receipt was also sent from another phone; a team member will check it",
     possible_duplicate_other_outlet: "this receipt looks like one already sent for a different branch; a team member will check it",
     possible_duplicate_same_outlet: "this receipt number matches one already sent from the same shop on the same day; a team member will check it",
+    period_already_drawn: "this week's draw has already been made; a team member will decide this receipt",
     auto_qualification_paused: "automatic checks are paused; a team member will review it",
     reviewer_decision: "our team could not verify the receipt",
   },

@@ -30,6 +30,9 @@ const failed = (r) => r.out.checks.filter((c) => !c.pass).map((c) => c.name);
 
 describe("drawwin audit fixes", () => {
   let h, g, officer, approver, ops, auditor, period, w2period, parts = [];
+  // The W-2 fixture is a SECOND app with its own database: its admin_users rows
+  // are different rows with different ids, so the g cases must name g's staff.
+  let gOfficer, gApprover, gAuditor;
   before(async () => {
     h = await buildApp({ extractor: "simulator" });
     officer = h.app.auth.listUsers().find((u) => u.email === "draw@example.test");
@@ -54,6 +57,8 @@ describe("drawwin audit fixes", () => {
     // Second app for the W-2 cases so they cannot disturb the W-1 fixture.
     g = await buildApp({ extractor: "simulator" });
     w2period = g.domain.listPeriods(g.campaign.id).find((p) => p.code === "W-2");
+    const gu = (email) => g.app.auth.listUsers().find((u) => u.email === email);
+    gOfficer = gu("draw@example.test"); gApprover = gu("approver@example.test"); gAuditor = gu("auditor@example.test");
     for (let i = 1; i <= 3; i++) {
       const ph = `26377160000${i}`;
       await g.register(ph, { first: `Two${"ABC"[i - 1]}`, last: "Case", identity: `TESTW2${i}ZZ` });
@@ -84,32 +89,32 @@ describe("drawwin audit fixes", () => {
     assert.ok(b.eligible.length > 0, "there are candidates; only the prize plan is missing");
     assert.ok(b.blockers.some((x) => x.code === "NO_PRIZE_PLAN"), `expected NO_PRIZE_PLAN, got ${JSON.stringify(b.blockers)}`);
     assert.equal(b.ok, false);
-    assert.throws(() => g.app.drawService.freeze({ campaignId: g.campaign.id, periodId: w2period.id, actorId: officer.id }), /NO_PRIZE_PLAN/);
+    assert.throws(() => g.app.drawService.freeze({ campaignId: g.campaign.id, periodId: w2period.id, actorId: gOfficer.id }), /NO_PRIZE_PLAN/);
 
     // Forced through anyway: the exported bundle must not report "verified".
-    const d = g.app.drawService.freeze({ campaignId: g.campaign.id, periodId: w2period.id, actorId: officer.id, override: { allow: ["NO_PRIZE_PLAN"], reason: "audit case" } });
-    g.app.drawService.execute(d.id, officer.id);
-    g.app.drawService.approve(d.id, approver.id);
+    const d = g.app.drawService.freeze({ campaignId: g.campaign.id, periodId: w2period.id, actorId: gOfficer.id, override: { allow: ["NO_PRIZE_PLAN"], reason: "audit case" } });
+    g.app.drawService.execute(d.id, gOfficer.id);
+    g.app.drawService.approve(d.id, gApprover.id);
     assert.equal(JSON.parse(g.app.drawService.get(d.id).output_json).winners.length, 0, "nobody was awarded");
-    const r = verify(g.app.drawService.bundle(d.id, auditor.id));
+    const r = verify(g.app.drawService.bundle(d.id, gAuditor.id));
     assert.equal(r.code, 1, "a draw that awarded nobody must not verify");
     assert.ok(failed(r).some((n) => /winner count/.test(n)), `expected the winner-count check to fail, failed: ${failed(r)}`);
     // a workable plan for the next W-2 case (3 candidates in that app)
     g.db.prepare(`update campaigns set draw_config_json=? where id=?`).run(JSON.stringify({ prizes: [{ code: "P1", label: "Test prize", count: 1 }], alternates_per_winner: 1 }), g.campaign.id);
-    g.app.drawService.voidDraw(d.id, officer.id, "audit case complete", approver.id);
+    g.app.drawService.voidDraw(d.id, gOfficer.id, "audit case complete", gApprover.id);
   });
 
   it("draw-5: the user who froze the candidate pool cannot approve (or reject) the draw", () => {
     // The approver freezes the pool (choosing the candidates and any override);
     // the officer executes, which is fully deterministic. Approval by the
     // freezer is not a second pair of eyes.
-    const d = g.app.drawService.freeze({ campaignId: g.campaign.id, periodId: w2period.id, actorId: approver.id });
-    g.app.drawService.execute(d.id, officer.id);
-    assert.throws(() => g.app.drawService.approve(d.id, approver.id), /froze the candidate pool/);
-    assert.throws(() => g.app.drawService.reject(d.id, approver.id, "no"), /froze the candidate pool/);
+    const d = g.app.drawService.freeze({ campaignId: g.campaign.id, periodId: w2period.id, actorId: gApprover.id });
+    g.app.drawService.execute(d.id, gOfficer.id);
+    assert.throws(() => g.app.drawService.approve(d.id, gApprover.id), /froze the candidate pool/);
+    assert.throws(() => g.app.drawService.reject(d.id, gApprover.id, "no"), /froze the candidate pool/);
     assert.equal(g.app.drawService.get(d.id).status, "executed", "still awaiting a genuine second approver");
-    const bundle = g.app.drawService.bundle(d.id, auditor.id);
-    assert.equal(bundle.draw.frozen_by, approver.id, "the bundle must name who froze the pool");
+    const bundle = g.app.drawService.bundle(d.id, gAuditor.id);
+    assert.equal(bundle.draw.frozen_by, gApprover.id, "the bundle must name who froze the pool");
   });
 
   it("crosscut-4/6: withdrawn and erased participants are recorded as exclusions, and the rules versions are disclosed", () => {
@@ -152,6 +157,13 @@ describe("drawwin audit fixes", () => {
       void: code(() => h.app.drawService.voidDraw(d.id, officer.id, "re-roll")),
       selfApproved: code(() => h.app.drawService.voidDraw(d.id, officer.id, "re-roll", officer.id)),
       rerun: code(() => h.app.drawService.rerun(d.id, officer.id, "re-roll")),
+      // POST /api/draws/:id/rerun is draw_officer-only and passes approved_by
+      // through src/http.mjs str(), which validates nothing. Demanding a second
+      // NAME is not dual control: the officer types one and re-rolls alone.
+      inventedApprover: code(() => h.app.drawService.voidDraw(d.id, officer.id, "re-roll", "nobody-by-that-id")),
+      inventedApproverRerun: code(() => h.app.drawService.rerun(d.id, officer.id, "re-roll", "nobody-by-that-id")),
+      // a real colleague who is not an approver is not a second pair of eyes either
+      notAnApprover: code(() => h.app.drawService.voidDraw(d.id, officer.id, "re-roll", ops.id)),
     };
     const stillStanding = h.app.drawService.get(d.id).status;
     let cur = h.app.drawService.list(h.campaign.id).find((x) => x.status !== "voided");
@@ -160,7 +172,7 @@ describe("drawwin audit fixes", () => {
     if (["frozen", "executing"].includes(cur.status)) cur = h.app.drawService.execute(cur.id, officer.id);
     if (cur.status === "executed") cur = h.app.drawService.approve(cur.id, approver.id, { expectedOutputHash: cur.output_hash });
 
-    assert.deepEqual(attempts, { void: "SOD", selfApproved: "SOD", rerun: "SOD" }, "one actor must not be able to discard a result he has already seen");
+    assert.deepEqual(attempts, { void: "SOD", selfApproved: "SOD", rerun: "SOD", inventedApprover: "SOD", inventedApproverRerun: "SOD", notAnApprover: "SOD" }, "one actor must not be able to discard a result he has already seen");
     assert.equal(stillStanding, "executed", "the result the officer already read is still standing");
     assert.equal(h.app.drawService.get(d.id).status, "voided");
     assert.equal(cur.supersedes, d.id, "a replacement must name what it replaces");
@@ -222,6 +234,11 @@ describe("drawwin audit fixes", () => {
     assert.throws(() => h.app.winners.transition(w1.id, { status: "collected", actorId: ops.id, collectionOutletId: collect.id, fulfilmentRef: "SLIP-X" }), /collection point for this campaign/);
     assert.equal(h.app.winners.get(w1.id).status, "accepted");
     h.db.prepare(`update campaign_outlets set collection_enabled=1 where campaign_id=? and outlet_id=?`).run(h.campaign.id, collect.id);
+    // ...and the branch's OWN master window counts too: a closed branch inside an
+    // open campaign membership window was still accepted as a collection point.
+    h.db.prepare(`update outlets set active_to='2020-01-01' where id=?`).run(collect.id);
+    assert.throws(() => h.app.winners.transition(w1.id, { status: "collected", actorId: ops.id, collectionOutletId: collect.id, fulfilmentRef: "SLIP-X" }), /outside its active window/);
+    h.db.prepare(`update outlets set active_to='9999-12-31' where id=?`).run(collect.id);
     assert.equal(h.app.winners.transition(w1.id, { status: "collected", actorId: ops.id, collectionOutletId: collect.id, fulfilmentRef: "SLIP-X" }).winner.status, "collected");
   });
 
@@ -265,12 +282,19 @@ describe("drawwin audit fixes", () => {
     const d = h.app.drawService.list(h.campaign.id).find((x) => x.status === "published");
     const w3 = h.app.winners.listByDraw(d.id)[2];
     const out = JSON.parse(h.app.drawService.get(d.id).output_json);
+    // Drive the winner to 'verified' while the entry is still sound, so that when
+    // publish() is called below the PRE-EXISTING "must be verified before
+    // publication" gate cannot fire and the entry-status branch is the only
+    // thing that can refuse it. (Asserting on a 'notified' winner proved nothing:
+    // the old code threw the status error and never read the entry.)
+    h.db.prepare(`update winners set status='notified' where id=?`).run(w3.id);   // as if ops had re-notified after the expiry
+    h.app.winners.transition(w3.id, { status: "verified", actorId: ops.id });
     // rank 3's receipt turns out to be a forgery, after publication
     const dq = h.app.pipeline.disqualifyEntry(w3.entry_id, { actorId: officer.id, reason: "forged receipt", approvedBy: approver.id });
     assert.ok(dq.affectedDraws.length >= 1);
-    h.db.prepare(`update winners set status='notified' where id=?`).run(w3.id);   // as if ops had re-notified before the disqualification
-    assert.throws(() => h.app.winners.transition(w3.id, { status: "verified", actorId: ops.id }), /entry is excluded/);
-    assert.throws(() => h.app.winners.publish(w3.id, ops.id), /verified before publication|entry is excluded/);
+    assert.equal(h.app.winners.get(w3.id).status, "verified", "the winner is verified; only its entry is now excluded");
+    assert.throws(() => h.app.winners.publish(w3.id, ops.id), /the winning entry is excluded/);
+    assert.throws(() => h.app.winners.transition(w3.id, { status: "accepted", actorId: ops.id }), /entry is excluded/);
     // the first stored alternate is disqualified too: it must be skipped, not promoted
     h.app.pipeline.disqualifyEntry(out.alternates[0].entryId, { actorId: officer.id, reason: "forged receipt", approvedBy: approver.id });
     const crmBefore = h.db.prepare(`select count(*) n from crm_events where entity_type='winner'`).get().n;
@@ -285,5 +309,49 @@ describe("drawwin audit fixes", () => {
     assert.equal(ev.entity_version, 1);
     assert.match(ev.payload_json, /"status":"selected"/);
     assert.equal(h.db.prepare(`select count(*) n from crm_events where entity_type='winner'`).get().n, crmBefore + 2);
+  });
+
+  it("winners-1 (round 2): the expiry run reports every skipped winner, and a send in backoff does not block expiry", () => {
+    const d = h.app.drawService.list(h.campaign.id).find((x) => x.status === "published");
+    const ws = h.app.winners.listByDraw(d.id);
+    const wA = ws.find((w) => w.status === "selected");   // the alternate promoted above
+    assert.ok(wA, "the promoted alternate is the first winner in this batch");
+    // A second winner reaching the same deadline: replace the rank-2 winner whose
+    // participant was erased, and take its alternate.
+    const rep = h.app.winners.transition(ws[1].id, { status: "replaced", actorId: ops.id, reason: "participant erased" });
+    const wB = rep.replacement; assert.ok(wB, "a second alternate remained");
+    h.app.winners.notify(wA.id, ops.id);
+    h.app.winners.notify(wB.id, ops.id);
+    // Ops acknowledged the alert the earlier winners-1 case raised. domain.alert
+    // de-duplicates by kind for an hour (src/services.mjs), so an alert raised
+    // per winner INSIDE the loop names only the FIRST of a batch and silently
+    // drops the rest — exactly when a whole pool expires together.
+    h.db.prepare(`update alerts set acknowledged_at=? where kind in ('winners.not_contacted','winners.expired') and acknowledged_at is null`).run(new Date().toISOString());
+    for (const w of [wA, wB]) {
+      h.db.prepare(`update outbound_messages set status='permanent_failure', error_code='131047', last_error='template paused' where idempotency_key like ?`).run(`winner:${w.id}:notify:%`);
+      h.db.prepare(`update winners set claim_expires_at='2000-01-01T00:00:00.000Z' where id=?`).run(w.id);
+    }
+    const before = h.db.prepare(`select count(*) n from alerts where kind='winners.not_contacted'`).get().n;
+    const r = h.app.winners.expireDue();
+    assert.equal(r.expired, 0);
+    assert.equal(r.notContacted, 2);
+    const raised = h.db.prepare(`select * from alerts where kind='winners.not_contacted' order by created_at desc, rowid desc`).all();
+    assert.equal(raised.length, before + 1, "one alert per run, not one per winner");
+    const detail = raised[0].detail_json || "";
+    assert.ok(detail.includes(wA.id), `the alert must name every skipped winner, got ${detail}`);
+    assert.ok(detail.includes(wB.id), `the alert must name every skipped winner, got ${detail}`);
+
+    // A row in retryable_failure with no policy code is in BACKOFF: the outbox
+    // dispatcher re-leases exactly those rows, so it is not proof the winner was
+    // never reached and must neither block the expiry nor raise a critical
+    // alarm. A policy hold (paused outbound) genuinely is parked until a human
+    // clears it, so that one still counts.
+    h.db.prepare(`update outbound_messages set status='retryable_failure', error_code='OUTBOUND_PAUSED', last_error='campaign outbound paused', next_attempt_at=? where idempotency_key like ?`).run(new Date(Date.now() + 60_000).toISOString(), `winner:${wA.id}:notify:%`);
+    h.db.prepare(`update outbound_messages set status='retryable_failure', error_code=null, last_error='provider 503', next_attempt_at=? where idempotency_key like ?`).run(new Date(Date.now() + 60_000).toISOString(), `winner:${wB.id}:notify:%`);
+    const r2 = h.app.winners.expireDue();
+    assert.equal(r2.expired, 1, "a notification merely in backoff must still expire on the deadline");
+    assert.equal(r2.notContacted, 1, "only the send held by policy counts as never contacted");
+    assert.equal(h.app.winners.get(wB.id).status, "expired");
+    assert.equal(h.app.winners.get(wA.id).status, "notified");
   });
 });

@@ -21,6 +21,12 @@ const LIST_STATES = ["OUTLET_RETAILER", "OUTLET_TOWN", "OUTLET_BRANCH", "OUTLET_
 /** An unclaimed (queue) support handoff is handed back to the bot after this. */
 const HANDOFF_QUEUE_TIMEOUT_MS = 12 * 3600_000;
 /**
+ * Queue-depth thresholds (descending). domain.alert() de-duplicates on `kind`
+ * for an hour, so the depth has to live in the kind for a deepening backlog to
+ * raise anything at all after the first requester.
+ */
+const QUEUE_DEPTH_ALERTS = [50, 25, 10, 5, 2];
+/**
  * Participant-supplied text is published (the winners list interpolates the
  * town and display name), so control characters are stripped at capture AND at
  * render: a town containing a newline forged an extra "winner" line in the
@@ -50,7 +56,21 @@ function parseWord(t) {
   // The winner message says "reply CLAIM … your claim reference is XXXX-XXXX";
   // both forms were answered "Sorry, I didn't understand that".
   if (["claim", "claim prize", "claim my prize"].includes(t)) return { intent: "CLAIM" };
-  if (/^[0-9a-f]{4}-?[0-9a-f]{4}$/.test(t)) return { intent: "CLAIM", claimRef: t.toUpperCase().replace(/^(.{4})(.{4})$/, "$1-$2") };
+  // The hyphen is REQUIRED: winner-service quotes the reference as NNNN-NNNN
+  // and always sends it hyphenated, while the unhyphenated form matched any 8
+  // hex characters — "12345678" (a receipt number, a date, a till number) was
+  // read as a claim reference, silently answering the main menu instead of
+  // "Sorry, I didn't understand that" and writing a winner.claim_rejected
+  // audit row for every such typo by an open winner.
+  if (/^[0-9a-f]{4}-[0-9a-f]{4}$/.test(t)) return { intent: "CLAIM", claimRef: t.toUpperCase() };
+  // The unhyphenated form is accepted only when it carries a hex LETTER.
+  // winner-service normalises "78B1BE72" happily, and a winner who retypes the
+  // reference without the hyphen should not be turned away; but "12345678" is
+  // far more likely a till or receipt number, and reading that as a claim
+  // answered the menu instead of "I didn't understand" and wrote a rejected-
+  // claim audit row for every such typo. The ~2% of references that are all
+  // digits must be typed with the hyphen the notification quotes.
+  if (/^[0-9a-f]{8}$/.test(t) && /[a-f]/.test(t)) return { intent: "CLAIM", claimRef: `${t.slice(0, 4)}-${t.slice(4)}`.toUpperCase() };
   if (["support", "agent", "human", "help me"].includes(t)) return { intent: "SUPPORT" };
   if (["yes", "y", "accept", "agree", "confirm", "ok"].includes(t)) return { intent: "YES" };
   if (["no", "n", "decline", "reject"].includes(t)) return { intent: "NO" };
@@ -65,6 +85,11 @@ function parseWord(t) {
   if (/^\d{1,2}$/.test(t)) return { intent: "NUMBER" };
   return { intent: null };
 }
+
+// Where a prize claim is answered. Excluded: the REG_* states, each of which is
+// capturing a specific answer ("claim" is a legitimate surname), and the
+// OUTLET_* pickers, where free text is a branch search.
+const CLAIM_STATES = new Set(["HOME", "SUPPORT", "ENTRY_RECEIPT", "WINNERS"]);
 
 export function createConversationService({ db, domain, receiptPipeline, winners = null, crm = null, now = nowIso, log = console }) {
   const activeCampaign = () => db.prepare(`select * from campaigns where status in ('active','paused','closed') order by case status when 'active' then 0 when 'paused' then 1 else 2 end, created_at desc limit 1`).get() || null;
@@ -111,15 +136,30 @@ export function createConversationService({ db, domain, receiptPipeline, winners
     // be retained in channel_events (currently the national ID at registration).
     let redactInbound = false;
     const reply = (st, msgs, extra = {}) => ({ replies: [].concat(msgs), state: st, campaignId: cid, redactInbound, ...extra });
-    const home = (prefix = null) => { save("HOME", { lastReceiptId: ctx.lastReceiptId }); return reply("HOME", prefix ? [prefix, menu(campaign)] : [menu(campaign)]); };
+    /**
+     * Long-lived HOME memory. lastOutletId is what lets the next photo be
+     * submitted straight away (homeImage); dropping it on the way back to HOME
+     * meant a greeting, MENU, BACK or CANCEL between two purchases sent the
+     * participant back through the outlet picker — the very detour
+     * conversation-1 was fixed to remove. It is step-independent state, so it
+     * survives navigation just like lastReceiptId.
+     */
+    const keep = (c = ctx) => ({ lastReceiptId: c.lastReceiptId, lastOutletId: c.lastOutletId });
+    const home = (prefix = null) => { save("HOME", keep()); return reply("HOME", prefix ? [prefix, menu(campaign)] : [menu(campaign)]); };
 
     // The winner message instructs "reply CLAIM"; it is answered before the
     // support gate so a winner whose conversation is parked in handoff can
     // still claim. claimTurn() returns null when there is nothing to claim and
     // the text only looked like a reference, so ordinary input is unaffected.
-    // A bare reference is only read as a claim where free text means nothing
-    // anyway, so it can never swallow an ID, a town or an outlet search.
-    if (intent === "CLAIM" && (!claimRef || state === "HOME" || state === "SUPPORT")) { const claimed = claimTurn(); if (claimed) return claimed; }
+    // The WORD is gated on the state exactly like the reference: `!claimRef`
+    // used to let the bare word "claim" be consumed in EVERY state, so a
+    // first-time registrant at REG_FIRST who typed it got "We could not match
+    // a prize claim…" and was left with no re-prompt for their name (same at
+    // REG_SURNAME/REG_IDENTITY/REG_LOCATION and inside an outlet search).
+    // The winner_contact message goes out through the outbox, so a winner's
+    // session can be parked anywhere when it lands. CLAIM is therefore answered
+    // in every state where free text carries no other meaning, not only HOME.
+    if (intent === "CLAIM" && CLAIM_STATES.has(state)) { const claimed = claimTurn(); if (claimed) return claimed; }
 
     // Opting out is a consent decision, so it is honoured even while a support
     // operator holds the conversation.
@@ -141,11 +181,18 @@ export function createConversationService({ db, domain, receiptPipeline, winners
     }
     if (intent === "SUPPORT") {
       save("SUPPORT", ctx, { handoffOwner: "queue", handoffSince: now() });
-      // alert() de-duplicates on `kind` for an hour, so the 2nd..Nth requester
-      // in that hour raises nothing at all; carrying the size of the queue in
-      // the message at least tells whoever reads it that others are waiting.
+      // alert() de-duplicates on `kind` alone for an hour and RETURNS the
+      // first open alert without touching its message, so the 2nd..Nth
+      // requester in that hour raised nothing at all and the one surviving
+      // alert still read "1 waiting" however deep the queue got. Putting the
+      // count in the message therefore fixed nothing. The backlog is carried
+      // in the KIND instead: crossing each threshold mints a distinct alert
+      // row that the hourly kind-dedup cannot swallow, so a growing queue of
+      // locked-out participants is visible to whoever reads alerts.
       const waiting = db.prepare(`select count(*) n from conversation_sessions where campaign_id=? and handoff_owner='queue'`).get(cid).n;
-      domain.alert({ kind: "support.handoff", severity: "info", message: `participant ${domain.maskPhone(pUid)} requested support (${waiting} conversation(s) waiting for an operator)`, runbook: "docs/runbooks/support-handoff.md" });
+      domain.alert({ kind: "support.handoff", severity: "info", message: `participant ${domain.maskPhone(pUid)} requested support`, runbook: "docs/runbooks/support-handoff.md" });
+      const threshold = QUEUE_DEPTH_ALERTS.find((t) => waiting >= t);
+      if (threshold) domain.alert({ kind: `support.queue_depth_${threshold}`, severity: threshold >= 10 ? "critical" : "warning", message: `${waiting} support conversations are waiting for an operator (backlog passed ${threshold}); automation is suspended for each of them until an operator claims or releases it`, detail: { waiting, threshold, campaignId: cid }, runbook: "docs/runbooks/support-handoff.md" });
       return reply("SUPPORT", [copy(cid, "support_handoff")]);
     }
 
@@ -161,11 +208,16 @@ export function createConversationService({ db, domain, receiptPipeline, winners
     // option 8 of any list (the 8th retailer, town, search result or published
     // week) used to answer the Help text and could never be chosen at all.
     // At HOME there is no list of this kind, so "8. Help" still works.
-    const listSize = state === "REG_CONFIRM" ? 4 : (LIST_STATES.includes(state) && Array.isArray(ctx.nav?.options) ? ctx.nav.options.length : 0);
+    // REG_CONFIRM's size comes from the SAME definition as the change-field map
+    // it is guarding (confirmFields), not a hard-coded 4: when the campaign
+    // version does not collect the national ID the confirmation only offers 3
+    // options, and the two drifting apart silently mis-routes the moment
+    // another numeric alias or confirm option is added.
+    const listSize = state === "REG_CONFIRM" ? Object.keys(confirmFields()).length : (LIST_STATES.includes(state) && Array.isArray(ctx.nav?.options) ? ctx.nav.options.length : 0);
     const picksListOption = number != null && number >= 1 && number <= listSize;
     if (intent === "MENU" && !picksListOption) return home();
     if (intent === "HELP" && !picksListOption) return reply(state, [copy(cid, "help")]);
-    if (intent === "CANCEL") { save("HOME", {}); return reply("HOME", [copy(cid, "cancel")]); }
+    if (intent === "CANCEL") { save("HOME", keep()); return reply("HOME", [copy(cid, "cancel")]); }
 
     try {
       switch (state) {
@@ -206,6 +258,18 @@ export function createConversationService({ db, domain, receiptPipeline, winners
       const prize = (() => { try { return JSON.parse(w.published_fields_json || "{}").prize || ""; } catch { return ""; } })();
       return reply(state, [copy(cid, "claim_ack", { first_name: participant.first_name, prize })]);
     }
+    /**
+     * A participant who is not 'active'. Only a WITHDRAWN profile was removed
+     * at the person's own request: telling someone staff suspended or blocked
+     * that "your details were removed at your request" is simply false and
+     * generates support contacts staff cannot explain, so any other non-active
+     * status gets a neutral hold message instead.
+     */
+    function inactiveReply() {
+      save("HOME", keep());
+      const key = participant?.status === "withdrawn" ? "registration_withdrawn" : "account_on_hold";
+      return reply("HOME", [copy(cid, key, { campaign: campaign.name })]);
+    }
     function optOut() {
       if (!participant || participant.status !== "active") { save("HOME", {}); return reply("HOME", [copy(cid, "opted_out_none", { campaign: campaign.name })]); }
       domain.withdrawParticipant(pUid, null, "participant replied STOP");
@@ -216,8 +280,8 @@ export function createConversationService({ db, domain, receiptPipeline, winners
     // ---------------------------------------------------------------- HOME
     function homeIntent() {
       if (intent === "REGISTER") {
-        if (participant && enrollment && !enrollment.withdrawn_at) { save("REG_FIRST", { reg: { firstName: participant.first_name, surname: participant.surname, location: participant.location, identityMasked: participant.identity_masked, update: true } }); return reply("REG_FIRST", [copy(cid, "already_registered", { first_name: participant.first_name, surname: participant.surname }), copy(cid, "ask_first_name")]); }
-        save("REG_FIRST", { reg: {} }); return reply("REG_FIRST", [copy(cid, "ask_first_name")]);
+        if (participant && enrollment && !enrollment.withdrawn_at) { save("REG_FIRST", { ...keep(), reg: { firstName: participant.first_name, surname: participant.surname, location: participant.location, identityMasked: participant.identity_masked, update: true } }); return reply("REG_FIRST", [copy(cid, "already_registered", { first_name: participant.first_name, surname: participant.surname }), copy(cid, "ask_first_name")]); }
+        save("REG_FIRST", { ...keep(), reg: {} }); return reply("REG_FIRST", [copy(cid, "ask_first_name")]);
       }
       if (intent === "ENTER") return startEntry();
       if (intent === "MECHANICS") return reply("HOME", [mechanics()]);
@@ -264,6 +328,8 @@ export function createConversationService({ db, domain, receiptPipeline, winners
 
     // ---------------------------------------------------------- registration
     function regFlags() { const f = domain.versionFlags(cid); return { identityStage: f.registration?.identity_stage || "registration" }; }
+    /** The numbered options the REG_CONFIRM screen is showing, in one place. */
+    function confirmFields() { return regFlags().identityStage === "registration" ? { 1: "REG_FIRST", 2: "REG_SURNAME", 3: "REG_IDENTITY", 4: "REG_LOCATION" } : { 1: "REG_FIRST", 2: "REG_SURNAME", 3: "REG_LOCATION" }; }
     function registration() {
       const reg = ctx.reg || {};
       const val = String(text || "").trim();
@@ -293,7 +359,7 @@ export function createConversationService({ db, domain, receiptPipeline, winners
         case "REG_LOCATION": { const v = cleanField(val, 80); if (v.length < 2) return reply(state, [copy(cid, "ask_retry_short")]); reg.location = v; return confirmAfter(reg); }
         case "REG_CONFIRM": {
           if (intent === "YES") return ask("REG_TERMS");
-          const fields = collectsIdentity ? { 1: "REG_FIRST", 2: "REG_SURNAME", 3: "REG_IDENTITY", 4: "REG_LOCATION" } : { 1: "REG_FIRST", 2: "REG_SURNAME", 3: "REG_LOCATION" };
+          const fields = confirmFields();
           const field = number != null ? fields[number] : null;
           if (field) { reg.returnTo = "REG_CONFIRM"; return ask(field); }
           return ask("REG_CONFIRM");
@@ -306,7 +372,7 @@ export function createConversationService({ db, domain, receiptPipeline, winners
           // dead-lettered, the session stayed at REG_TERMS and the person could
           // never come back. Restoring a withdrawal is a staff decision, so say
           // so instead of silently re-activating from the participant channel.
-          if (participant && participant.status !== "active") { save("HOME", {}); return reply("HOME", [copy(cid, "registration_withdrawn", { campaign: campaign.name })]); }
+          if (participant && participant.status !== "active") return inactiveReply();
           const c = domain.versionContent(cid); const v = domain.getActiveVersion(cid);
           const res = domain.registerParticipant({ phoneUid: pUid, firstName: reg.firstName || participant?.first_name, surname: reg.surname ?? participant?.surname, identity: reg.identity || null, location: reg.location || participant?.location, campaignId: cid, campaignVersionId: v?.id, termsVersion: c.terms_version || `V${v?.version_no || 1}`, privacyVersion: c.privacy_version || `V${v?.version_no || 1}`, marketingConsent: false });
           const p = res.participant;
@@ -326,7 +392,7 @@ export function createConversationService({ db, domain, receiptPipeline, winners
           }
           crm?.emit({ entityType: "participant", entityId: p.id, entityVersion: p.row_version || 1, payload: { firstName: p.first_name, surname: p.surname, phone: domain.maskPhone(p.wa_phone_uid), location: p.location, status: p.status }, correlationId });
           if (res.enrollment) crm?.emit({ entityType: "enrollment", entityId: p.id + ":" + cid, entityVersion: 1, payload: { participantId: p.id, campaignCode: campaign.code, termsVersion: res.enrollment.terms_version, privacyVersion: res.enrollment.privacy_version, marketingConsent: !!res.enrollment.marketing_consent, enrolledAt: res.enrollment.enrolled_at }, correlationId });
-          save("HOME", { lastReceiptId: ctx.lastReceiptId }, { participantId: p.id });
+          save("HOME", keep(), { participantId: p.id });
           return reply("HOME", [copy(cid, "registered", { first_name: p.first_name }), menu(campaign)], { participantId: p.id });
         }
         default: return home();
@@ -343,8 +409,8 @@ export function createConversationService({ db, domain, receiptPipeline, winners
       // into the terms flow only ends in registerParticipant throwing out of
       // the turn (no reply, event dead-lettered) — and re-consent after a
       // withdrawal must be a deliberate, staff-recorded act.
-      if (participant.status !== "active") { save("HOME", {}); return reply("HOME", [copy(cid, "registration_withdrawn", { campaign: campaign.name })]); }
-      if (!enrollment || enrollment.withdrawn_at) { save("REG_TERMS", { reg: { firstName: participant.first_name, surname: participant.surname, location: participant.location } }); return reply("REG_TERMS", [copy(cid, "ask_terms", regVars({}))]); }
+      if (participant.status !== "active") return inactiveReply();
+      if (!enrollment || enrollment.withdrawn_at) { save("REG_TERMS", { ...keep(), reg: { firstName: participant.first_name, surname: participant.surname, location: participant.location } }); return reply("REG_TERMS", [copy(cid, "ask_terms", regVars({}))]); }
       if (campaign.status === "paused" || pause.intake) return reply("HOME", [copy(cid, "campaign_paused")]);
       return showRetailers(0);
     }

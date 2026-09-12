@@ -145,7 +145,14 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { c
     newVersionFrom(campaignId, patch = {}, actorId) {
       const v = getActiveVersion.get(campaignId) || listVersions.all(campaignId).at(-1);
       const base = v ? { content: JSON.parse(v.content_json || "{}"), rules: JSON.parse(v.rules_json || "{}"), flags: JSON.parse(v.flags_json || "{}") } : { content: {}, rules: {}, flags: {} };
-      return domain.createVersion(campaignId, { content: { ...base.content, ...(patch.content || {}) }, rules: { ...base.rules, ...(patch.rules || {}) }, flags: { ...base.flags, ...(patch.flags || {}) } }, actorId);
+      // The nested rule objects are merged, not replaced. A shallow spread put
+      // the patch's `primary_rule` over the LIVE one whole, and defaultRules()
+      // then filled the missing siblings from the platform DEFAULTS, not from
+      // the campaign: editing only min_packs on a campaign configured with
+      // pack_grams 1000 silently reverted it to 2000 and every 1kg receipt
+      // stopped qualifying. (defaultRules deep-merges the same way, but it only
+      // ever sees the already-flattened patch.)
+      return domain.createVersion(campaignId, { content: mergeOneLevel(base.content, patch.content), rules: mergeOneLevel(base.rules, patch.rules), flags: mergeOneLevel(base.flags, patch.flags) }, actorId);
     },
     getVersion: (vid) => getVersion.get(vid),
     listVersions: (cid) => listVersions.all(cid),
@@ -228,12 +235,32 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { c
     },
     setCampaignOutlets(campaignId, outletIds, actorId, { collectionByOutlet = {} } = {}) {
       return tx(db, () => {
+        // Carry each surviving member's MEMBERSHIP WINDOW forward. The replace
+        // used to re-insert only (campaign, outlet, collection_enabled), so
+        // every remaining outlet's active_from/active_to silently fell back to
+        // the schema defaults 1970-01-01/9999-12-31 — the very columns
+        // winner-service.assertCollectionPoint reads to refuse a prize
+        // collection at a branch outside its campaign window.
+        const prev = new Map(db.prepare(`select outlet_id, active_from, active_to from campaign_outlets where campaign_id=?`).all(campaignId).map((r) => [r.outlet_id, r]));
         db.prepare(`delete from campaign_outlets where campaign_id=?`).run(campaignId);
-        const ins = db.prepare(`insert into campaign_outlets (campaign_id, outlet_id, collection_enabled) values (?,?,?)`);
-        for (const oid of outletIds) ins.run(campaignId, oid, Number(collectionByOutlet[oid] ?? getOutlet.get(oid)?.collection_enabled ?? 1));
+        const ins = db.prepare(`insert into campaign_outlets (campaign_id, outlet_id, collection_enabled, active_from, active_to) values (?,?,?,?,?)`);
+        for (const oid of outletIds) ins.run(campaignId, oid, Number(collectionByOutlet[oid] ?? getOutlet.get(oid)?.collection_enabled ?? 1), prev.get(oid)?.active_from || "1970-01-01", prev.get(oid)?.active_to || "9999-12-31");
         A({ actorType: "admin", actorId, action: "campaign.outlets.set", targetType: "campaign", targetId: campaignId, payload: { count: outletIds.length } });
         return outletIds.length;
       });
+    },
+    /**
+     * Remove ONE outlet from a campaign. The console had only the full-replace
+     * PUT above to shrink membership, and the list it builds that call from is
+     * filtered to active master records, so removing one closed branch also
+     * deleted every member whose master row was inactive (invisible to the
+     * operator) and reset the windows of all the rest. A targeted delete
+     * removes exactly the row asked for and touches nothing else.
+     */
+    removeCampaignOutlet(campaignId, outletId, actorId) {
+      const r = db.prepare(`delete from campaign_outlets where campaign_id=? and outlet_id=?`).run(campaignId, outletId);
+      if (r.changes) A({ actorType: "admin", actorId, action: "campaign.outlets.remove", targetType: "campaign", targetId: campaignId, payload: { outletId } });
+      return r.changes > 0;
     },
     /** Validated CSV import (all-or-nothing). Returns { ok, rows, errors } and imports only when errors are empty and !dryRun. */
     importOutletsCsv(campaignId, csvText, { dryRun = true, actorId = "system" } = {}) {
@@ -374,15 +401,19 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { c
       // person's real MSISDN (and, for an abandoned registration, their
       // plaintext national ID in the session context) stayed in
       // channel_events / conversation_sessions / outbound_messages and was
-      // still served by the conversation and transcript views. A published
-      // winner's name is a separate problem: it is served by the UNAUTHENTICATED
-      // /api/winners/public and it belongs to a published draw result, which is
-      // not this service's to rewrite. Withdrawing a publication is an audited
-      // winner_ops action, so erasure refuses until that has happened rather
-      // than silently leaving the name up or silently altering the result.
-      const published = db.prepare(`select id from winners where participant_id=? and publication_state='published'`).all(pid);
-      if (published.length) throw Object.assign(new Error(`participant is a published winner (${published.map((w) => w.id).join(", ")}): withdraw the publication first, then erase`), { code: "CONFLICT" });
-      const scrubbed = { channelEvents: 0, sessions: 0, outbound: 0, outboundDeleted: 0, winnerNames: 0 };
+      // still served by the conversation and transcript views.
+      //
+      // A published winner is NOT refused here. An earlier revision threw
+      // CONFLICT ("withdraw the publication first") on the grounds that the
+      // frozen winners.display_name was served by the unauthenticated
+      // /api/winners/public. winner-service.listPublic now derives the name from
+      // the LIVE participant status and reports "[removed]" for anyone who is
+      // not 'active', so the refusal bought no privacy at all and instead made a
+      // lawful erasure request hard-fail (409) until an operator rewrote a
+      // published draw result. Erasure completes; the name leaves the public
+      // list because the participant is no longer active, and display_name is
+      // cleared below so the frozen copy does not survive either.
+      const scrubbed = { channelEvents: 0, sessions: 0, outbound: 0, outboundDeleted: 0, winnerNames: 0, inboundCancelled: 0 };
       tx(db, () => {
         db.prepare(`update participants set first_name='[deleted]', surname='', identity_enc=null, identity_masked=null, identity_hash=null, identity_fp=null, location=null, status='deleted', wa_phone_uid=?, updated_at=?, row_version=row_version+1 where id=?`).run(`deleted:${pid}`, now(), pid);
         db.prepare(`update campaign_enrollments set withdrawn_at=coalesce(withdrawn_at, ?) where participant_id=?`).run(now(), pid);
@@ -391,6 +422,13 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { c
         db.prepare(`update consents set withdrawn_at=coalesce(withdrawn_at, ?) where participant_id=?`).run(now(), pid);
         // Inbound ledger: keep the row (provider idempotency, counts) but drop
         // the number and the message body it carried.
+        // Anything still in the queue must be cancelled FIRST. Re-keying alone
+        // left 'received'/'processing'/'failed' rows visible to intake.nextEvent,
+        // which then ran conversation.handle with phoneUid='deleted:<pid>' and
+        // text='[erased]' and enqueued a fresh main-menu reply to that dead
+        // address — a guaranteed provider failure that retries and trips the
+        // outbound.failures alert. 'ignored' is a terminal channel_events status.
+        scrubbed.inboundCancelled = db.prepare(`update channel_events set status='ignored', lease_until=null, processed_at=coalesce(processed_at, ?), error='cancelled: participant erased' where wa_phone_uid=? and status in ('received','processing','failed')`).run(now(), phone).changes;
         const updEvent = db.prepare(`update channel_events set wa_phone_uid=?, payload_json=? where id=?`);
         for (const e of db.prepare(`select id, payload_json from channel_events where wa_phone_uid=?`).all(phone)) {
           let body = {}; try { body = JSON.parse(e.payload_json) || {}; } catch { body = {}; }
@@ -406,7 +444,16 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { c
         // Anything already sent stays as delivery history, minus the number and
         // the body. Statuses are left alone so an erasure does not masquerade as
         // an outbound-failure incident (worker.mjs alerts on failed messages).
-        scrubbed.outboundDeleted = db.prepare(`delete from outbound_messages where wa_phone_uid=? and sent_at is null and status in ('pending','retryable_failure')`).run(phone).changes;
+        // The status list used to be ('pending','retryable_failure'), which left
+        // 'sending' rows behind: outbox.next re-picks a 'sending' row once its
+        // 60s lease expires, so the worker still dispatched to 'deleted:<pid>'.
+        // 'permanent_failure'/'unknown_outcome' rows are operator-requeueable
+        // (outbox.retry) and had the same problem. sent_at is null is the honest
+        // test: a message that never left has no delivery history to preserve.
+        scrubbed.outboundDeleted = db.prepare(`delete from outbound_messages where wa_phone_uid=? and sent_at is null`).run(phone).changes;
+        // Anything still here was actually delivered; make sure nothing can
+        // re-lease it after the recipient column is rewritten.
+        db.prepare(`update outbound_messages set lease_until=null, next_attempt_at=null where wa_phone_uid=?`).run(phone);
         const updOut = db.prepare(`update outbound_messages set wa_phone_uid=?, payload_json=? where id=?`);
         for (const m of db.prepare(`select id from outbound_messages where wa_phone_uid=?`).all(phone)) {
           updOut.run(`deleted:${pid}`, JSON.stringify({ body: "[erased]", erased: true }), m.id);
@@ -420,9 +467,30 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { c
     /** Controlled phone change: only by staff, audited, never merges two existing participants. */
     changePhone(pid, newPhone, actorId, reason) {
       const np = normalizePhone(newPhone); if (!np) throw new Error("invalid phone");
+      const p = getParticipant.get(pid); if (!p) throw new Error("participant not found");
       if (getParticipantByPhone.get(np)) throw new Error("another participant already uses that number");
-      db.prepare(`update participants set wa_phone_uid=?, updated_at=?, row_version=row_version+1 where id=?`).run(np, now(), pid);
-      A({ actorType: "admin", actorId, action: "participant.phone_change", targetType: "participant", targetId: pid, reason, payload: { to: maskPhone(np) } });
+      const old = p.wa_phone_uid;
+      // The channel tables are keyed by the MSISDN, not by participant_id, and
+      // only participants.wa_phone_uid used to move. Everything written before a
+      // correction therefore stayed keyed to the OLD number: it fell out of the
+      // support transcript, and — the reason this matters — anonymiseParticipant
+      // scrubs by the CURRENT number, so a later erasure left the old MSISDN,
+      // the conversation session (which can hold a plaintext national ID) and
+      // the full inbound/outbound message text in the database while returning
+      // 200. Move the history with the person, in the same transaction.
+      const moved = { channelEvents: 0, sessions: 0, outbound: 0, sessionsDropped: 0 };
+      tx(db, () => {
+        db.prepare(`update participants set wa_phone_uid=?, updated_at=?, row_version=row_version+1 where id=?`).run(np, now(), pid);
+        moved.channelEvents = db.prepare(`update channel_events set wa_phone_uid=? where wa_phone_uid=?`).run(np, old).changes;
+        moved.outbound = db.prepare(`update outbound_messages set wa_phone_uid=? where wa_phone_uid=?`).run(np, old).changes;
+        // conversation_sessions is unique (campaign_id, wa_phone_uid). If the
+        // new number already has a session of its own it is the live one, so the
+        // superseded session on the old number is dropped rather than failing
+        // the correction on a constraint violation.
+        moved.sessionsDropped = db.prepare(`delete from conversation_sessions where wa_phone_uid=? and campaign_id in (select campaign_id from conversation_sessions where wa_phone_uid=?)`).run(old, np).changes;
+        moved.sessions = db.prepare(`update conversation_sessions set wa_phone_uid=? where wa_phone_uid=?`).run(np, old).changes;
+        A({ actorType: "admin", actorId, action: "participant.phone_change", targetType: "participant", targetId: pid, reason, payload: { from: maskPhone(old), to: maskPhone(np), moved } });
+      });
       return getParticipant.get(pid);
     },
     searchParticipants({ q = "", campaignId = null, limit = 50, offset = 0 } = {}) {
@@ -487,15 +555,58 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { c
       if (facts || scrubbed) A({ actorType: "system", actorId: "retention", action: "retention.scrubbed", targetType: "settings", targetId: "retention", payload: { factsDays: Number(factsDays), validationRows: facts, channelEvents: scrubbed, cutoff } });
       return { validationRows: facts, channelEvents: scrubbed, cutoff };
     },
-    alert({ kind, severity = "warning", message, detail = null, runbook = null }) {
-      const open = db.prepare(`select id from alerts where kind=? and acknowledged_at is null and created_at > ?`).get(kind, new Date(Date.now() - 3600_000).toISOString());
-      if (open) return open.id; // de-duplicate within an hour
+    /**
+     * Raise an operator alert, de-duplicated within an hour.
+     *
+     * De-duplication used to key on `kind` ALONE and returned the matched row
+     * untouched, so every remedy of the form "raise an alert so an operator
+     * acts" covered only the FIRST entity of the hour: nine of ten winners
+     * whose notification failed, the 2nd..Nth dead-lettered event, the second
+     * stuck receipt, all raised nothing at all, and the one surviving row still
+     * carried the first message (a backlog alert read "1 waiting" however deep
+     * the queue got). Two changes, both needed:
+     *   - `dedupeKey` — callers naming a specific entity (winner, event, job,
+     *     receipt, draw) pass one so each entity gets its own row; callers that
+     *     genuinely want one-per-hour (backlog warnings the worker re-evaluates
+     *     every minute) omit it and keep the old behaviour;
+     *   - the matched row is REFRESHED with the newest message/detail/severity
+     *     and an occurrence count, so a suppressed repeat still updates the
+     *     information an operator reads instead of discarding it.
+     * The key is carried in detail_json (`_dedupe`) rather than a new column so
+     * this needs no migration; nothing renders detail_json for alerts.
+     */
+    alert({ kind, severity = "warning", message, detail = null, runbook = null, dedupeKey = null }) {
+      const key = String(dedupeKey || kind);
+      const since = new Date(Date.now() - 3600_000).toISOString();
+      const open = db.prepare(`select id, detail_json, severity from alerts where kind=? and acknowledged_at is null and created_at > ? order by created_at desc`).all(kind, since)
+        .find((r) => { try { return String(JSON.parse(r.detail_json || "{}")?._dedupe ?? kind) === key; } catch { return kind === key; } });
+      const body = (occurrences) => JSON.stringify({ ...(detail || {}), _dedupe: key, ...(occurrences > 1 ? { _occurrences: occurrences } : {}) });
+      if (open) {
+        let n = 1; try { n = Number(JSON.parse(open.detail_json || "{}")?._occurrences || 1); } catch { /* unparsable detail */ }
+        const SEV = { info: 0, warning: 1, critical: 2 };
+        const worst = (SEV[severity] ?? 1) >= (SEV[open.severity] ?? 1) ? severity : open.severity;
+        db.prepare(`update alerts set message=?, detail_json=?, severity=?, runbook=coalesce(?, runbook) where id=?`).run(message, body(n + 1), worst, runbook, open.id);
+        return open.id;
+      }
       const aid = id("alr");
-      db.prepare(`insert into alerts (id, kind, severity, message, detail_json, runbook, created_at) values (?,?,?,?,?,?,?)`).run(aid, kind, severity, message, detail ? JSON.stringify(detail) : null, runbook, now());
+      db.prepare(`insert into alerts (id, kind, severity, message, detail_json, runbook, created_at) values (?,?,?,?,?,?,?)`).run(aid, kind, severity, message, body(1), runbook, now());
       return aid;
     },
   };
   return domain;
+}
+
+/**
+ * One-level-deep object merge used for campaign version patches: the patch wins
+ * key by key, but a nested plain object (primary_rule, caps, outlet_match, ...)
+ * is merged into its base rather than replacing it. Same rule defaultRules()
+ * applies to its own defaults.
+ */
+function mergeOneLevel(base = {}, patch = {}) {
+  const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const out = { ...(base || {}), ...(patch || {}) };
+  for (const k of Object.keys(patch || {})) if (isObj(base?.[k]) && isObj(patch[k])) out[k] = { ...base[k], ...patch[k] };
+  return out;
 }
 
 /** Minimal RFC-4180-ish CSV parser (quoted fields, commas, CRLF). Formula-injection is neutralised on export, not import. */

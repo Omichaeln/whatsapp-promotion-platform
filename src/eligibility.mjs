@@ -9,6 +9,8 @@
  * Precedence: any fail -> NOT_QUALIFIED (document/quality failures ->
  * REUPLOAD_REQUIRED); else any unknown -> REVIEW_REQUIRED; else QUALIFIED.
  */
+import { packGramsFrom } from "./extract/parse-receipt.mjs";
+
 export const REASONS = {
   OK: "ok",
   NOT_RECEIPT: "not_a_valid_receipt",
@@ -69,10 +71,9 @@ const productKeys = (p) => [p.code, p.name, ...(p.aliases || [])].map(norm).filt
  * The MOST SPECIFIC (longest) matching key wins, not the first product in the
  * list: "GOLDCANE BROWN SUGAR 1KG" used to match the 2kg SKU's generic alias
  * "goldcane brown sugar" purely because that product is listed first.
- * `packAmbiguous` says the matched key cannot settle the pack size on its own —
- * another catalogue product with a different pack_grams answers to a key that
- * contains it — so a description that prints no pack size must not be credited
- * with the qualifying pack (see the fallback in evaluateEligibility).
+ * `packAmbiguous` says the matched key cannot settle the pack size on its own,
+ * so a description that prints no pack size must not be credited with the
+ * qualifying pack (see the fallback in evaluateEligibility).
  */
 export function matchProduct(line, products, catalogue = products) {
   const desc = norm(line.description);
@@ -84,11 +85,24 @@ export function matchProduct(line, products, catalogue = products) {
     }
   }
   if (!best) return null;
-  const packAmbiguous = (catalogue || []).some((p) => {
+  // The key itself must settle the pack size. Deciding this by asking whether
+  // ANOTHER catalogue key lexically CONTAINS the matched one missed the common
+  // shape: the seeded 2kg SKU also answers to the generic alias "gc brown
+  // sugar", which states no size and is a substring of nothing, so a truncated
+  // till line "GC BROWN SUGAR" + "4 x 1.60" borrowed the 2kg catalogue pack and
+  // credited four 1kg packs as the qualifying purchase (D-06). A key that names
+  // no pack size is therefore ambiguous whenever the catalogue sells more than
+  // one pack size; a catalogue with a single pack size stays decidable, so a
+  // one-size campaign does not send every truncated line to review.
+  const packSizes = new Set((catalogue || []).map((p) => Number(p.pack_grams)).filter((g) => Number.isFinite(g) && g > 0));
+  const keySaysPack = packGramsFrom(best.basis) != null;
+  // ...and a key another SKU with a different pack size also answers to cannot
+  // settle it either, whatever size the key itself states.
+  const sharedAcrossSizes = (catalogue || []).some((p) => {
     const g = Number(p.pack_grams) || null;
     return g && g !== best.packGrams && productKeys(p).some((k) => k.includes(best.basis));
   });
-  return { ...best, packAmbiguous };
+  return { ...best, packAmbiguous: sharedAcrossSizes || (!keySaysPack && packSizes.size > 1) };
 }
 
 export function evaluateEligibility(extraction, rulesIn = {}, context = {}) {

@@ -12,12 +12,17 @@
 //                                                  [--backup-dir DIR] [--keep N]
 import fs from "node:fs";
 import path from "node:path";
-import { loadConfig, ROOT } from "../src/config.mjs";
+import { loadConfig, loadEnvFile, ROOT } from "../src/config.mjs";
 import { openDb } from "../src/db.mjs";
 import { createAudit } from "../src/audit.mjs";
 import { createDrawService } from "../src/draw.mjs";
 import { createDomain } from "../src/services.mjs";
 
+// npm's `restore:rehearsal` script does not pass --env-file-if-exists, so
+// without this the rehearsal backed up the DEFAULT database while the service
+// ran the one named in .env - and BACKUP_DIR/BACKUP_KEEP placed in that file
+// were silently ignored.
+loadEnvFile();
 const cfg = loadConfig();
 const args = process.argv.slice(2); const arg = (name, dflt = null) => { const i = args.indexOf(name); return i >= 0 && args[i + 1] ? args[i + 1] : dflt; };
 const outFile = arg("--out");
@@ -62,8 +67,18 @@ report.restore = { dir: restoreDir, ms: Date.now() - t0 };
   // rm the whole directory: openDb runs in WAL mode, so promotions.db-wal and
   // -shm sit beside the copy and were left behind with it.
   fs.rmSync(restoreDir, { recursive: true, force: true });
-  try { fs.rmdirSync(path.join(baseDir, "restore-test")); } catch { /* other runs still there */ }
-  report.restore = { ...(report.restore || {}), dir: restoreDir, removed: true };
+  // Earlier runs left their own stamp directories behind - full unencrypted
+  // copies of every name, phone, conversation log and receipt image, invisible
+  // to anonymisation, media purge and retention, kept until someone deleted
+  // them by hand (the audit found two, 42 MB). A restore copy is never worth
+  // keeping, so sweep the whole tree, not just this run's directory.
+  const staleRoot = path.join(baseDir, "restore-test");
+  const prunedStale = [];
+  try {
+    for (const d of fs.readdirSync(staleRoot, { withFileTypes: true })) { fs.rmSync(path.join(staleRoot, d.name), { recursive: true, force: true }); prunedStale.push(d.name); }
+    fs.rmdirSync(staleRoot);
+  } catch (e) { if (e.code !== "ENOENT") report.restore = { ...(report.restore || {}), pruneStaleError: e.message }; }
+  report.restore = { ...(report.restore || {}), dir: restoreDir, removed: true, prunedStale };
 }
 // Prune old backups: rehearsal copies carry the same erasure obligations as
 // the live database, and nothing else ever deletes them.

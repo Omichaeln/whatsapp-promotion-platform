@@ -27,6 +27,54 @@ import { registerAdminRoutes } from "./routes/admin.mjs";
 import { registerDeskRoutes } from "./routes/desk.mjs";
 
 /**
+ * Bounded sliding-window attempt counter for the credential endpoints.
+ *
+ * Exported (and clock-injectable) so the bound itself is testable: the previous
+ * inline version only deleted keys whose window had already drained, and ran
+ * that O(n) scan on EVERY hit once over the cap. Inside one 60s window nothing
+ * is expirable and the email is part of the key, so a rotating-email flood both
+ * grew the map far past the cap (30k logins -> 60k entries) and re-scanned the
+ * whole map twice per request (1.7bn entry visits, 33s of CPU) — a new cost
+ * under exactly the attack the bound exists to absorb.
+ *
+ * `hit` reports one attempt against two thresholds so a caller can keep a tight
+ * soft brake while still bounding expensive work with a higher hard ceiling.
+ */
+export function createAttemptThrottle({ windowMs = 60_000, maxKeys = 10_000, now = Date.now } = {}) {
+  const attempts = new Map();
+  const lowWater = Math.max(1, Math.floor(maxKeys * 0.8));
+  const sweep = (t) => {
+    if (attempts.size <= maxKeys) return;
+    for (const [k, v] of attempts) if (t - (v[v.length - 1] || 0) >= windowMs) attempts.delete(k);
+    // Expiry alone cannot bound a flood of fresh keys (inside one window nothing
+    // is expirable), so evict the least-recently-touched ones: a key under
+    // active attack has the newest touch and survives, which is the one that
+    // must keep counting. Always down to the low-water mark, never merely to the
+    // cap — trimming one key per insertion would put this scan on every request,
+    // which is the quadratic path the previous bound had.
+    if (attempts.size > lowWater) {
+      const byAge = [...attempts].sort((a, b) => (a[1][a[1].length - 1] || 0) - (b[1][b[1].length - 1] || 0));
+      for (let i = 0, drop = byAge.length - lowWater; i < drop; i++) attempts.delete(byAge[i][0]);
+    }
+  };
+  return {
+    /** Record one attempt on `key`; returns retry-after seconds for each threshold (0 = under it). */
+    hit(key, soft, hard = soft) {
+      const t = now();
+      sweep(t);
+      const arr = (attempts.get(key) || []).filter((x) => t - x < windowMs);
+      const n = arr.length;                       // attempts already inside the window
+      if (n < hard) arr.push(t);                  // stop accumulating at the ceiling: one key's array is bounded too
+      attempts.set(key, arr);
+      const after = (limit) => (n >= limit ? Math.max(1, Math.ceil((arr[0] + windowMs - t) / 1000)) : 0);
+      return { soft: after(soft), hard: after(hard) };
+    },
+    forget(...keys) { for (const k of keys) attempts.delete(k); },
+    size: () => attempts.size,
+  };
+}
+
+/**
  * HTTP surface + wiring (spec §6 modules). Webhook intake is durable-then-ack;
  * processing runs in the worker. All /api routes go through the router with
  * server-side role checks; the console build is served statically.
@@ -116,22 +164,32 @@ export async function createServer({ config, log = console, transport: transport
     const hops = String(req.headers["x-forwarded-for"] || "").split(",").map((s) => s.trim()).filter(Boolean);
     return hops.length >= TRUSTED_PROXY_HOPS ? hops[hops.length - TRUSTED_PROXY_HOPS] : socket;
   };
-  const attempts = new Map(); const RATE_WINDOW_MS = 60_000, RATE_MAX = 5, ATTEMPT_KEYS_MAX = 10_000;
-  const hit = (key, max) => {
-    const t = Date.now();
-    // Bounded: a flood of distinct keys must never grow this map without limit.
-    if (attempts.size > ATTEMPT_KEYS_MAX) for (const [k, v] of attempts) if (t - v[v.length - 1] >= RATE_WINDOW_MS) attempts.delete(k);
-    const arr = (attempts.get(key) || []).filter((x) => t - x < RATE_WINDOW_MS);
-    if (arr.length >= max) { attempts.set(key, arr); return Math.max(1, Math.ceil((arr[0] + RATE_WINDOW_MS - t) / 1000)); }
-    arr.push(t); attempts.set(key, arr); return 0;
-  };
-  const forget = (...keys) => { for (const k of keys) attempts.delete(k); };
+  const RATE_WINDOW_MS = 60_000, RATE_MAX = 5, ATTEMPT_KEYS_MAX = 10_000;
+  const throttle = createAttemptThrottle({ windowMs: RATE_WINDOW_MS, maxKeys: ATTEMPT_KEYS_MAX });
+  const hit = (key, max) => throttle.hit(key, max).soft;
+  const forget = (...keys) => throttle.forget(...keys);
   const acct = (v) => String(v || "").toLowerCase().trim().slice(0, 120);
   // Two brakes: source+account (the source can no longer be spoofed) and account
   // alone, so credential stuffing against one login from many addresses is
-  // throttled as well.
+  // throttled as well. Each is read at two thresholds:
+  //   soft — a WRONG password answers 429 instead of 401;
+  //   hard — a ceiling on how much scrypt (~40ms of blocked event loop per
+  //          verification) one key can buy; beyond it nothing is verified.
+  // Only the soft brake used to exist, and it was checked *before* auth.login:
+  // behind a proxy every caller shares one source address, so five wrong
+  // passwords a minute against a known staff email held the real account holder
+  // out of the console for as long as the attacker cared to keep it up. A
+  // correct credential is now still verified between the two thresholds and
+  // clears both brakes; the account ceiling stays well above the per-source one
+  // so a single flooding source cannot spend the account's whole budget.
+  const LOGIN_LIMITS = { source: { soft: RATE_MAX, hard: 20 }, account: { soft: RATE_MAX * 2, hard: 60 } };
   const loginKeys = (req, email) => [`login:${clientIp(req)}|${acct(email)}`, `login:acct:${acct(email)}`];
-  const rateLimited = (req, email) => { const [ipKey, acctKey] = loginKeys(req, email); return hit(ipKey, RATE_MAX) || hit(acctKey, RATE_MAX * 2); };
+  const loginGate = (req, email) => {
+    const keys = loginKeys(req, email);
+    const src = throttle.hit(keys[0], LOGIN_LIMITS.source.soft, LOGIN_LIMITS.source.hard);
+    const ac = throttle.hit(keys[1], LOGIN_LIMITS.account.soft, LOGIN_LIMITS.account.hard);
+    return { keys, hard: src.hard || ac.hard, soft: src.soft || ac.soft };
+  };
 
   async function metricsPayload() {
     const receipts = db.prepare(`select status, count(*) n from receipts group by status`).all().reduce((a, r) => { a[r.status] = r.n; return a; }, {});
@@ -143,15 +201,24 @@ export async function createServer({ config, log = console, transport: transport
   // ---- router -------------------------------------------------------------------------
   const router = createRouter({ auth, log: { error: log.error?.bind(log), info: cfg.logLevel === "debug" ? log.log?.bind(log) : null } });
   const S = { db, domain, auth, pipeline, drawService, winners, crm, outbox, intake, mediaStore, extractor, transport, conversation, cfg, worker, mediaSecret, desk, ai, usage, activity, metricsPayload };
-  router.add("POST", "/api/login", { roles: "public", tag: "auth", rateLimited: true, body: { type: "object", required: ["email", "password"] } }, async ({ req, body }) => {
+  // The document must not advertise a check the server does not make: a missing
+  // email or password answers 401 INVALID_CREDENTIALS deliberately (telling an
+  // unauthenticated caller which half of the credential was malformed is a free
+  // hint), so the fields are described but `required` — which dispatch never
+  // enforces — is no longer published as if it were.
+  router.add("POST", "/api/login", { roles: "public", tag: "auth", rateLimited: true, body: { type: "object", description: "email and password are expected; a missing, unknown or wrong value answers 401 INVALID_CREDENTIALS, never 400", properties: { email: { type: "string" }, password: { type: "string" }, remember: { type: "boolean" } } } }, async ({ req, body }) => {
     const b = await body();
-    // The throttle must stay ahead of auth.login: scrypt verification blocks the
-    // event loop for tens of milliseconds, so an unthrottled guessing flood also
-    // starves every other request on the process.
-    const retry = rateLimited(req, b.email); if (retry) throw E.tooMany(retry);
+    const gate = loginGate(req, b.email);
+    // The hard ceiling stays ahead of auth.login: scrypt verification blocks the
+    // event loop for ~40ms, so a guessing flood must not buy unbounded CPU.
+    if (gate.hard) throw E.tooMany(gate.hard);
+    // Between the two thresholds the credential is still checked, so the brake
+    // throttles guessing without becoming a lockout an outsider can hold on a
+    // named account for 5 requests a minute. A correct password clears it.
     const s = auth.login({ email: b.email, password: b.password, remember: !!b.remember });
-    if (s?.pendingMfa) return { pendingMfa: true, userId: s.userId, message: s.message };
-    if (s) { forget(...loginKeys(req, b.email)); domain.audit({ actorType: "admin", actorId: s.user.id, action: "staff.login", targetType: "admin_user", targetId: s.user.id }); return { token: s.token, user: { id: s.user.id, name: s.user.name, email: s.user.email, roles: JSON.parse(s.user.roles), mustChangePassword: !!s.user.must_change_password } }; }
+    if (s?.pendingMfa) { forget(...gate.keys); return { pendingMfa: true, userId: s.userId, message: s.message }; }
+    if (s) { forget(...gate.keys); domain.audit({ actorType: "admin", actorId: s.user.id, action: "staff.login", targetType: "admin_user", targetId: s.user.id }); return { token: s.token, user: { id: s.user.id, name: s.user.name, email: s.user.email, roles: JSON.parse(s.user.roles), mustChangePassword: !!s.user.must_change_password } }; }
+    if (gate.soft) throw E.tooMany(gate.soft);
     throw new HttpError(401, "INVALID_CREDENTIALS", "invalid credentials");
   });
   router.add("POST", "/api/login/mfa", { roles: "public", tag: "auth", rateLimited: true }, async ({ req, body }) => {

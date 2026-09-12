@@ -98,6 +98,13 @@ export function registerAdminRoutes(r, S) {
   // outlets membership + import
   r.add("GET", "/api/campaigns/:id/outlets", { roles: any, ...T("outlets") }, ({ params }) => ({ outlets: domain.listCampaignOutlets(params.id) }));
   r.add("PUT", "/api/campaigns/:id/outlets", { roles: A.CM, ...T("outlets") }, async ({ user, params, body }) => { const b = await body(); campaignOr404(params.id); if (!Array.isArray(b.outlet_ids)) throw E.badRequest("outlet_ids array required"); return { count: domain.setCampaignOutlets(params.id, b.outlet_ids, user.id, { collectionByOutlet: b.collection || {} }) }; });
+  // Targeted removal of ONE membership row. Without it the console's Remove
+  // button had to full-replace the membership through the PUT above, which
+  // deleted every member whose master outlet row is inactive (the listing the
+  // console builds the PUT body from filters them out, so the operator never
+  // saw them) and reset every surviving member's collection window to always
+  // open.
+  r.add("DELETE", "/api/campaigns/:id/outlets/:outletId", { roles: A.CM, ...T("outlets") }, ({ user, params }) => { campaignOr404(params.id); if (!domain.removeCampaignOutlet(params.id, params.outletId, user.id)) throw E.notFound("outlet is not a member of this campaign"); return { removed: params.outletId }; });
   r.add("POST", "/api/campaigns/:id/outlets/import", { roles: A.CM, ...T("outlets"), bodyLimit: 2 * 1024 * 1024 }, async ({ user, params, body }) => { const b = await body(); campaignOr404(params.id); if (typeof b.csv !== "string") throw E.badRequest("csv text required"); return domain.importOutletsCsv(params.id, b.csv, { dryRun: b.dry_run !== false, actorId: user.id }); });
   // decisions
   r.add("GET", "/api/campaigns/:id/decisions", { roles: any, ...T("campaigns") }, ({ params }) => ({ decisions: domain.listDecisions(params.id) }));

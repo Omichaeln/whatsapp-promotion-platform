@@ -65,11 +65,12 @@ else {
   const recomputed = { algorithm: d.algorithm, sequence: ordered.map((s) => s.entryId), winners: sel.winners, alternates: sel.alternates, plan: snap.plan };
   ok("output digest", sha(canon(recomputed)) === d.output_hash, d.output_hash);
   ok("stored output equals recomputation", JSON.stringify(recomputed) === JSON.stringify(b.output));
-  // `winners.length === Math.min(totalWinners, winners.length)` was a tautology:
-  // it held for ANY winner count, so a draw run against an empty prize plan
-  // (0 winners) verified clean while awarding nobody. A short draw is still
-  // legitimate — freeze() accepts an override on INSUFFICIENT_CANDIDATES — so
-  // the bound is "at most the plan, and the plan awards at least one prize".
+  // `winners.length === Math.min(totalWinners, winners.length)` did enforce the
+  // upper bound (it holds exactly when winners.length <= totalWinners); it was
+  // VACUOUS for an empty prize plan, where 0 <= 0 let a draw that awarded nobody
+  // verify clean. A short draw is still legitimate — freeze() accepts an
+  // override on INSUFFICIENT_CANDIDATES — so the bound is "at most the plan,
+  // and the plan awards at least one prize".
   ok("winner count within a plan that awards prizes", snap.plan.totalWinners > 0 && sel.winners.length <= snap.plan.totalWinners && (b.output?.winners?.length ?? -1) === sel.winners.length, `${sel.winners.length}/${snap.plan.totalWinners}`);
   if (snap.plan.totalWinners > 0 && sel.winners.length < snap.plan.totalWinners) {
     const bar = d.barrier || {};

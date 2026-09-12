@@ -9,7 +9,7 @@
 
 ## Read outside the schema (preflight does not check these)
 
-`npm run preflight` iterates `CONFIG_SCHEMA` only, so a variable the code reads but the schema does not list is never reported, and an operator cannot discover it from `.env.example`. Seven such names exist today (two of them outside `src/config.mjs` entirely). They matter most on a host where one variable group is shared between services (Railway), because a value meant for a different service is inherited silently.
+`npm run preflight` iterates `CONFIG_SCHEMA` only, so a variable the code reads but the schema does not list is never reported, and an operator cannot discover it from `.env.example`. Seven such names are read on the boot path (`src/config.mjs`, `src/bootstrap.mjs`, `src/server.mjs`, `src/demo-seed.mjs`) and the table below is the whole list for that path — the *Read by* column, not the count, is what tells you where each one lands. The count is scoped deliberately: the operational scripts read a few variables of their own that never reach the service (`BACKUP_DIR`/`BACKUP_KEEP` in `scripts/backup-restore-rehearsal.mjs`, `BASE_URL` in `scripts/remote-smoke.mjs`, `CRM_RECEIVER_*` in `scripts/crm-receiver.mjs`). Boot-path names matter most on a host where one variable group is shared between services (Railway), because a value meant for a different service is inherited silently.
 
 | Name | Read by | Effect if it is set |
 |---|---|---|
@@ -17,7 +17,7 @@
 | `OPENAI_MODEL` / `AI_MODEL` | `src/config.mjs` → `cfg.ai.openaiModel` (default `gpt-4o-mini`) | Chooses the legacy wrapper's model. Not the receipt extractor — that is `RECEIPT_PROVIDER_OPENAI_MODEL` |
 | `AI_PROVIDER_BASE_URL` | `src/config.mjs` → `cfg.ai.baseUrl` (default `https://api.openai.com/v1`) | Redirects the legacy wrapper's calls to another OpenAI-compatible endpoint |
 | `SEED_CLOCK` | `src/demo-seed.mjs` (`ensureDemoSeed`) | Pins the sample seed's clock (an ISO date) so the TEST ONLY sample campaign replays deterministically. Sample data is refused in production regardless |
-| `VOLUME_INIT` | `src/bootstrap.mjs` | One-shot provisioning flag: writes the `.volume-id` marker into `VOLUME_PATH` so the boot accepts it as the real persistent volume. Leave it unset afterwards |
+| `VOLUME_INIT` | `src/config.mjs` (`ensureDataVolume`), passed in by `src/bootstrap.mjs` | One-shot provisioning flag: writes the `.volume-id` marker into `VOLUME_PATH` so the boot accepts it as the real persistent volume. Leave it unset afterwards |
 | `TRUSTED_PROXY_HOPS` | `src/server.mjs` | How many `X-Forwarded-For` hops the per-IP login rate limiter may trust, counted from the right; `0` (the default) keys on the connection's own address. Setting it higher than the number of proxies that actually rewrite the header lets a caller mint a fresh rate-limit bucket per request |
 
 None of these gets an assignment line in `.env.example` by design — giving `OPENAI_API_KEY` one would document a second spelling of a secret the schema already has — but they are named in a comment block at the end of that file so an inherited value is recognisable. The durable fix is to drop the bare `OPENAI_*`/`AI_MODEL` fallbacks from `src/config.mjs` and gate `createAi` on `cfg.ai.provider !== "none"`; until that lands, treat this table as the checklist.

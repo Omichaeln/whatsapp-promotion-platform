@@ -212,7 +212,11 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
       // The period's draw is already frozen: its candidate snapshot is fixed,
       // so an entry awarded now would sit in NO draw for the life of the
       // campaign while the participant is told "ONE entry has been added to the
-      // draw". A person decides (void + rerun, or a goodwill outcome) instead.
+      // draw". A person decides instead: void that draw, decide this receipt,
+      // then rerun (rerun() re-freezes immediately, and this receipt — now
+      // REVIEW_REQUIRED inside the period — is counted by the freeze barrier's
+      // UNRESOLVED_SUBMISSIONS check, so deciding it first avoids an override),
+      // or a goodwill outcome outside the draw.
       // Checked before the canonical claim below so the claim is not recorded
       // as 'credited' for an award that is not made.
       if (disposition === DISPOSITION.QUALIFIED && periodAlreadyDrawn(r).length) { disposition = DISPOSITION.REVIEW; reason = "period_already_drawn"; }
@@ -249,14 +253,19 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
     domain.audit({ actorType: "system", actorId: "pipeline", action: "receipt.delayed", targetType: "receipt", targetId: receiptId, reason: why });
     const phone = domain.getParticipant(r.participant_id)?.wa_phone_uid;
     if (phone) outbox.enqueueWhatsApp({ waPhoneUid: phone, kind: "text", purpose: "receipt_outcome", campaignId: r.campaign_id, payload: renderCopy(pinnedContent(r), "delayed", { reference: shortRef(receiptId) }), idempotencyKey: `receipt:${receiptId}:delayed` });
-    // retry job with backoff (bounded: 6 attempts ~ 1h). Attempts are the
-    // receipt.process jobs queued for THIS receipt — one monotonic count.
-    // Adding the validation_results count meant a receipt that had already been
-    // extracted once entered the ladder a step early and exhausted its budget
-    // before the schedule intended.
-    const attempts = Number(db.prepare(`select count(*) n from jobs where kind='receipt.process' and payload_json=?`).get(JSON.stringify({ receiptId })).n);
-    if (transient && attempts < 6) db.prepare(`insert into jobs (id, kind, payload_json, status, run_after, created_at) values (?,?,?,?,?,?)`).run(id("job"), "receipt.process", JSON.stringify({ receiptId }), "pending", new Date(Date.now() + Math.min(2 ** attempts, 20) * 60_000).toISOString(), now());
-    else domain.alert({ kind: "receipt.stuck", severity: "critical", message: transient ? `receipt ${receiptId} delayed after ${attempts} attempts` : `receipt ${receiptId} delayed: ${why} is not retryable — extraction needs an operator fix`, runbook: "docs/runbooks/media-and-extraction.md" });
+    // retry job with backoff (bounded: 6 attempts ~ 1h). An attempt is the first
+    // extraction plus every retry THIS function queued, and nothing else: the
+    // retry jobs carry a marker so the count cannot pick up the job submit()
+    // queues or the ones an operator's reprocess() queues. Counting every
+    // receipt.process job made five console reprocesses exhaust the ladder, so
+    // the next transient extractor outage queued no retry at all and raised a
+    // "delayed after 7 attempts" alarm after two real extraction attempts.
+    // (Adding the validation_results count, the shape before that, entered the
+    // ladder a step early for a receipt that had already been extracted once.)
+    const retryPayload = JSON.stringify({ receiptId, retry: true });
+    const attempts = Number(db.prepare(`select count(*) n from jobs where kind='receipt.process' and payload_json=?`).get(retryPayload).n) + 1;
+    if (transient && attempts < 6) db.prepare(`insert into jobs (id, kind, payload_json, status, run_after, created_at) values (?,?,?,?,?,?)`).run(id("job"), "receipt.process", retryPayload, "pending", new Date(Date.now() + Math.min(2 ** attempts, 20) * 60_000).toISOString(), now());
+    else domain.alert({ kind: "receipt.stuck", dedupeKey: `receipt.stuck:${receiptId}`, severity: "critical", message: transient ? `receipt ${receiptId} delayed after ${attempts} attempts` : `receipt ${receiptId} delayed: ${why} is not retryable — extraction needs an operator fix`, runbook: "docs/runbooks/media-and-extraction.md" });
     return { receiptId, decision: RECEIPT_STATUS.DELAYED, reason: why };
   }
 
@@ -339,8 +348,13 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
         // is immutable, so this entry could never enter any draw while the
         // participant would be told "ONE entry has been added to the draw".
         // Refuse, naming the draw, rather than awarding an orphan entry.
+        // Order matters in the remedy: rerun() voids and re-freezes in one step
+        // (src/draw.mjs), and this receipt is still REVIEW_REQUIRED inside the
+        // period, so it is counted by the freeze barrier's UNRESOLVED_SUBMISSIONS
+        // check — rerunning first would either need a barrier override or lock
+        // the entry out of the new pool as well. Void, decide, then rerun.
         const drawn = periodAlreadyDrawn(r);
-        if (drawn.length) throw Object.assign(new Error(`period ${r.period_code} has already been drawn (draw ${drawn[0].id} is ${drawn[0].status}); an entry awarded now could enter no draw — void and rerun that draw first, or decide another outcome`), { code: "CONFLICT", draws: drawn.map((d) => d.id) });
+        if (drawn.length) throw Object.assign(new Error(`period ${r.period_code} has already been drawn (draw ${drawn[0].id} is ${drawn[0].status}); an entry awarded now could enter no draw — void that draw, decide this receipt, then rerun it, or decide another outcome`), { code: "CONFLICT", draws: drawn.map((d) => d.id) });
         const identity = { outletId: r.selected_outlet_id, date: facts.transaction?.date, receiptNo: facts.transaction?.receiptNo, totalMinor: facts.transaction?.totalMinor };
         const key = r.fingerprint || canonicalKeyOf(identity);
         if (!key) throw Object.assign(new Error("cannot credit: receipt identity (outlet, date, number) is incomplete — resolve the fields first"), { code: "IDENTITY_INCOMPLETE" });
@@ -414,7 +428,16 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
       // An approver that is never checked is worse than none: the ledger shows
       // a second name that nobody verified.
       if (approvedBy && approvedBy === actorId) throw Object.assign(new Error("approver must differ from the actor"), { code: "SOD" });
-      const undoing = db.prepare(`select * from entry_events where entry_id=? and type='disqualified' order by created_at desc, id desc limit 1`).get(entryId);
+      // Which disqualification is being reversed decides whether an approver is
+      // required, so the lookup has to find the LAST one. now() is millisecond
+      // ISO and id() is random bytes, so `created_at desc, id desc` fell back to
+      // a random tiebreak whenever disqualify -> reinstate -> disqualify landed
+      // inside one millisecond: it could return the FIRST disqualification and
+      // demand an approver the current decision never had (the entry then cannot
+      // be put back at all) or, reversed, waive an approver that two people had
+      // required. rowid is insertion-monotonic, so it breaks the tie in the
+      // order the events actually happened.
+      const undoing = db.prepare(`select * from entry_events where entry_id=? and type='disqualified' order by created_at desc, rowid desc limit 1`).get(entryId);
       if (undoing?.approved_by && !approvedBy) throw Object.assign(new Error("this entry was disqualified under independent approval: reinstating it requires an independent approver too"), { code: "APPROVAL_REQUIRED" });
       db.prepare(`update entries set status='active' where id=?`).run(entryId);
       db.prepare(`insert into entry_events (id, entry_id, type, reason, actor_id, approved_by, effective_at, note, created_at) values (?,?,?,?,?,?,?,?,?)`).run(id("eev"), entryId, "reinstated", reason, actorId, approvedBy, now(), note, now());

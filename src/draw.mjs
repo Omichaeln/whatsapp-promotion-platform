@@ -60,6 +60,12 @@ export function planFrom(prizeConfig = {}, drawConfig = {}) {
   // a period set to { alternates_per_winner: 3, one_prize_per_participant: false }
   // (tiers inherited from the campaign) resolved byte-identically to {}, so the
   // week ran with the campaign's alternates and cap and nothing reported it.
+  // NOTE for whoever re-reads client period configs: `winner_exclusion` is in
+  // this merge too, and it decides WHO IS ELIGIBLE. A period that supplies
+  // `prizes` but no winner_exclusion used to resolve to "none"; it now inherits
+  // the campaign's value, so a campaign set to winner_exclusion:"campaign"
+  // starts excluding prior winners from that period's pool — a different
+  // candidate set, snapshot_hash and result. Check it before the next draw.
   const pick = (k, dflt) => prizeConfig[k] ?? drawConfig[k] ?? dflt;
   const prizes = prizeConfig.prizes?.length ? prizeConfig.prizes : (drawConfig.prizes || []);
   const tiers = prizes.map((p) => ({ code: p.code || "P1", label: p.label || p.code || "Prize", count: Number(p.count ?? p.per_week ?? 1) }));
@@ -79,6 +85,24 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
   const cands = db.prepare(`select * from draw_candidates where draw_id = ? order by position`);
   /** Who froze the candidate pool. Recorded at freeze; execute() preserves it while overwriting operator_id. */
   const frozenBy = (d) => { try { return JSON.parse(d.evidence_json || "{}").frozen_by || null; } catch { return null; } };
+  const adminUser = db.prepare(`select id, roles, status from admin_users where id = ?`);
+  /**
+   * The second name on a void must be a REAL, currently-authorised approver.
+   * POST /api/draws/:id/rerun is draw_officer-only and passes approved_by
+   * straight through src/http.mjs `str()`, which validates nothing at all, so
+   * requiring a truthy, different STRING was not dual control: one officer sent
+   * {reason, approved_by:"z"}, voided the EXECUTED draw whose winners he had
+   * already read, re-froze for a fresh seed and repeated until the result
+   * suited him. Resolve the name against admin_users here — the service already
+   * holds `db` and admin_users lives in the same database.
+   */
+  function assertSecondApprover(actorId, approvedBy, what) {
+    if (!approvedBy || approvedBy === actorId) throw Object.assign(new Error(`${what} requires a second, different approver`), { code: "SOD" });
+    const ap = adminUser.get(approvedBy);
+    if (!ap || ap.status !== "active") throw Object.assign(new Error(`${what} requires a second approver: "${String(approvedBy).slice(0, 60)}" is not an active staff account`), { code: "SOD" });
+    let roles = []; try { roles = JSON.parse(ap.roles || "[]"); } catch { roles = []; }
+    if (!roles.includes("draw_approver")) throw Object.assign(new Error(`${what} requires a second approver holding draw_approver`), { code: "SOD" });
+  }
 
   /** Cutoff barrier + eligibility (pure read). */
   function barrier(campaignId, periodId) {
@@ -137,7 +161,10 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
       const byVersion = new Map();
       for (const e of b.eligible) byVersion.set(e.campaign_version_id || null, (byVersion.get(e.campaign_version_id || null) || 0) + 1);
       const candidateRulesVersions = [...byVersion.entries()]
-        .sort((x, y) => String(x[0]).localeCompare(String(y[0])))   // deterministic: the snapshot is hashed
+        // Codepoint order, NOT localeCompare: this array is hashed into
+        // snapshot_hash, and localeCompare depends on the node's ICU data, so
+        // two nodes could freeze the same candidate pool to different snapshots.
+        .sort((x, y) => (String(x[0]) < String(y[0]) ? -1 : String(x[0]) > String(y[0]) ? 1 : 0))
         .map(([vid, n]) => ({ versionId: vid, configHash: vid ? domain.getVersion(vid)?.config_hash || null : null, entries: n }));
       const snapshot = { drawId, campaignId, periodCode: b.period.code, rulesVersion: version?.config_hash || null, activeVersionAtFreeze: version?.config_hash || null, candidateRulesVersions, plan: b.plan, candidates, exclusions: b.exclusions };
       const snapshotHash = snapshotHashOf(snapshot);
@@ -257,7 +284,7 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
     // draw is executed, so a single actor could void a result they had already
     // seen, re-freeze for a fresh seed and repeat until the outcome suited them.
     // A frozen draw has produced no result yet, so abandoning one stays single-actor.
-    if (["executed", "approved", "published"].includes(d.status) && (!approvedBy || approvedBy === actorId)) throw Object.assign(new Error(`voiding a ${d.status} draw requires a second, different approver`), { code: "SOD" });
+    if (["executed", "approved", "published"].includes(d.status)) assertSecondApprover(actorId, approvedBy, `voiding a ${d.status} draw`);
     db.prepare(`update draws set status='voided', voided_at=?, voided_by=?, void_reason=? where id=?`).run(now(), actorId, `${reason} (approved by ${approvedBy || "n/a"})`, drawId);
     db.prepare(`update winners set status='replaced', publication_state='withdrawn' where draw_id=? and status not in ('collected')`).run(drawId);
     domain.setPeriodStatus(d.period_id, "closed", actorId);

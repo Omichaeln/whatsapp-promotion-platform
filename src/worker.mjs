@@ -42,7 +42,15 @@ export function createWorker({ db, transport, outbox, crm, intake, domain, cfg, 
       // documented way to test a round-trip) replied to every member of the
       // public who wrote to the live number, because the allowlist PUT is a
       // manual console step nothing verifies.
-      if (transport?.isLiveProvider && !allow.length) return { blocked: true, code: "RECIPIENT_NOT_ALLOWED", message: "non-production deployment on a live provider: set outbound.allowed_recipients before anything may be sent", retryable: false };
+      // But HOLD, do not burn: an unset allowlist is a configuration gap, not a
+      // bad message. permanent_failure here destroys the whole queued backlog,
+      // and setting the allowlist afterwards does not release it — an operator
+      // would have to press Retry on every row one at a time (outbox.retry takes
+      // a single id). Retryable means the queue waits and drains itself the
+      // moment the setting lands; outbound.blocked makes an indefinite wait
+      // visible. The explicit "not a designated test recipient" block below
+      // stays terminal: there the allowlist exists and says no.
+      if (transport?.isLiveProvider && !allow.length) return { blocked: true, code: "RECIPIENT_NOT_ALLOWED", message: "non-production deployment on a live provider: set outbound.allowed_recipients before anything may be sent", retryable: true };
       if (allow.length && !allow.includes(row.wa_phone_uid)) return { blocked: true, code: "RECIPIENT_NOT_ALLOWED", message: `non-production: ${domain.maskPhone(row.wa_phone_uid)} is not a designated test recipient`, retryable: false };
     }
     if (row.campaign_id) {
@@ -66,9 +74,9 @@ export function createWorker({ db, transport, outbox, crm, intake, domain, cfg, 
       if (!last || Date.now() - last > SERVICE_WINDOW_MS) {
         // Hold rather than send: while held, a new inbound message reopens the
         // window and the queued message goes out. But the hold must end — a
-        // policy block that stays retryable for ever is invisible to the
-        // outbound.failures alert and would hold a winner notice until the
-        // claim deadline passed — so past one window it becomes terminal.
+        // policy block that stays retryable for ever would hold a winner notice
+        // until the claim deadline passed — so past one window it becomes
+        // terminal, where the outbound.blocked alert counts it.
         const created = Date.parse(row.created_at);
         const retryable = Number.isFinite(created) ? Date.now() - created < SERVICE_WINDOW_MS : true;
         return { blocked: true, code: "TEMPLATE_REQUIRED", message: `outside the 24h customer-service window: an approved template message is required for purpose '${row.purpose}'`, retryable };
@@ -141,11 +149,20 @@ export function createWorker({ db, transport, outbox, crm, intake, domain, cfg, 
       const rv = db.prepare(`select count(*) n, min(created_at) oldest from review_tasks where state!='decided'`).get();
       if (rv.n && Date.now() - Date.parse(rv.oldest) > 24 * 3600_000) domain.alert({ kind: "review.backlog", severity: "warning", message: `${rv.n} receipts awaiting review; oldest ${rv.oldest}`, runbook: "docs/runbooks/review-operations.md" });
       const ob = outbox.stats();
-      // A message held in retryable_failure (TEMPLATE_REQUIRED, OUTBOUND_PAUSED)
-      // was counted by nothing: it could sit there indefinitely — a winner
-      // "notified" with nothing sent — without a single alert.
+      // Two different incidents, two different alerts. `outbound.failures` is
+      // the PROVIDER one (provider-outage.md: check Meta status, rotate the
+      // token, retry the rows). Counting our own policy blocks here meant that
+      // every support-processed withdrawal, and every deliberate campaign pause
+      // lasting more than half an hour, raised a provider-outage warning —
+      // exactly the noise that trains operators to ignore a real outage.
+      if (ob.providerFailures > 0) domain.alert({ kind: "outbound.failures", severity: "warning", message: `outbound failures: ${ob.providerFailures} (${JSON.stringify(ob.byStatus)})`, runbook: "docs/runbooks/provider-outage.md" });
+      // ...and this is the "nobody can send this message" one: a hold nobody can
+      // clear (no approved template for a closed 24h window, or a deployment
+      // with no allowlist) sitting there for half an hour, or one already gone
+      // terminal — a winner marked 'notified' with nothing delivered. Counted by
+      // nothing before; a pause or a withdrawal is deliberately not counted here.
       const held = ob.oldestHeld && Date.now() - Date.parse(ob.oldestHeld) > 30 * 60_000 ? ob.oldestHeld : null;
-      if ((ob.byStatus.unknown_outcome || 0) + (ob.byStatus.permanent_failure || 0) > 0 || held) domain.alert({ kind: "outbound.failures", severity: "warning", message: `outbound failures: ${JSON.stringify(ob.byStatus)}${held ? `; oldest held message queued ${held}` : ""}`, runbook: "docs/runbooks/provider-outage.md" });
+      if (held || ob.undeliverable > 0) domain.alert({ kind: "outbound.blocked", severity: "warning", message: `outbound blocked by policy${ob.undeliverable ? `: ${ob.undeliverable} message(s) past the 24h service window with nothing sent` : ""}${held ? `; oldest unresolved hold queued ${held}` : ""}`, runbook: "docs/runbooks/winners-claims.md" });
       const cs = crm?.reconcileView?.();
       // CRM backlog had no alert at all, including the read-back-failure path
       // that marks a SUCCESSFUL upsert unknown_outcome without telling anyone.

@@ -136,9 +136,12 @@ const inputWithPlaceholder = (n, ph) => [...hostsOf(n, "input"), ...hostsOf(n, "
 function mountConsole(mod, { base, token = "", stub = null, confirm = true, prompts = null } = {}) {
   const flush = createRenderer(mod);
   const calls = [];
+  // What the operator is actually told before an irreversible action is part of
+  // the control, so the confirm text is recorded, not just its answer.
+  const confirms = [];
   const saved = { fetch: globalThis.fetch, localStorage: globalThis.localStorage, window: globalThis.window, alert: globalThis.alert, prompt: globalThis.prompt };
   globalThis.localStorage = { getItem: () => token, setItem: () => {}, removeItem: () => {} };
-  globalThis.window = { confirm: () => confirm, open: () => {} };
+  globalThis.window = { confirm: (m) => { confirms.push(String(m)); return confirm; }, open: () => {} };
   globalThis.alert = () => {};
   // Structured input must not come from prompt() — except on the two
   // entry controls that deliberately mirror each other (Disqualify /
@@ -159,7 +162,7 @@ function mountConsole(mod, { base, token = "", stub = null, confirm = true, prom
   };
   let element = null;
   const ui = {
-    calls,
+    calls, confirms,
     async render(Component, props) { element = mod.h(Component, props); ui.tree = await flush(element); return ui.tree; },
     async again() { ui.tree = await flush(element); return ui.tree; },
     text() { return textOf(ui.tree); },
@@ -374,13 +377,15 @@ describe("console-1 — support handoff has a console surface", () => {
 });
 
 describe("console-9 — winner claim steps", () => {
-  const winner = (status, extra = {}) => ({ id: "win_1", draw_period: "W1", rank: 1, display_name: "T. N.", wa_phone_uid: "***0123", status, publication_state: "unpublished", row_version: 3, published_fields: { prize: "Hamper" }, participant: { first_name: "T", surname: "N", phone: "***0123" }, ...extra });
+  // campaign_id is what /api/winners really returns (winner-service listWinners
+  // selects d.campaign_id); the collection select is scoped by it.
+  const winner = (status, extra = {}) => ({ id: "win_1", draw_period: "W1", rank: 1, display_name: "T. N.", wa_phone_uid: "***0123", status, publication_state: "unpublished", row_version: 3, campaign_id: h.campaign.id, published_fields: { prize: "Hamper" }, participant: { first_name: "T", surname: "N", phone: "***0123" }, ...extra });
   const stubFor = (w, sent) => (method, url, body) => {
     if (url.startsWith("/api/winners?") || url === "/api/winners") return { data: { winners: [w] } };
     if (url === `/api/winners/${w.id}`) return { data: { winner: w, claims: [], messages: [] } };
     if (url.endsWith("/transition")) { sent.push(body); return { data: { winner: w } }; }
     if (url.endsWith("/publish")) { sent.push({ publish: true }); return { data: { winner: w } }; }
-    return null; // /api/outlets falls through to the live server
+    return null; // the campaign outlet list falls through to the live server
   };
 
   it("verification evidence is required, not an escapable prompt", async () => {
@@ -407,8 +412,8 @@ describe("console-9 — winner claim steps", () => {
       const sel = ui.select("Assign collection");
       assert.ok(sel, "the collection outlet must be picked from a list, not typed as an opaque id");
       const options = hostsOf(sel, "option").map((o) => o.props.value).filter(Boolean);
-      const enabled = h.db.prepare(`select id from outlets where collection_enabled=1 and active=1`).all().map((r) => r.id);
-      assert.ok(options.length > 1 && options.every((o) => enabled.includes(o)), "only collection-enabled outlets may be offered");
+      const enabled = h.db.prepare(`select o.id from campaign_outlets co join outlets o on o.id=co.outlet_id where co.campaign_id=? and co.collection_enabled=1 and o.active=1`).all(h.campaign.id).map((r) => r.id);
+      assert.ok(options.length > 1 && options.every((o) => enabled.includes(o)), "only this campaign's collection points may be offered");
       assert.equal(!!ui.button("Accepted").props.disabled, true, "accepting without a collection point must be blocked");
       await ui.choose("Assign collection", options[0]);
       await ui.click("Accepted");
@@ -508,6 +513,240 @@ describe("dual-control reinstatement has to be reachable from the console", () =
       assert.ok(post, `no reinstate call: ${ui.calls.map((c) => `${c.method} ${c.url}`).join(" | ")}`);
       assert.equal(post.body.approved_by, me["reviewer@example.test"].me.id, "the approver the operator named must reach the server");
       assert.equal(h.db.prepare(`select status from entries where id=?`).get(entryId).status, "active", "and the entry must actually come back");
+    } finally { ui.restore(); }
+  });
+});
+
+/* ================================================================= round 2 */
+/* Each test below was first run against the tree as it stood after round one
+   and failed with the defect's own symptom; see the package report. */
+
+const openRowNamed = async (ui, text) => {
+  const row = hostsOf(ui.tree, "tr").find((r) => textOf(r).includes(text));
+  assert.ok(row, `no row containing "${text}"`);
+  const b = buttonNamed(row, "Open");
+  assert.ok(b, `no Open control on the row for "${text}"`);
+  await b.props.onClick({ preventDefault() {} });
+  for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
+  return ui.again();
+};
+
+describe("console-9 (round 2) — claim evidence belongs to one winner", () => {
+  const mk = (id, name, status = "notified", extra = {}) => ({ id, draw_period: "W1", rank: 1, display_name: name, wa_phone_uid: "***0123", status, publication_state: "unpublished", row_version: 3, campaign_id: h.campaign.id, published_fields: { prize: "Hamper" }, participant: { first_name: name.split(" ")[0], surname: "N", phone: "***0123" }, ...extra });
+  const two = (a, b, sent) => (method, url, body) => {
+    if (url === "/api/winners") return { data: { winners: [a, b] } };
+    if (url === `/api/winners/${a.id}`) return { data: { winner: a, claims: [], messages: [] } };
+    if (url === `/api/winners/${b.id}`) return { data: { winner: b, claims: [], messages: [] } };
+    if (url.endsWith("/transition")) { sent.push({ url, body }); return { data: { winner: b } }; }
+    return null;
+  };
+
+  it("the ID-check note typed for one winner cannot arm the next winner's transition", async () => {
+    const wA = mk("win_A", "Alpha Winner"), wB = mk("win_B", "Bravo Winner");
+    const sent = [];
+    const ui = as("fulfilment@example.test", { stub: two(wA, wB, sent) });
+    try {
+      await ui.render(mod.__ui.Winners, { me: me["fulfilment@example.test"].me });
+      await openRowNamed(ui, "Alpha Winner");
+      await ui.type("Verification evidence", "ID 63-111111 checked for ALPHA");
+      await ui.click("Close");
+      await openRowNamed(ui, "Bravo Winner");
+      const field = fieldNamed(ui.tree, "Verification evidence");
+      assert.ok(field, "the second winner should still offer the evidence field");
+      assert.equal(hostsOf(field, "input")[0].props.value || "", "", "another winner's ID-check evidence must not be prefilled");
+      assert.equal(!!ui.button("Mark verified").props.disabled, true, "Mark verified must not be armed by evidence gathered for a different winner");
+      assert.equal(sent.length, 0, "nothing should have been sent yet");
+    } finally { ui.restore(); }
+  });
+
+  it("the collection point chosen for one winner does not pre-arm the next", async () => {
+    const wA = mk("win_A", "Alpha Winner", "verified"), wB = mk("win_B", "Bravo Winner", "verified");
+    const sent = [];
+    const ui = as("fulfilment@example.test", { stub: two(wA, wB, sent) });
+    try {
+      await ui.render(mod.__ui.Winners, { me: me["fulfilment@example.test"].me });
+      await openRowNamed(ui, "Alpha Winner");
+      const opts = hostsOf(ui.select("Assign collection"), "option").map((o) => o.props.value).filter(Boolean);
+      assert.ok(opts.length, "the campaign should offer collection points");
+      await ui.choose("Assign collection", opts[0]);
+      await ui.click("Close");
+      await openRowNamed(ui, "Bravo Winner");
+      assert.equal(ui.select("Assign collection").props.value, "", "the collection point picked for another winner must not be preselected");
+      assert.equal(!!ui.button("Accepted").props.disabled, true, "and it must not arm the accept");
+    } finally { ui.restore(); }
+  });
+});
+
+describe("console-9 (round 2) — the select must offer this campaign's collection points", () => {
+  it("an outlet the campaign has excluded is not offered even when the master flag is set", async () => {
+    const row = h.db.prepare(`select o.id, o.outlet_code from campaign_outlets co join outlets o on o.id=co.outlet_id where co.campaign_id=? and co.collection_enabled=1 and o.collection_enabled=1 and o.active=1 order by o.outlet_code limit 1`).get(h.campaign.id);
+    assert.ok(row, "the sample campaign should have a collection point");
+    h.db.prepare(`update campaign_outlets set collection_enabled=0 where campaign_id=? and outlet_id=?`).run(h.campaign.id, row.id);
+    const w = { id: "win_c", draw_period: "W1", rank: 1, display_name: "C. C.", wa_phone_uid: "***1", status: "verified", publication_state: "unpublished", row_version: 3, campaign_id: h.campaign.id, published_fields: { prize: "Hamper" }, participant: { first_name: "C", surname: "C", phone: "***1" } };
+    const ui = as("fulfilment@example.test", { stub: (m, url) => (url === "/api/winners" ? { data: { winners: [w] } } : url === "/api/winners/win_c" ? { data: { winner: w, claims: [], messages: [] } } : null) });
+    try {
+      await ui.render(mod.__ui.Winners, { me: me["fulfilment@example.test"].me });
+      await ui.click("Open");
+      const options = hostsOf(ui.select("Assign collection"), "option").map((o) => o.props.value).filter(Boolean);
+      assert.ok(options.length, "the other collection points must still be offered");
+      assert.ok(!options.includes(row.id), `${row.outlet_code} is not a collection point for this campaign; the server refuses it, so the console must not offer it`);
+    } finally {
+      ui.restore();
+      h.db.prepare(`update campaign_outlets set collection_enabled=1 where campaign_id=? and outlet_id=?`).run(h.campaign.id, row.id);
+    }
+  });
+});
+
+describe("console-9 (round 2) — no claim step asks for structured input with prompt()", () => {
+  const w = (status, extra = {}) => ({ id: "win_p", draw_period: "W1", rank: 1, display_name: "P. P.", wa_phone_uid: "***1", status, publication_state: "unpublished", row_version: 3, campaign_id: h.campaign.id, published_fields: { prize: "Hamper" }, participant: { first_name: "P", surname: "P", phone: "***1" }, ...extra });
+  const stubFor = (win, sent) => (method, url, body) => {
+    if (url === "/api/winners") return { data: { winners: [win] } };
+    if (url === "/api/winners/win_p") return { data: { winner: win, claims: [], messages: [] } };
+    if (url.endsWith("/transition") || url.endsWith("/unpublish")) { sent.push({ url, body }); return { data: { winner: win } }; }
+    return null;
+  };
+
+  it("Disputed, Ineligible and Replace take a required inline reason", async () => {
+    const sent = [];
+    const ui = as("fulfilment@example.test", { stub: stubFor(w("notified"), sent) });
+    try {
+      await ui.render(mod.__ui.Winners, { me: me["fulfilment@example.test"].me });
+      await ui.click("Open");
+      for (const label of ["Disputed", "Ineligible", "Replace with alternate"]) {
+        const b = ui.button(label);
+        assert.ok(b, `${label} must exist`);
+        assert.equal(!!b.props.disabled, true, `${label} must not be able to record an empty reason`);
+      }
+      await ui.type("Claim reason", "winner disputes the prize tier");
+      await ui.click("Disputed");
+      assert.equal(sent.at(-1)?.body?.note, "winner disputes the prize tier", "the reason the operator typed must reach the claim trail");
+    } finally { ui.restore(); }
+  });
+
+  it("Withdraw publication takes a required inline reason", async () => {
+    const sent = [];
+    const ui = as("fulfilment@example.test", { stub: stubFor(w("verified", { publication_state: "published" }), sent) });
+    try {
+      await ui.render(mod.__ui.Winners, { me: me["fulfilment@example.test"].me });
+      await ui.click("Open");
+      const b = ui.button("Withdraw publication");
+      assert.ok(b, "the withdraw control must exist");
+      assert.equal(!!b.props.disabled, true, "withdrawing publication with no stated reason must be blocked");
+      await ui.type("Withdrawal reason", "named the wrong town");
+      await ui.click("Withdraw publication");
+      assert.equal(sent.at(-1)?.body?.reason, "named the wrong town");
+    } finally { ui.restore(); }
+  });
+});
+
+describe("console-3 (round 2) — retailer_code is part of the row the upsert replaces", () => {
+  it("survives a correction typed into the five text fields", async () => {
+    const o = h.db.prepare(`select * from outlets where outlet_code <> 'SUN-BYO-02' and active=1 order by outlet_code limit 1`).get();
+    assert.ok(o, "fixture outlets missing");
+    h.db.prepare(`update outlets set retailer_code='TEST' where id=?`).run(o.id);
+    const ui = as("manager@example.test");
+    try {
+      await ui.render(mod.__ui.Outlets, {});
+      await ui.type("Code", o.outlet_code);
+      await ui.type("Retailer", o.retailer);
+      await ui.type("Branch", `${o.branch} (renamed)`);
+      await ui.type("Town", o.town);
+      await ui.type("Province", o.province || "");
+      await ui.click("Save");
+      const after = h.db.prepare(`select * from outlets where id=?`).get(o.id);
+      assert.equal(after.branch, `${o.branch} (renamed)`, "the edit the operator asked for must be applied");
+      assert.equal(after.retailer_code, "TEST", "retailer_code drives reset-sample cleanup and the production sample-data gate; a branch rename must not clear it");
+    } finally {
+      ui.restore();
+      h.db.prepare(`update outlets set retailer_code=?, branch=? where id=?`).run(o.retailer_code, o.branch, o.id);
+    }
+  });
+
+  it("a non-ISO active window is refused before it is posted", async () => {
+    const ui = as("manager@example.test");
+    try {
+      await ui.render(mod.__ui.Outlets, {});
+      await ui.type("Code", "SUN-BYO-02");
+      await ui.type("Active from", "2026-1-1");
+      assert.equal(!!ui.button("Save").props.disabled, true, "the active window is compared as text, so a non-ISO date must not reach the upsert");
+      assert.match(ui.text(), /YYYY-MM-DD/, "the operator must be told what is wrong");
+      await ui.type("Active from", "2026-01-01");
+      assert.equal(!!ui.button("Save").props.disabled, false, "a well-formed date must still save");
+      assert.ok(!ui.calls.some((c) => c.method === "POST" && c.url === "/api/outlets"), "nothing may have been posted while the date was invalid");
+    } finally { ui.restore(); }
+  });
+});
+
+describe("console-6 (round 2) — a refused table must not also claim to be empty", () => {
+  it("the audit events table shows the refusal in place of 'Nothing here yet.'", async () => {
+    const ui = as("manager@example.test");
+    try {
+      await ui.render(mod.__ui.AuditView, {});
+      const text = ui.text();
+      assert.match(text, /auditor|HTTP 403/, "the operator must be told why there are no rows");
+      assert.doesNotMatch(text, /Nothing here yet/, "a refusal must not read as 'no audit events exist'");
+    } finally { ui.restore(); }
+  });
+  it("the staff accounts table shows the refusal in place of 'Nothing here yet.'", async () => {
+    const ui = as("manager@example.test");
+    try {
+      await ui.render(mod.__ui.VIEWS.access, { me: me["manager@example.test"].me });
+      const text = ui.text();
+      assert.match(text, /platform_admin|HTTP 403/, "the operator must be told why there are no rows");
+      assert.doesNotMatch(text, /Nothing here yet/, "a refusal must not read as 'no staff accounts exist'");
+    } finally { ui.restore(); }
+  });
+});
+
+describe("console-4 (round 2) — the draws selector must render its own value", () => {
+  it("offers a placeholder when no campaign is preselected", async () => {
+    const stub = (m, url) => (url === "/api/campaigns" ? { data: { campaigns: [{ id: "cmp_draft_1", code: "DRAFT-1", name: "Not started", status: "draft", created_at: "2027-01-01T00:00:00Z" }] } } : null);
+    const ui = as("draw@example.test", { stub });
+    try {
+      await ui.render(mod.__ui.Draws, { me: me["draw@example.test"].me });
+      const sel = ui.select("Campaign");
+      assert.ok(sel, "the draws view needs a campaign selector");
+      assert.equal(sel.props.value, "", "no campaign is targeted when none is active, paused or closed");
+      const options = hostsOf(sel, "option").map((o) => o.props.value);
+      assert.ok(options.includes(""), "without an option matching value=\"\" the browser shows the first campaign, which the view is not targeting");
+      assert.ok(!ui.calls.some((c) => c.url.includes("cmp_draft_1")), "and nothing may be loaded for a campaign that was never chosen");
+    } finally { ui.restore(); }
+  });
+});
+
+describe("console-8 (round 3) — removing one outlet removes only that outlet", () => {
+  // The round-two fix DISCLOSED the data loss in the confirmation text, because
+  // the console had only the full-replace PUT to shrink membership and no route
+  // could do better. There is now a targeted delete, so the loss is gone rather
+  // than announced: replacing the whole membership silently dropped every member
+  // whose master record is inactive (this list filters them out, so the operator
+  // could not see them) and reset every survivor's collection window to always
+  // open, which is what winner-service reads to refuse a prize collection.
+  it("issues a targeted DELETE and never replaces the whole membership", async () => {
+    const ui = as("manager@example.test", { confirm: true });
+    try {
+      await ui.render(mod.__ui.CampaignOutlets, { id: h.campaign.id, data: {}, me: me["manager@example.test"].me, onChange: () => {} });
+      const row = hostsOf(ui.tree, "tr").find((r) => buttonNamed(r, "Remove"));
+      assert.ok(row, "there must be a Remove control");
+      const before = h.db.prepare(`select count(*) n from campaign_outlets where campaign_id=?`).get(h.campaign.id).n;
+      await buttonNamed(row, "Remove").props.onClick({ preventDefault() {} });
+      for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
+      const del = ui.calls.find((c) => c.method === "DELETE" && /\/outlets\/[^/]+$/.test(c.url));
+      assert.ok(del, `expected a targeted DELETE, got: ${ui.calls.map((c) => `${c.method} ${c.url}`).join(" | ")}`);
+      assert.ok(!ui.calls.some((c) => c.method === "PUT"), "the whole membership must never be replaced to remove one outlet");
+      assert.equal(h.db.prepare(`select count(*) n from campaign_outlets where campaign_id=?`).get(h.campaign.id).n, before - 1, "exactly one membership row goes");
+    } finally { ui.restore(); }
+  });
+  it("declining the confirmation removes nothing", async () => {
+    const ui = as("manager@example.test", { confirm: false });
+    try {
+      await ui.render(mod.__ui.CampaignOutlets, { id: h.campaign.id, data: {}, me: me["manager@example.test"].me, onChange: () => {} });
+      const row = hostsOf(ui.tree, "tr").find((r) => buttonNamed(r, "Remove"));
+      const before = h.db.prepare(`select count(*) n from campaign_outlets where campaign_id=?`).get(h.campaign.id).n;
+      await buttonNamed(row, "Remove").props.onClick({ preventDefault() {} });
+      for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
+      assert.ok(!ui.calls.some((c) => c.method === "DELETE"), "a declined confirmation must not call the route");
+      assert.equal(h.db.prepare(`select count(*) n from campaign_outlets where campaign_id=?`).get(h.campaign.id).n, before);
     } finally { ui.restore(); }
   });
 });

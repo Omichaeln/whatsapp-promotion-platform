@@ -1,5 +1,5 @@
 // Deploy entrypoint (Procfile `web`): migrate -> (non-production) sample seed -> HTTP server + embedded worker.
-import { loadConfig, dataVolumeStatus, markDataVolume, VOLUME_MARKER } from "./config.mjs";
+import { loadConfig, ensureDataVolume } from "./config.mjs";
 import { openDb } from "./db.mjs";
 import { ensureDemoSeed, ensureSampleStaff, recordedEnvironment } from "./demo-seed.mjs";
 import { createServer } from "./server.mjs";
@@ -11,17 +11,15 @@ const cfg = loadConfig();
 // ephemeral layer when the volume is missing or mounted elsewhere, boot green,
 // take registrations and receipts, and lose all of it on the next deploy.
 {
-  const vol = dataVolumeStatus(cfg);
-  if (vol.checked && !vol.ok) {
-    // A directory that already holds the database is the volume (adopting it
-    // keeps existing deployments booting); a new one must be provisioned once.
-    if (vol.dbExists || /^(1|true|yes)$/i.test(process.env.VOLUME_INIT || "")) {
-      markDataVolume(cfg);
-      console.log(`[bootstrap] marked data volume ${vol.dir} (${vol.dbExists ? "adopted existing database" : "VOLUME_INIT"})`);
-    } else {
-      console.error(`[bootstrap] ${vol.dir} carries no ${VOLUME_MARKER} marker: the persistent volume is not mounted there. Refusing to create a database in ephemeral storage. Provision once with VOLUME_INIT=true, or set VOLUME_PATH= to disable this check.`);
-      process.exit(1);
-    }
+  // Adoption used to key on "the database file exists", which `npm run
+  // preflight` and `npm run migrate` create themselves on an unmounted host:
+  // the documented `preflight && migrate && seed && start` sequence therefore
+  // marked an ephemeral directory as the volume and booted green. Adoption now
+  // requires a database a service has actually run against (ensureDataVolume).
+  const vol = ensureDataVolume(cfg, { init: process.env.VOLUME_INIT, log: console });
+  if (!vol.ok) {
+    console.error(`[bootstrap] ${vol.message}`);
+    process.exit(1);
   }
 }
 // The DATABASE decides, not the variable: ENVIRONMENT can be missing or

@@ -28,13 +28,29 @@ describe("nlp command parsing (legacy-2, legacy-9)", () => {
     assert.equal(parseCommand("link my phone").action, "link");
     assert.equal(parseCommand("show the qr code").action, "link");
   });
+
+  it("legacy-9: word boundaries do not throw away inflected keywords", () => {
+    // The boundary matcher that fixed "unlink" also stopped every plural and
+    // gerund from routing: /api/nl answers a null action with the generic help
+    // text, so these console command-bar phrases silently stopped working.
+    assert.equal(parseCommand("reports").action, "dashboard");
+    assert.equal(parseCommand("show me the reports").action, "dashboard");
+    assert.equal(parseCommand("run the draws").action, "draw");
+    assert.equal(parseCommand("reviewing the queue").action, "review");
+    assert.equal(parseCommand("linking my phone").action, "link");
+    // …and the suffix is outside the keyword, so the boundary fix still holds
+    assert.equal(parseCommand("unlinking my phone").action, "unlink");
+    assert.equal(parseCommand("unlink my phone").action, "unlink");
+  });
 });
 
 describe("conversation fixes", () => {
   let h; before(async () => { h = await buildApp({ extractor: "simulator" }); }); after(async () => { await h.close(); });
   const P_LIST = "263772100001", P_WITHDRAWN = "263772100002", P_QUEUE = "263772100003", P_CLAIMED = "263772100004",
     P_IMAGE = "263772100005", P_CONC = "263772100006", P_UPDATE = "263772100007", P_STOP = "263772100008",
-    P_WINNER = "263772100009", P_NEWLINE = "263772100010", P_CONFIRM = "263772100011";
+    P_WINNER = "263772100009", P_NEWLINE = "263772100010", P_CONFIRM = "263772100011",
+    P_QUEUE2 = "263772100012", P_QUEUE3 = "263772100013", P_REGCLAIM = "263772100014",
+    P_HOLD = "263772100015", P_STAGE = "263772100016", P_ERR = "263772100017";
 
   it("conversation-2: option 8 of a numbered list is selectable and is not answered with Help", async () => {
     await h.register(P_LIST, { first: "Lister", last: "Moyo", identity: "TESTLIST1" });
@@ -91,7 +107,7 @@ describe("conversation fixes", () => {
     assert.match(req.replies[0], /team will pick this up/);
     assert.match((await h.say(P_QUEUE, "2")).replies[0], /team is handling/, "a fresh handoff still suspends automation");
     const alert = h.db.prepare(`select message from alerts where kind='support.handoff' order by created_at desc limit 1`).get();
-    assert.match(alert.message, /conversation\(s\) waiting for an operator/);
+    assert.ok(alert, "the first requester raises the handoff alert");
 
     const old = new Date(Date.now() - 13 * 3600_000).toISOString();
     h.db.prepare(`update conversation_sessions set handoff_since=? where campaign_id=? and wa_phone_uid=?`).run(old, h.campaign.id, P_QUEUE);
@@ -108,6 +124,27 @@ describe("conversation fixes", () => {
     assert.match((await h.say(P_CLAIMED, "menu")).replies[0], /team is handling/);
   });
 
+  it("conversation-5: a second and third requester are not swallowed by the hourly kind-dedup", async () => {
+    // domain.alert() de-duplicates on `kind` alone for an hour and returns the
+    // FIRST alert's id without touching its message, so putting the queue size
+    // into the support.handoff message reported "1 waiting" for ever however
+    // many people were locked out. The backlog must therefore raise its own
+    // alert row.
+    const before = h.db.prepare(`select count(*) n from alerts where kind='support.handoff'`).get().n;
+    await h.register(P_QUEUE2, { first: "Quetwo", last: "Ncube", identity: "TESTQUE21" });
+    await h.register(P_QUEUE3, { first: "Quethree", last: "Ncube", identity: "TESTQUE31" });
+    await h.say(P_QUEUE2, "support");
+    await h.say(P_QUEUE3, "support");
+    const waiting = h.db.prepare(`select count(*) n from conversation_sessions where campaign_id=? and handoff_owner='queue'`).get(h.campaign.id).n;
+    assert.equal(waiting, 2, "two conversations are parked in the queue");
+    assert.equal(h.db.prepare(`select count(*) n from alerts where kind='support.handoff'`).get().n, before,
+      "the per-requester alert really is swallowed by the hourly kind-dedup — which is why the depth cannot live in its message");
+    const depth = h.db.prepare(`select message, severity, detail_json from alerts where kind='support.queue_depth_2' order by created_at desc limit 1`).get();
+    assert.ok(depth, "a distinct alert reports the backlog the dedup would otherwise hide");
+    assert.match(depth.message, /^2 support conversations are waiting for an operator/, "it states the depth actually reached, not 1");
+    assert.equal(JSON.parse(depth.detail_json).waiting, 2);
+  });
+
   it("conversation-1: a receipt photo sent at HOME is submitted against the last outlet, never dropped", async () => {
     await h.register(P_IMAGE, { first: "Snap", last: "Happy", identity: "TESTIMG11" });
     // a photo before any outlet was ever chosen: the reply now matches reality
@@ -122,6 +159,18 @@ describe("conversation fixes", () => {
     await h.app.intake.drain(); await h.app.worker.tick();
     const pid = h.domain.getParticipantByPhone(P_IMAGE).id;
     assert.equal(h.db.prepare(`select count(*) n from receipts where participant_id=?`).get(pid).n, 2, "the second photo created a receipt");
+
+    // …and after a round-trip through the menu, which is exactly what someone
+    // who greets the bot, taps MENU or presses BACK between two purchases does.
+    // home() used to rewrite the context as { lastReceiptId } only, dropping
+    // the lastOutletId homeImage() depends on, so the very next photo fell back
+    // to "first tell us where you shopped".
+    await h.say(P_IMAGE, "menu");
+    assert.ok(JSON.parse(h.domain.getSession(h.campaign.id, P_IMAGE).context_json).lastOutletId, "the remembered outlet survives MENU");
+    const third = await h.say(P_IMAGE, "", { image: await h.simImage(h.simReceipt({ no: "990004" })) });
+    assert.match(third.replies[0], /received your receipt/i, "a photo after a MENU round-trip is still submitted");
+    await h.app.intake.drain(); await h.app.worker.tick();
+    assert.equal(h.db.prepare(`select count(*) n from receipts where participant_id=?`).get(pid).n, 3, "the third photo created a receipt too");
   });
 
   it("conversation-4: a concurrent session write does not turn an accepted receipt into \"send a photo\"", async () => {
@@ -165,6 +214,10 @@ describe("conversation fixes", () => {
     const r = await h.say(P_STOP, "stop");
     assert.match(r.replies[0], /withdrawn/i);
     assert.doesNotMatch(r.replies[0], /Cancelled/);
+    // withdrawParticipant closes EVERY consent and enrolment for the number and
+    // sets the profile to 'withdrawn' globally, so the consent record the
+    // participant reads must not claim only one promotion ended.
+    assert.ok(!r.replies[0].includes(h.campaign.name), `opt-out copy must not scope the withdrawal to one campaign: ${r.replies[0]}`);
     const p = h.domain.getParticipantByPhone(P_STOP);
     assert.equal(p.status, "withdrawn");
     assert.ok(h.db.prepare(`select withdrawn_at from campaign_enrollments where participant_id=?`).get(p.id).withdrawn_at);
@@ -220,11 +273,104 @@ describe("conversation fixes", () => {
     assert.doesNotMatch(wrong.replies[0], /Test Hamper/);
     // a participant who has won nothing is told the same neutral thing
     assert.match((await h.say(P_LIST, "claim")).replies[0], /could not match a prize claim/i);
+
+    // An 8-character all-hex reply is NOT a claim reference: the reference is
+    // always quoted (and sent) hyphenated. Reading any 8 hex characters as one
+    // answered a receipt/till number with the main menu instead of "Sorry, I
+    // didn't understand that", and wrote a winner.claim_rejected audit row
+    // against an open winner for every such typo.
+    const rejectedBefore = h.db.prepare(`select count(*) n from audit_events where target_id='win_claimtest' and action='winner.claim_rejected'`).get().n;
+    const digits = await h.say(P_WINNER, "12345678");
+    assert.match(digits.replies[0], /didn't understand that/i, "an 8-digit reply is ordinary unrecognised input");
+    assert.equal(h.db.prepare(`select count(*) n from audit_events where target_id='win_claimtest' and action='winner.claim_rejected'`).get().n, rejectedBefore,
+      "a receipt/till number must not be audited as a rejected claim");
+  });
+
+  it("conversation-5(claim): the bare word CLAIM is only consumed at HOME/SUPPORT, never mid-registration", async () => {
+    // `!claimRef` made the bare word a global intent, so a first-time
+    // registrant at REG_FIRST who typed it got "We could not match a prize
+    // claim…" and was left at REG_FIRST with no re-prompt at all.
+    await h.say(P_REGCLAIM, "hi");
+    await h.say(P_REGCLAIM, "1");
+    const mid = await h.say(P_REGCLAIM, "claim");
+    assert.doesNotMatch(mid.replies[0], /could not match a prize claim/i, "the registration step is not hijacked");
+    assert.equal(mid.result.state, "REG_SURNAME", "the answer is taken as the name and registration moves on");
+    // …and the same inside an outlet search
+    await h.say(P_LIST, "menu");
+    await h.say(P_LIST, "2");
+    const search = await h.say(P_LIST, "claim");
+    assert.doesNotMatch(search.replies[0], /could not match a prize claim/i);
+    assert.match(search.replies[0], /No branch matched/i, "it is searched for like any other word");
+    await h.say(P_LIST, "menu");
+  });
+
+  it("conversation-3(status): a suspended participant is not told they asked to be removed", async () => {
+    await h.register(P_HOLD, { first: "Hold", last: "Ncube", identity: "TESTHLD11" });
+    h.db.prepare(`update participants set status='suspended' where id=?`).run(h.domain.getParticipantByPhone(P_HOLD).id);
+    const r = await h.say(P_HOLD, "2");
+    assert.doesNotMatch(r.replies[0], /at your request/i, "staff suspension is not a participant withdrawal");
+    assert.match(r.replies[0], /on hold/i);
+    assert.match(r.replies[0], /reply SUPPORT/i);
+    assert.equal(r.eventStatus, "processed");
+    // a genuinely withdrawn profile still gets the withdrawal wording
+    assert.match((await h.say(P_WITHDRAWN, "2")).replies[0], /at your request/i);
+  });
+
+  it("requirements-5: identity_stage=\"winner\" gives a 3-option confirmation whose \"3\" edits the town", async () => {
+    const v = h.domain.getActiveVersion(h.campaign.id);
+    const flags = JSON.parse(v.flags_json || "{}");
+    h.db.prepare(`update campaign_versions set flags_json=? where id=?`).run(JSON.stringify({ ...flags, registration: { identity_stage: "winner" } }), v.id);
+    try {
+      await h.say(P_STAGE, "hi");
+      await h.say(P_STAGE, "1");
+      await h.say(P_STAGE, "Rudo");
+      const afterSurname = await h.say(P_STAGE, "Chataika");
+      assert.equal(afterSurname.result.state, "REG_LOCATION", "the ID is not asked for at registration");
+      const confirm = await h.say(P_STAGE, "Gweru");
+      assert.equal(confirm.result.state, "REG_CONFIRM");
+      assert.match(confirm.replies[0], /3 town/, "the confirmation offers the options it can actually honour");
+      assert.doesNotMatch(confirm.replies[0], /3 ID/, "the dead \"3 ID\" option is gone");
+      const edit = await h.say(P_STAGE, "3");
+      assert.equal(edit.result.state, "REG_LOCATION", "\"3\" edits the town instead of redisplaying the same screen");
+      assert.match(edit.replies[0], /town or city/i);
+    } finally {
+      h.db.prepare(`update campaign_versions set flags_json=? where id=?`).run(JSON.stringify(flags), v.id);
+    }
+  });
+
+  it("conversation-3(generic): a domain error is answered and the event settled; a CONFLICT still replays", async () => {
+    await h.register(P_ERR, { first: "Erro", last: "Ncube", identity: "TESTERR11" });
+    const real = h.domain.versionRules;
+    try {
+      // mechanics() ("3") is the only conversation path through versionRules.
+      h.domain.versionRules = () => { throw new Error("boom"); };
+      const r = await h.say(P_ERR, "3");
+      assert.ok(r.replies.length > 0, "the participant is told something rather than getting silence");
+      assert.match(r.replies[0], /something went wrong/i);
+      assert.equal(r.eventStatus, "processed", "the event is settled, not left to dead-letter");
+
+      // A genuinely retryable failure must still escape so intake replays it.
+      h.domain.versionRules = () => { throw Object.assign(new Error("busy"), { code: "CONFLICT" }); };
+      const c = await h.say(P_ERR, "3");
+      assert.equal(c.replies.length, 0, "no false outcome is sent for a retryable failure");
+      assert.equal(c.eventStatus, "failed", "the event stays queued for replay");
+    } finally { h.domain.versionRules = real; }
   });
 
   it("parseIntent: CLAIM and STOP are recognised, numbers still ride along", () => {
     assert.equal(parseIntent("CLAIM").intent, "CLAIM");
     assert.equal(parseIntent("7F2F-6807").claimRef, "7F2F-6807");
+    // The notification always quotes the reference hyphenated, but a winner who
+    // retypes it without the hyphen must still be able to claim — winner-service
+    // normalises exactly that form. What must NOT be read as a claim is an
+    // all-digit reply: a receipt number, a date or a till number. Requiring a
+    // hex LETTER separates the two, which is why this test asserts the letter
+    // rule rather than rejecting every unhyphenated reference: doing that turned
+    // real winners away (about 98% of references carry a letter; the rest have
+    // to be typed with the hyphen).
+    assert.equal(parseIntent("12345678").intent, null, "an 8-digit reply is not a claim reference");
+    assert.equal(parseIntent("78B1BE72").claimRef, "78B1-BE72", "a winner who drops the hyphen must still claim");
+    assert.equal(parseIntent("deadbeef").claimRef, "DEAD-BEEF");
     assert.equal(parseIntent("stop").intent, "OPTOUT");
     assert.equal(parseIntent("cancel").intent, "CANCEL");
     assert.equal(parseIntent("8").number, 8);

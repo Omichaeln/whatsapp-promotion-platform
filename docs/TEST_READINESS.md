@@ -1,6 +1,6 @@
 # Test readiness statement
 
-Build: branch `claude/funny-brown-r7wpo9`; this revision of the statement was written against commit `86189c3` (12 September 2026) and the pull request carries the full history. The evidence artefacts under `docs/testing/evidence/` were produced at the earlier commit `f0a7f7a8f4fdbd5f2a57fd12f8359d29d25a3ab5` and have **not** been regenerated since — where a row below cites one, read it as evidence for that commit, not for the branch tip. Regenerating the evidence set (`docs/testing/evidence/README.md` lists the exact commands) is a prerequisite for hand-over. This statement is an engineering self-assessment with evidence; it is not a client sign-off.
+Build: branch `claude/funny-brown-r7wpo9`; this revision of the statement was written against commit `86189c3` (12 September 2026) and is maintained with the branch, whose pull request carries the full history. The evidence artefacts under `docs/testing/evidence/` have **not** been regenerated since: everything except two recordings was produced at commit `d0bf6327ea646726b51d106ff190b42e62d7439a`, and `test-results.txt` and `remote-smoke-staging-rehearsal.*` at the later `86ebef8a71dc424dae292f7232b90cbb157562b0` (`git log -1 -- docs/testing/evidence/<file>` confirms either) — where a row below cites one, read it as evidence for that commit, not for the branch tip. Regenerating the evidence set (`docs/testing/evidence/README.md` lists the exact commands) is a prerequisite for hand-over. This statement is an engineering self-assessment with evidence; it is not a client sign-off.
 
 ## Readiness at the three levels
 
@@ -23,7 +23,7 @@ Per the build brief, the system is **not** described as ready for integrated cli
 | Simulator extractor | `src/extract/simulator.mjs` | TEST ONLY; refused outside `local` | used by the fast test suites only |
 | CRM | `src/crm.mjs` (canonical events, versioned outbox, read-back, reconcile) + `scripts/crm-receiver.mjs` | **not_configured** (`CRM_PROVIDER=none`); webhook adapter **verified against the local contract receiver only** | `test/crm-reliability.test.mjs` T-26/T-27; D-19 |
 | Hosting (Railway) | `Procfile` → `src/bootstrap.mjs`, volume at `/app/data`, `SEED_POPULATED` journeys | **not deployed from this environment** (Railway API, dashboard and app URL unreachable from the sandbox); the Railway start command was rehearsed locally under `ENVIRONMENT=staging` and the 95-check live test passed | `docs/release/railway-deploy.md`, `evidence/remote-smoke-staging-rehearsal.txt` |
-| Database | `node:sqlite` WAL, expand-only migrations 001–011 | verified locally, migration rehearsal on populated v1 data | `evidence/migration-rehearsal.json`, `evidence/restore-rehearsal.json` |
+| Database | `node:sqlite` WAL, migrations 001–012 (additive apart from the dead-metadata delete in 011 and two index drops in 012 — no application data is removed) | verified locally, migration rehearsal on populated v1 data | `evidence/migration-rehearsal.json`, `evidence/restore-rehearsal.json` |
 
 ## Access for testers (local / any deployment of this branch)
 

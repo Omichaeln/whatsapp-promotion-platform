@@ -32,12 +32,33 @@ export function seedReviewTasks(db, campaignId, periods) {
   return db.prepare(`select rt.receipt_id from review_tasks rt join receipts r on r.id=rt.receipt_id where rt.state!='decided' and r.campaign_id=? and r.period_code in (${periods.map(() => "?").join(",")}) and ${seedPhoneFilter("r")}`).all(campaignId, ...periods, ...SEED_PHONES);
 }
 
-/** Has a previous run finished? (a published draw with winners is the seed's end state) */
+/**
+ * Has a previous run finished?
+ *
+ * The completion marker answers for every run since it was introduced. For
+ * databases seeded BEFORE it existed the shape of the data has to answer, and
+ * "a published draw with winners" was too narrow: runPopulatedSeed deliberately
+ * skips the draw when the barrier is blocked (`draw W-2 blocked: … — left for
+ * the tester`) and still finishes. Such a database was reported INCOMPLETE at
+ * every boot, and `npm run seed` exited 1 telling the operator to run
+ * `npm run reset:sample`, destroying working sample data. A run that reached
+ * its last submissions has every one of its own 12 phones enrolled AND holding
+ * a receipt, which the draw cannot affect either way.
+ */
 export function seedComplete(db, domain, campaignId) {
   const marker = domain.getSetting(SEED_MARKER_KEY, null);
   if (marker?.completedAt) return { complete: true, marker };
   const published = db.prepare(`select count(*) n from draws d join winners w on w.draw_id=d.id where d.campaign_id=? and d.status='published'`).get(campaignId).n;
-  return { complete: published > 0, marker };
+  const ph = SEED_PHONES.map(() => "?").join(",");
+  const populated = db.prepare(`select count(*) n from (select p.id from participants p join campaign_enrollments ce on ce.participant_id=p.id and ce.campaign_id=? join receipts r on r.participant_id=p.id and r.campaign_id=ce.campaign_id where p.wa_phone_uid in (${ph}) group by p.id)`).get(campaignId, ...SEED_PHONES).n;
+  // The "every seed phone is enrolled and holds a receipt" heuristic exists only
+  // for databases seeded BEFORE the marker existed. Applying it whenever
+  // completedAt is missing reversed the fix it sits on top of: a run that was
+  // interrupted after the receipt stage — the marker present, completedAt not —
+  // was reported complete again, which is the "already present" lie that let a
+  // half-seeded environment look finished.
+  const complete = published > 0 || (!marker && populated === SEED_PHONES.length);
+  return { complete, marker, inferred: complete && !marker?.completedAt };
 }
 
 export async function runPopulatedSeed(app, { log = console.log } = {}) {
@@ -49,15 +70,24 @@ export async function runPopulatedSeed(app, { log = console.log } = {}) {
   // restart, an OOM) left the environment half-populated for ever while every
   // later boot reported "already present". Completion is now recorded, and a
   // partial run is reported as partial.
-  const { complete, marker } = seedComplete(db, domain, camp.id);
+  const { complete, marker, inferred } = seedComplete(db, domain, camp.id);
   const already = db.prepare(`select count(*) n from receipts where campaign_id=?`).get(camp.id).n;
-  if (complete) { log(`[seed] journeys already seeded (${already} receipts); nothing to do`); return { already: true, complete: true }; }
+  if (complete) {
+    // Heal a pre-marker database once, so the (necessarily heuristic) inference
+    // above is not re-run on every boot.
+    if (inferred) domain.setSetting(SEED_MARKER_KEY, { stage: "complete", startedAt: marker?.startedAt || null, completedAt: new Date().toISOString(), inferredFromData: true });
+    log(`[seed] journeys already seeded (${already} receipts); nothing to do`); return { already: true, complete: true };
+  }
   if (already > 0) {
     const stage = marker?.stage || "unknown";
     log(`[seed] journeys are INCOMPLETE (${already} receipts, last stage: ${stage}); a previous run did not finish. Reset and re-seed: npm run reset:sample && npm run seed`);
     return { already: true, incomplete: true, stage, receipts: already };
   }
-  const stage = (name) => domain.setSetting(SEED_MARKER_KEY, { stage: name, startedAt: marker?.startedAt || new Date().toISOString(), completedAt: null });
+  // Captured once: computing it inside stage() rewrote startedAt to "now" at
+  // every stage transition, so the marker recorded the last transition rather
+  // than when the run began.
+  const startedAt = marker?.startedAt || new Date().toISOString();
+  const stage = (name) => domain.setSetting(SEED_MARKER_KEY, { stage: name, startedAt, completedAt: null });
   stage("starting");
   const phones = SEED_PHONES;
   const names = [["Tendai", "Ncube"], ["Rudo", "Chari"], ["Blessing", "Moyo"], ["Farai", "Dube"], ["Chipo", "Sibanda"], ["Tapiwa", "Mutasa"], ["Nyasha", "Gumbo"], ["Kudzai", "Mhlanga"], ["Rutendo", "Chikwanda"], ["Tinashe", "Banda"], ["Vimbai", "Mapfumo"], ["Simba", "Zulu"]];
@@ -114,7 +144,7 @@ export async function runPopulatedSeed(app, { log = console.log } = {}) {
   }
   await worker.tick();
   }
-  domain.setSetting(SEED_MARKER_KEY, { stage: "complete", startedAt: marker?.startedAt || new Date().toISOString(), completedAt: new Date().toISOString() });
+  domain.setSetting(SEED_MARKER_KEY, { stage: "complete", startedAt, completedAt: new Date().toISOString() });
   const c = (sql) => db.prepare(sql).get(camp.id).n;
   const summary = { participants: c(`select count(*) n from campaign_enrollments where campaign_id=?`), receipts: c(`select count(*) n from receipts where campaign_id=?`), by_status: db.prepare(`select status, count(*) n from receipts where campaign_id=? group by status`).all(camp.id), entries: c(`select count(*) n from entries where campaign_id=? and status='active'`), draws: db.prepare(`select draw_period, status from draws where campaign_id=?`).all(camp.id), winners: db.prepare(`select status, count(*) n from winners group by status`).all() };
 

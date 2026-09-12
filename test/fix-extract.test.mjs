@@ -8,6 +8,8 @@
 //   extract-9  media reuse is scoped to the campaign and to bytes still on disk
 import fs from "node:fs";
 import path from "node:path";
+import { EventEmitter } from "node:events";
+import { Worker } from "node:worker_threads";
 import { describe, it, before, after, assert, buildApp, sharp, ROOT } from "./helpers.mjs";
 import { TesseractExtractor } from "../src/extract/tesseract.mjs";
 import { VisionExtractor } from "../src/extract/vision.mjs";
@@ -43,7 +45,17 @@ describe("extract: OCR worker failures are contained and the worker is never sha
   after(async () => { await x.close(); });
 
   it("extract-3: concurrent callers get ONE worker (a probe racing the first receipt leaked a 56 MB thread per call)", async () => {
+    // Object identity alone does NOT prove this and passes without the fix:
+    // every caller used to return the shared `this.worker` field after its own
+    // await, so three callers could hand back the same last-written object
+    // while three 56 MB threads had been spawned. The leak IS the thread count,
+    // so count threads: worker_threads allocates ids from one monotonic counter
+    // and never reuses them, so a probe either side is an exact census.
+    const probe = () => { const w = new Worker("", { eval: true }); const t = w.threadId; w.terminate(); return t; };
+    const before = probe();
     const [a, b, c] = await Promise.all([x.ensureWorker(), x.ensureWorker(), x.ensureWorker()]);
+    const spawned = probe() - before - 1;
+    assert.equal(spawned, 1, `three concurrent callers must spawn exactly ONE worker thread, spawned ${spawned}`);
     assert.equal(a, b, "the second caller must get the worker the first one built");
     assert.equal(b, c);
     assert.equal(x.worker, a, "and the extractor must hold the same one (the losers were leaked, unreachable by close())");
@@ -73,6 +85,12 @@ describe("extract: OCR worker failures are contained and the worker is never sha
     await assert.rejects(() => inFlight, /simulated worker crash/, "the receipt waiting on that worker must fail fast");
     assert.ok(Date.now() - started < 20_000, "and not hang until the 45s timeout");
     assert.equal(x.worker, null, "the dead worker must not be handed to the next receipt");
+    // One thread error is ONE engine failure. It used to be counted twice (once
+    // in the 'error' listener, once in recogniseOnce's catch for the call the
+    // listener had just failed), so /health/ready answered 503 and the console
+    // reported the extractor dead after TWO thread errors, not the three the
+    // threshold, its comment and the runbook all state.
+    assert.equal(x.engineFailures, 1, "a single thread error must count once");
   });
 
   it("extract-3: the next receipt rebuilds the worker and OCR still reads the pixels", async () => {
@@ -97,7 +115,10 @@ describe("extract: timeouts, serialisation and the retry budget", () => {
     assert.match(ok.data.text, /SUNRISE/);
   });
 
-  it("extract-4: the serialisation chain only releases when the engine call really settles", async () => {
+  it("extract-4: a call takes its place in the chain at once, and a timed-out one releases it only after the worker is gone", async () => {
+    // Two halves, because only the first one is literally true of the engine.
+    // (a) While the engine is running, the chain stays held: the next receipt
+    // cannot be posted to a worker that is still chewing on this image.
     const { x, made } = stubbed(300, { timeoutMs: 5_000 });
     const first = x.recognise(Buffer.from("a"));
     let settled = false; x.busy.then(() => { settled = true; });
@@ -106,6 +127,24 @@ describe("extract: timeouts, serialisation and the retry budget", () => {
     await first;
     await x.busy;
     assert.equal(made[0].finished, 1, "busy released only after the engine finished");
+
+    // (b) A TIMEOUT cannot cancel the WASM job — it keeps running inside the
+    // thread — so the chain does release while the engine is still working.
+    // What protects the next receipt is therefore not the chain: it is that the
+    // zombie worker has already been dropped AND terminated by the time the
+    // chain releases, so the next call cannot be handed it. Assert that, not an
+    // invariant the engine cannot give us.
+    const t = stubbed(600, { timeoutMs: 100 });
+    await assert.rejects(() => t.x.recognise(Buffer.from("b")), /ocr timeout/);
+    await t.x.busy;
+    assert.equal(t.made[0].finished, 0, "the engine job outlives the timeout: the chain released while it was still running");
+    assert.equal(t.x.worker, null, "so the zombie must be off the extractor before the chain releases");
+    assert.equal(t.made[0].terminated, 1, "and terminated, or the next receipt pays its remaining time");
+    t.x.timeoutMs = 5_000;
+    const okAfter = await t.x.recognise(Buffer.from("c"));
+    assert.equal(t.made.length, 2, "the next receipt runs on a fresh worker");
+    assert.equal(t.made[0].calls, 1, "the zombie is never given a second image");
+    assert.match(okAfter.data.text, /SUNRISE/);
   });
 
   it("extract-8: the retry budget measures the OCR pass, not the time the receipt spent queued", async () => {
@@ -134,6 +173,81 @@ describe("extract: timeouts, serialisation and the retry budget", () => {
   });
 });
 
+/** A tesseract-api-shaped worker whose `worker` handle is a real EventEmitter,
+ *  so the listeners ensureWorker() installs during the build can be driven. */
+function buildableWorker({ setParameters } = {}) {
+  const w = {
+    terminated: 0, worker: new EventEmitter(),
+    async recognize() { return { jobId: "j", data: { text: "SUNRISE SUPERMARKET", confidence: 80 } }; },
+    // tesseract.js NEVER settles a job promise whose thread has gone (terminate()
+    // just kills the thread, createWorker.js:187) — that is what wedged the build.
+    setParameters: setParameters || (async () => {}),
+    terminate() { w.terminated++; return Promise.resolve(); },
+  };
+  return w;
+}
+
+describe("extract-3: a worker that dies while it is being BUILT must not wedge the extractor for ever", () => {
+  // Each case carries an explicit timeout: the defect under test IS a hang, so a
+  // regression here must be reported as a failed test, not as a wedged runner.
+  const silent = { warn() {}, error() {} };
+
+  it("a thread error during the build fails the waiting caller instead of hanging every later call", { timeout: 20_000 }, async () => {
+    // The build's only awaited step after the thread exists is setParameters(),
+    // whose promise can never settle once the thread is gone. The memoised
+    // build promise is what every later recognise(), extract() and unauthenticated
+    // /health/ready await, so leaving it pending wedged the whole extractor
+    // until the process was restarted — strictly worse than the un-memoised
+    // version this replaced, where the next caller just built a fresh worker.
+    const dying = buildableWorker({ setParameters: () => new Promise(() => {}) });
+    const x = new TesseractExtractor({ log: silent, timeoutMs: 30_000 });
+    x.spawnWorker = async () => dying;
+    const p = x.ensureWorker(); p.catch(() => {});
+    await new Promise((r) => setTimeout(r, 20));   // the worker exists; the build is awaiting setParameters
+    dying.worker.emit("error", new Error("thread died mid-build"));
+    await assert.rejects(() => p, /thread died mid-build/, "the caller must see the failure, not await a promise that can never settle");
+    assert.equal(x.workerPromise, null, "and the memoised build must be cleared, or every later call inherits the wedge");
+    assert.equal(dying.terminated, 1, "the half-built worker must be terminated");
+    const good = buildableWorker();
+    x.spawnWorker = async () => good;
+    assert.equal(await x.ensureWorker(), good, "the next caller must build a clean worker");
+    await x.close();
+  });
+
+  it("a build that never finishes is bounded: /health/ready answers instead of hanging", { timeout: 20_000 }, async () => {
+    const x = new TesseractExtractor({ log: silent, buildTimeoutMs: 150 });
+    x.spawnWorker = () => new Promise(() => {});
+    const t0 = Date.now();
+    await assert.rejects(() => x.ensureWorker(), /worker_build_timeout/, "a build with no bound is an unrecoverable hang");
+    assert.ok(Date.now() - t0 < 3_000, "and it must surface at the bound, not at the heat death of the universe");
+    const h = await x.health();
+    assert.equal(h.ok, false, "/health/ready must answer 503, not hang unanswered");
+    const good = buildableWorker();
+    x.spawnWorker = async () => good; x.timeoutMs = 5_000;
+    assert.equal(await x.ensureWorker(), good, "and the extractor must still be usable afterwards");
+    await x.close();
+  });
+
+  it("close() racing a build does not leave a worker thread behind", { timeout: 20_000 }, async () => {
+    // /health/ready is unauthenticated and calls ensureWorker(), so a probe that
+    // lands as SIGTERM arrives starts a build that outlives close(): its
+    // continuation re-assigned this.worker after close() returned and the 56 MB
+    // thread survived, unowned and unreachable.
+    let release; const late = buildableWorker();
+    const x = new TesseractExtractor({ log: silent });
+    x.spawnWorker = () => new Promise((r) => { release = () => r(late); });
+    const p = x.ensureWorker(); p.catch(() => {});
+    await new Promise((r) => setTimeout(r, 10));
+    const closing = x.close({ graceMs: 1_000 });
+    await new Promise((r) => setTimeout(r, 20));   // close() has taken over the in-flight build
+    release();
+    await closing;
+    assert.equal(x.worker, null, "close() must not be undone by a build that finishes just after it");
+    assert.equal(x.workerPromise, null);
+    assert.equal(late.terminated, 1, "the worker the build produced must be terminated, not leaked");
+  });
+});
+
 describe("extract-7: the vision provider type-checks every value it is given", () => {
   const body = (payload) => ({ ok: true, status: 200, json: async () => ({ id: "r1", model: "m", choices: [{ message: { content: JSON.stringify(payload) }, finish_reason: "stop" }] }) });
   const base = {
@@ -152,12 +266,30 @@ describe("extract-7: the vision provider type-checks every value it is given", (
     // A bare TypeError has no .code and no .transient, so the pipeline retried
     // the same deterministic request 6 times and dead-lettered it: the receipt
     // sat in 'delayed' for ever with no review task ever created.
-    for (const [label, items] of [["null item", [null]], ["string item", ["oops"]], ["object raw", [{ ...base.line_items[0], raw: {} }]], ["missing voided", [{ raw: "a", description: "b", quantity: null, unit_price_text: null, amount_text: null }]]]) {
+    for (const [label, items] of [["null item", [null]], ["string item", ["oops"]], ["object raw", [{ ...base.line_items[0], raw: {} }]],
+      // `!!"false"` is true, so forgiving this would void a line the receipt
+      // does not void — the one line-item shape that must still be refused.
+      ["string voided", [{ raw: "a", description: "b", quantity: null, unit_price_text: null, amount_text: null, voided: "false" }]],
+      ["non-numeric quantity", [{ ...base.line_items[0], quantity: "two" }]]]) {
       const out = await run({ ...base, line_items: items });
       assert.equal(out.document.kind, "unknown", `${label}: must fall back to the empty extraction`);
       assert.match(out.quality.warnings.join(","), /schema_invalid:line_items\[0\]/, `${label}: and say why`);
       assert.deepEqual(out.lineItems, [], `${label}: no invented items`);
     }
+  });
+
+  it("a shape another OpenAI-compatible endpoint commonly sends is coerced, not sent to review", async () => {
+    // baseUrl is configurable and the whole point of the finding is that path.
+    // A quantity sent as "2" and an omitted optional `voided` both collapse to
+    // exactly what the mapping already produces (null / false), so refusing the
+    // receipt over them put a perfectly good upload in front of a reviewer and
+    // extracted nothing. They are still reported, never silently accepted.
+    const out = await run({ ...base, line_items: [{ raw: "2 x GOLDCANE BROWN SUGAR 2KG", description: "GOLDCANE BROWN SUGAR 2KG", quantity: "2", unit_price_text: "3.10", amount_text: "6.20" }] });
+    assert.equal(out.document.kind, "receipt", "the receipt must still be extracted");
+    assert.equal(out.lineItems.length, 1);
+    assert.equal(out.lineItems[0].quantity, null, "a quantity we did not get as a number is null, never invented");
+    assert.equal(out.lineItems[0].voided, false);
+    assert.match(out.quality.warnings.join(","), /model_shape_coerced:line_items\[0\]\.quantity\|line_items\[0\]\.voided/, "and the reviewer is told the endpoint sent a loose shape");
   });
 
   it("a non-string transaction field never reaches the facts", async () => {
@@ -191,11 +323,12 @@ describe("extract-5: perceptual hashes are evidence, so they must not match unre
     const rows = [];
     for (const f of manifest.fixtures) rows.push({ id: f.id, dup: f.duplicateOf || null, ...(await imageHashes(fs.readFileSync(path.join(FIXTURES, f.file)))) });
     const dist = (a, b) => Math.min(hamming(a.phash, b.phash), hamming(a.dhash, b.dhash));   // the rule duplicates.mjs applies
-    let flagged = 0, unrelated = 0;
+    let flagged = 0, unrelated = 0, dupPairs = 0, dupCaught = 0;
     for (let i = 0; i < rows.length; i++) for (let j = i + 1; j < rows.length; j++) {
       const A = rows[i], B = rows[j];
-      if (A.dup === B.id || B.dup === A.id || (A.dup && A.dup === B.dup)) continue;
-      unrelated++; if (dist(A, B) <= PROBABLE_DUPLICATE_DIST) flagged++;
+      const near = dist(A, B) <= PROBABLE_DUPLICATE_DIST;
+      if (A.dup === B.id || B.dup === A.id || (A.dup && A.dup === B.dup)) { dupPairs++; if (near) dupCaught++; continue; }
+      unrelated++; if (near) flagged++;
     }
     // The 8x8 mean hash flagged 25.3% of these pairs, several at distance 0, and
     // those rows are what a reviewer reads before deciding DUPLICATE (which
@@ -204,6 +337,16 @@ describe("extract-5: perceptual hashes are evidence, so they must not match unre
     assert.ok(flagged / unrelated < 0.15, `${flagged}/${unrelated} unrelated fixture pairs flagged as probable duplicates`);
     const by = (id) => rows.find((r) => r.id === id);
     assert.ok(dist(by("valid-two-pack-C"), by("valid-two-pack-C-photo")) <= PROBABLE_DUPLICATE_DIST, "a re-photographed receipt is the case this signal exists for");
+    // And the price, asserted rather than left implicit: precision was bought
+    // with recall. Over the same fixtures this catches 4 of the 18 labelled
+    // duplicate pairs where the 8x8 mean hash caught 6 (measured on both). The
+    // other half of extract-5 — rotated re-photographs, d=24 — is NOT closed by
+    // this change and cannot be closed by a threshold. It costs nothing that can
+    // mint an entry: every one of these pairs is still blocked by the canonical
+    // receipt identity (test/receipt-ocr.test.mjs T-07/T-14). This assertion is
+    // here so a further silent drop in recall fails the suite.
+    assert.equal(dupPairs, 18, "the manifest's labelled duplicate pairs");
+    assert.ok(dupCaught >= 4, `perceptual recall dropped below the 4/18 this threshold was calibrated at (${dupCaught}/${dupPairs})`);
   });
 });
 

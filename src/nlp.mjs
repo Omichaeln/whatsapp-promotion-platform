@@ -79,7 +79,14 @@ const KEYWORD_RE = new Map();
 function keywordHit(low, keyword) {
   const k = keyword.trim();
   let re = KEYWORD_RE.get(k);
-  if (!re) { re = new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"); KEYWORD_RE.set(k, re); }
+  // A trailing plural/gerund still counts as the same keyword. Word boundaries
+  // alone reclassified every inflected form the old substring matcher routed:
+  // "reports" / "show me the reports" lost the dashboard, "run the draws" lost
+  // the draw, and /api/nl answers a null action with the generic help text, so
+  // those console command-bar phrases stopped doing anything at all. The suffix
+  // is OUTSIDE the keyword and still anchored by \b, so "unlink" is still not
+  // "link".
+  if (!re) { re = new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:s|es|ing)?\\b`, "i"); KEYWORD_RE.set(k, re); }
   return re.test(low);
 }
 

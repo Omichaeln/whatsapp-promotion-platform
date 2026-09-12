@@ -46,6 +46,35 @@ describe("one till number, two purchases", () => {
     assert.equal(active, 2, "two purchases, two entries");
   });
 
+  it("the reviewer path itself refuses to collapse two totals, not just the automatic path", async () => {
+    // process() normally mints the second purchase its own canonical row, so a
+    // reviewer decision resolves it by exact key and never reaches review()'s
+    // identity-only fallback. That made it possible for the guard on the
+    // reviewer path to be reverted with every test still green. This drives the
+    // fallback directly: a credited claim on the printed identity, and a
+    // receipt awaiting review that has no canonical row of its own.
+    const phone = "263771970779";
+    await h.register(phone, { first: "Review", last: "Fallback", identity: "TESTTILL03" });
+    const outlet = { outlet: "sunrise westgate harare" };
+
+    const a = await h.submit(phone, await h.simImage(h.simReceipt({ no: "907003", packs: 2 })), outlet);
+    assert.equal(a.receipt.status, "QUALIFIED");
+    const b = await h.submit(phone, await h.simImage(h.simReceipt({ no: "907003", packs: 3 })), outlet);
+    assert.equal(b.receipt.status, "REVIEW_REQUIRED");
+
+    // Strip B's own canonical row so the only thing claim() can match is A's,
+    // on the printed identity alone, with a different total.
+    h.db.prepare(`delete from canonical_receipts where campaign_id=? and receipt_no_norm='907003' and total_minor=930`).run(h.campaign.id);
+    h.db.prepare(`update receipts set canonical_receipt_id=null where id=?`).run(b.receiptId);
+    const rows = h.db.prepare(`select total_minor, status from canonical_receipts where campaign_id=? and receipt_no_norm='907003'`).all(h.campaign.id).map((r) => [r.total_minor, r.status]);
+    assert.deepEqual(rows, [[620, "credited"]], "precondition: one credited claim, on a different total");
+
+    const out = h.app.pipeline.review(b.receiptId, { reviewer: reviewer.id, decision: "QUALIFIED", note: "different purchase, same till number" });
+    assert.equal(out.decision, "QUALIFIED", "a credited claim on a DIFFERENT total must not block the reviewer");
+    const active = h.db.prepare(`select count(*) n from entries where participant_id=(select id from participants where wa_phone_uid=?) and status='active'`).get(phone).n;
+    assert.equal(active, 2);
+  });
+
   it("the same slip photographed twice still resolves to one identity when only one total was read", async () => {
     // The guard above must not undo the fix it sits on top of: a MISSING total
     // is not a disagreement, so an unreadable TOTAL line still resolves to the

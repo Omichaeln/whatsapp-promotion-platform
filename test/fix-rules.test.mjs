@@ -42,17 +42,57 @@ describe("rules package — deterministic parser and eligibility engine", () => 
     assert.equal(v.disposition, DISPOSITION.QUALIFIED, JSON.stringify(v.rules.filter((r) => r.outcome !== "pass")));
   });
 
+  it("rules-5: a tax component is never the total, and a grouped total is read whole", () => {
+    // Two regressions from widening parseTotal's label handling, both of which
+    // record a WRONG total — and the total is part of the canonical identity
+    // (outlet|date|number|total), so a wrong one also splits one purchase into
+    // two claims.
+    // (a) The denylist of qualifying words had no entry for a bare tax line, so
+    // "TOTAL VAT 0.81" was read as the purchase total. "TOTAL INCL VAT" says the
+    // opposite — the amount already contains the tax — and must still be read.
+    assert.equal(parseTotal("TOTAL VAT 0.81").totalMinor, null);
+    assert.equal(parseTotal("TOTAL TAX 0.81").totalMinor, null);
+    assert.equal(parseTotal("SUBTOTAL 5.39\nTOTAL VAT 0.81\nTOTAL 6.20").totalMinor, 620);
+    for (const line of ["TOTAL INCL VAT 6.20", "TOTAL (INCL VAT) 6.20", "TOTAL INC VAT 6.20"]) {
+      assert.equal(parseTotal(line).totalMinor, 620, line);
+    }
+    // (b) The amount pattern had no left boundary, so a thousands-grouped total
+    // was read from the middle of its own number: 1,480.00 became 480.00, which
+    // a receipt could then be credited on.
+    assert.equal(parseTotal("TOTAL 1,234.56").totalMinor, 123456);
+    assert.equal(parseTotal("TOTAL          1,480.00").totalMinor, 148000);
+    assert.equal(parseTotal("TOTAL 1 480.00").totalMinor, 148000);
+    // The widening these two guard was itself a fix: unlisted currencies and
+    // "AMOUNT" variants must still parse, and a decimal comma still means 6.20.
+    for (const line of ["TOTAL AMOUNT DUE 6.20", "TOTAL AMOUNT 6.20", "TOTAL RTGS 6.20", "TOTAL ZAR 6.20", "TOTAL 6,20"]) {
+      assert.equal(parseTotal(line).totalMinor, 620, line);
+    }
+  });
+
   it("rules-5: the total is the receipt's own total, not a trailing tender/VAT/discount line", () => {
     assert.equal(parseTotal("TOTAL 6.20\nTOTAL TENDERED 10.00\nCHANGE 3.80").totalMinor, 620);
     assert.equal(parseTotal("TOTAL 6.20\nCASH 10.00\nCHANGE 3.80\nVAT TOTAL 0.81").totalMinor, 620);
     assert.equal(parseTotal("TOTAL 6.20\nTOTAL DISCOUNT 1.00").totalMinor, 620);
     assert.equal(parseTotal("TOTAL 6.20\nCASH TOTAL 10.00").totalMinor, 620);
     assert.equal(parseTotal("SUB TOTAL 5.00\nTOTAL SAVINGS 1.00\nGRAND TOTAL 6.20\nCARD 6.20").totalMinor, 620);
-    // labelled variants that ARE the total must still be read
+    assert.equal(parseTotal("TOTAL CASH 10.00").totalMinor, null);
+    assert.equal(parseTotal("TOTAL EXCL VAT 5.39\nTOTAL 6.20").totalMinor, 620);
+    // labelled variants that ARE the total must still be read. Rejecting every
+    // word between the label and the amount (a currency allowlist) turned these
+    // common till layouts into total_unclear and sent the whole of such a
+    // till's volume to the review queue.
     assert.equal(parseTotal("TOTAL DUE 6.20").totalMinor, 620);
     assert.equal(parseTotal("AMOUNT DUE USD 6.20").totalMinor, 620);
+    assert.equal(parseTotal("TOTAL AMOUNT DUE          6.20").totalMinor, 620);
+    assert.equal(parseTotal("TOTAL AMOUNT              6.20").totalMinor, 620);
+    assert.equal(parseTotal("TOTAL INCL VAT            6.20").totalMinor, 620);
+    assert.equal(parseTotal("TOTAL (INCL VAT)          6.20").totalMinor, 620);
+    for (const cur of ["TOTAL RTGS 6.20", "TOTAL ZAR 6.20", "TOTAL Z$6.20"]) assert.equal(parseTotal(cur).totalMinor, 620, cur);
     assert.equal(parseTotal("Total                    7.40\nTender                   7.40").totalMinor, 740);
     assert.equal(parseTotal("no total here").totalMinor, null);
+    // ...and end to end: such a receipt is decided, not queued for a human
+    const dueTotal = evaluate(receiptText({ no: "004521", body: SUGAR_2KG_X2, footer: "TOTAL AMOUNT DUE         6.20\nCASH                    10.00\nCHANGE                   3.80" }));
+    assert.equal(dueTotal.disposition, DISPOSITION.QUALIFIED, JSON.stringify(dueTotal.rules.filter((r) => r.outcome !== "pass")));
   });
 
   it("rules-3: the receipt number is the best-labelled number on the page, never a phone number or a date", () => {
@@ -67,6 +107,11 @@ describe("rules package — deterministic parser and eligibility engine", () => 
     assert.equal(parseReceiptNo("INV 88213   POS 7\nKeep this slip for the promotion").receiptNo, "88213");
     assert.equal(parseReceiptNo("Slip # C-77120").receiptNo, "C77120");
     assert.equal(parseReceiptNo("SUNRISE SUPERMARKET\nTel 0242 000000").receiptNo, null);
+    // a bare keyword with its "number" on the NEXT line is not evidence at all:
+    // adopting it because it was the only candidate still gave every receipt
+    // from that store one shared identity, so the second honest customer was
+    // told DUPLICATE. No credible number -> missing_receipt_number -> review.
+    assert.equal(parseReceiptNo("TAX INVOICE\n0242-123456\nSUNRISE SUPERMARKET").receiptNo, null);
   });
 
   it("rules-4: a cancellation that names no product cancels the line it follows, and returns boilerplate cancels nothing", () => {
@@ -84,12 +129,28 @@ describe("rules package — deterministic parser and eligibility engine", () => 
       assert.deepEqual(items.map((i) => i.voided), [false], footerNote);
     }
     assert.equal(evaluate(receiptText({ body: `${SUGAR_2KG_X2}\n*** VOID ***`, footer: "TOTAL                    0.00" })).disposition, DISPOSITION.NOT_QUALIFIED);
+    // a WHOLE-TRANSACTION cancellation voids the whole basket. Cancelling only
+    // the nearest line left the rest of an abandoned purchase counted, so three
+    // packs minus one still reached the two-pack minimum and earned an entry.
+    const pack = "GOLDCANE BROWN SUGAR 2KG              3.10";
+    for (const word of ["TRANSACTION CANCELLED", "SALE VOIDED", "TXN VOID"]) {
+      const items = parseLineItems(receiptText({ body: `${pack}\n${pack}\n${pack}\n${word}`, footer: "TOTAL                    0.00" }));
+      assert.deepEqual(items.map((i) => i.voided), [true, true, true], word);
+    }
+    const cancelled = evaluate(receiptText({ no: "004545", body: `${pack}\n${pack}\n${pack}\nTRANSACTION CANCELLED`, footer: "TOTAL                    0.00" }));
+    assert.equal(cancelled.disposition, DISPOSITION.NOT_QUALIFIED, JSON.stringify(cancelled.rules.filter((r) => r.outcome !== "pass")));
+    assert.equal(cancelled.primaryPacks, 0);
   });
 
   it("rules-6: the most specific catalogue key wins and an unstated pack size is never assumed to be the qualifying one", () => {
     assert.equal(matchProduct({ description: "GOLDCANE BROWN SUGAR 1KG" }, PRODUCTS).code, "GC-BS-1KG");
     assert.equal(matchProduct({ description: "GOLDCANE BROWN SUGAR 2KG" }, PRODUCTS).code, "GC-BS-2KG");
     assert.equal(matchProduct({ description: "GOLDCANE BROWN SUGAR" }, PRODUCTS).packAmbiguous, true, "the alias is shared across pack sizes");
+    // the shipped catalogue's OTHER generic alias states no pack size and is a
+    // substring of no other key, so a containment test between catalogue keys
+    // never saw it and the 2kg pack size was borrowed for it anyway
+    assert.equal(matchProduct({ description: "GC BROWN SUGAR" }, PRODUCTS).basis, "gc brown sugar");
+    assert.equal(matchProduct({ description: "GC BROWN SUGAR" }, PRODUCTS).packAmbiguous, true, "a key that names no pack size cannot settle one");
     assert.equal(matchProduct({ description: "GOLDCANE BROWN SUGAR" }, [PRODUCTS[0]]).packAmbiguous, false, "one configured pack size stays decidable");
     // truncated description + the 1kg unit price: the catalogue pack size must
     // not be borrowed to make four 1kg packs look like the qualifying 2kg pack
@@ -97,6 +158,13 @@ describe("rules package — deterministic parser and eligibility engine", () => 
     assert.equal(v.disposition, DISPOSITION.REVIEW);
     assert.equal(v.reason, REASONS.QTY_UNKNOWN);
     assert.equal(v.primaryPacks, 0);
+    // the same through the generic alias: four 1kg packs must never be credited
+    // as the qualifying 2kg pack because the catalogue lists one for that alias
+    const alias = evaluate(receiptText({ no: "004597", body: "GC BROWN SUGAR\n  4 x 1.60               6.40", footer: "TOTAL                    6.40" }));
+    assert.equal(alias.disposition, DISPOSITION.REVIEW, JSON.stringify(alias.matched));
+    assert.equal(alias.reason, REASONS.QTY_UNKNOWN);
+    assert.equal(alias.primaryPacks, 0);
+    assert.equal(alias.totalGrams, 0);
     // a stated pack size still decides by itself
     assert.equal(evaluate(receiptText({ no: "004598", body: SUGAR_2KG_X2 })).disposition, DISPOSITION.QUALIFIED);
   });
@@ -187,6 +255,10 @@ describe("rules package — through the whole pipeline", { timeout: 120_000 }, (
     const r = await send(P1, receiptText({ no: "004560", body: "GOLDCANE BROWN SUGAR\n  4 x 1.60               6.40", footer: "TOTAL                    6.40" }));
     assert.equal(r.receipt.status, "REVIEW_REQUIRED", JSON.stringify(r.receipt));
     assert.equal(h.db.prepare(`select count(*) n from entries where receipt_id=?`).get(r.receiptId).n, 0);
+    // the SEEDED catalogue's other generic alias, against the live campaign
+    const g = await send(P1, receiptText({ no: "004561", body: "GC BROWN SUGAR\n  4 x 1.60               6.40", footer: "TOTAL                    6.40" }));
+    assert.equal(g.receipt.status, "REVIEW_REQUIRED", JSON.stringify(g.receipt));
+    assert.equal(h.db.prepare(`select count(*) n from entries where receipt_id=?`).get(g.receiptId).n, 0);
   });
 });
 
@@ -196,7 +268,14 @@ describe("rules package — a partial rule patch on a live campaign", { timeout:
     try {
       const phone = "263771990103";
       await g.register(phone, { first: "Patch", last: "Rules", identity: "TESTPATCH1" });
-      // the documented way to make a prospective change: patch one nested value
+      // the documented way to make a prospective change: patch one nested value.
+      // NOTE what this does and does NOT prove: defaultRules now deep-merges, so
+      // the stored rule set keeps its sibling thresholds and the receipt below is
+      // judged against them. It does not prove newVersionFrom preserves a
+      // CUSTOMISED sibling — services.mjs:148 still shallow-spreads patch.rules
+      // over the stored rules before defaultRules sees them, so these seeded
+      // values survive only because they equal the defaults. Tighten this to a
+      // non-default pack_grams once that merge is deep (owner: services package).
       const vid = g.domain.newVersionFrom(g.campaign.id, { rules: { primary_rule: { min_packs: 2 } } }, "test");
       g.domain.activateVersion(g.campaign.id, vid, "test");
       const rules = g.domain.versionRules(g.campaign.id);

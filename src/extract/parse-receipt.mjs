@@ -109,7 +109,14 @@ export function parseReceiptNo(text) {
       if (!best || score > best.score) best = { receiptNo: v, raw: raw.trim(), score };
     }
   }
-  return best ? { receiptNo: best.receiptNo, raw: best.raw } : { receiptNo: null, raw: null };
+  // Positive evidence is required. A candidate whose only support is a bare
+  // keyword on ANOTHER line scores below zero and used to be adopted anyway
+  // when it was the only one on the page, so a store header printing "TAX
+  // INVOICE" above its phone number still minted ONE canonical identity for
+  // every receipt it issued and the second honest customer was refused as a
+  // DUPLICATE. With no credible number the receipt goes to a reviewer
+  // (missing_receipt_number) instead.
+  return best && best.score > 0 ? { receiptNo: best.receiptNo, raw: best.raw } : { receiptNo: null, raw: null };
 }
 export function parseTill(text) {
   const m = String(text || "").match(/\b(?:till|terminal|pos|register|lane)\s*(?:no|#)?\s*[:#.]?\s*([A-Z0-9]{1,6})\b/i);
@@ -121,14 +128,44 @@ export function parseTill(text) {
 // Only non-alphanumerics may precede the label, so OCR noise ("| TOTAL") is
 // tolerated while a qualifying word before it ("CASH TOTAL") is not.
 const TOTAL_LABEL = /^[^0-9A-Za-z]*(?:grand\s+|net\s+|invoice\s+|sale\s+)?(?:total(?:\s+(?:due|payable))?|amount\s+(?:due|payable))/i;
-const TOTAL_VALUE = /^[^0-9A-Za-z]*(?:usd|us|zwg|zwl|zig|r)?[^0-9A-Za-z]*(\d+[.,]\d{2})\b/i;
+// Words between the label and the amount that make the line a settlement, an
+// aggregate or a component rather than the receipt's own total. This is a
+// DENYLIST on purpose: an allowlist of currency tokens rejected the very common
+// "TOTAL AMOUNT DUE", "TOTAL AMOUNT", "TOTAL INCL VAT" and unlisted currencies
+// ("TOTAL RTGS", "TOTAL ZAR"), so every receipt from such a till — and any
+// receipt where OCR left a stray letter after TOTAL — lost its total and landed
+// in the review queue as total_unclear.
+const TOTAL_NOT_THE_TOTAL = /\b(?:tender(?:ed)?|paid|cash|card|change|due\s*-?\s*back|discount|savings?|round(?:ing|ed)?|items?|qty|quantity|points?|excl(?:uding)?\.?\s*vat|ex\.?\s*vat)\b/i;
+// A tax word between the label and the amount makes the line a COMPONENT of the
+// total ("TOTAL VAT 0.81"), and with first-match-wins that component was being
+// read as the purchase total: a wrong total both misjudges the receipt and moves
+// the canonical identity (outlet|date|number|total), so two photographs of one
+// slip stop resolving to one claim. "TOTAL INCL VAT" is the opposite statement —
+// it says the amount already contains the tax — so an inclusive qualifier lifts
+// the rejection.
+const TOTAL_COMPONENT = /\b(?:vat|tax|levy|duty)\b/i;
+const TOTAL_INCLUSIVE = /\b(?:inc|incl|including|inclusive)\b/i;
+// The amount must start at its own left edge. Without the lookbehind, a
+// thousands-grouped total was read from the middle: "TOTAL 1,480.00" matched
+// "480.00" and a 1,480.00 purchase was recorded — and qualified — as 480.00.
+// The first alternative takes the grouped form whole; the second is the plain
+// one. A trailing digit (or separator-then-digit) after the match means we
+// stopped inside a longer number, so it is not the amount.
+const TOTAL_AMOUNT = /(?<![\d.,])(\d{1,3}(?:[,\s]\d{3})+[.,]\d{2}|\d+[.,]\d{2})(?!\d)(?![.,]\d)/;
+// "6,20" is a decimal comma; "1,234.56" is a thousands comma. The presence of a
+// dot decides which, so a grouped total is not mangled into "1.234.56".
+const normaliseAmount = (s) => (s.includes(".") ? s.replace(/[,\s]/g, "") : s.replace(",", "."));
 export function parseTotal(text) {
   for (const l of String(text || "").split(/\r?\n/)) {
     const lab = l.match(TOTAL_LABEL);
     if (!lab) continue;
-    const m = l.slice(lab[0].length).match(TOTAL_VALUE);
+    const rest = l.slice(lab[0].length);
+    const m = rest.match(TOTAL_AMOUNT);
     if (!m) continue;
-    const v = parseMoneyMinor(m[1].replace(",", "."));
+    const between = rest.slice(0, m.index);
+    if (TOTAL_NOT_THE_TOTAL.test(between)) continue;
+    if (TOTAL_COMPONENT.test(between) && !TOTAL_INCLUSIVE.test(between)) continue;
+    const v = parseMoneyMinor(normaliseAmount(m[1]));
     // FIRST valid total wins. Taking the last total-like line let trailing
     // "TOTAL TENDERED" / "VAT TOTAL" / "TOTAL DISCOUNT" lines overwrite the real
     // total: the stored total was wrong and the canonical receipt identity
@@ -144,6 +181,8 @@ const VOID_RE = /\b(void|voided|refund|return|reversal|cancel(?:led)?)\b/i;
 // words a cancellation line carries about ITSELF — they never name a product,
 // so a void line left with none of its own words is a bare cancellation
 const VOID_CONTEXT_WORD = /^(void|voided|refund|refunded|return|returned|reversal|reversed|cancel|cancelled|item|items|line|sale|transaction|txn|entry|last|previous|correction|supervisor|manager|cashier|operator|override)$/;
+// a bare cancellation that names the TRANSACTION rather than a line
+const VOID_WHOLE_TXN = /\b(?:transaction|txn|sale)\b/i;
 const PACK_RE = /(\d+(?:[.,]\d+)?)\s*(kg|kgs|g|gr|grams?|kilograms?)\b/i;
 
 export function packGramsFrom(desc) {
@@ -214,6 +253,14 @@ export function parseLineItems(text) {
     if (!target && !toks.length && i < itemBlockEnd) {
       const neg = lines[i].match(/-\s*(\d+[.,]\d{2})\b/);
       const negMinor = neg ? parseMoneyMinor(neg[1].replace(",", ".")) : null;
+      // A WHOLE-TRANSACTION cancellation ("TRANSACTION CANCELLED", "SALE
+      // VOIDED") printed with no amount voids the whole basket, not just the
+      // line above it: cancelling one of three qualifying packs still left two
+      // counted, so an abandoned purchase was credited with an entry (D-09).
+      if (negMinor == null && VOID_WHOLE_TXN.test(lines[i])) {
+        for (let j = 0; j < items.length; j++) if (at[j] <= i) items[j].voided = true;
+        continue;
+      }
       for (let j = items.length - 1; j >= 0; j--) {
         if (at[j] > i) continue;
         if (negMinor != null && items[j].amountMinor !== negMinor) continue;

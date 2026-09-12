@@ -10,15 +10,20 @@
 --    duplicates.exactImageMatches joins receipts -> media_assets on the media
 --    id and filters on media_assets.sha256. Without an index on the join column
 --    the only way in was receipts(campaign_id), so every submission re-read
---    every receipt in the campaign. With table statistics present the planner
---    can now drive the query from idx_media_sha and seek here instead.
+--    every receipt in the campaign. The planner only picks this index once
+--    sqlite_stat1 exists, so migrate() now ends with
+--    `PRAGMA analysis_limit=400; PRAGMA optimize` (see src/db.mjs): without it
+--    this index was inert on every deployed database (measured 73 ms per 50
+--    exact-duplicate lookups at 5k receipts, 1 ms with statistics).
 --    NOTE: an index on receipts(campaign_id, created_at) was also proposed for
 --    the visual-candidate query. Measured on this schema at 40k receipts it
 --    makes the ORDER BY cheaper (60 -> 21 ms) but, with no sqlite_stat1 present,
 --    the planner then prefers it for the sha256 query too and that goes 40 ->
---    114 ms. It is only a win together with ANALYZE, and ANALYZE cannot be run
---    from a migration (on a fresh database it would freeze "empty table" stats
---    into sqlite_stat1), so it is left to an operational maintenance step.
+--    114 ms. Plain ANALYZE still cannot be run from a migration (on a fresh
+--    database it would freeze "empty table" stats for every table into
+--    sqlite_stat1); the boot-time PRAGMA optimize does not have that problem,
+--    but this index is left out until the trade-off is re-measured with
+--    statistics in place.
 --
 -- 3. entries(campaign_id, period_code, status, participant_id)
 --    Every v2 query filters entries by period_code, which 007 added without an

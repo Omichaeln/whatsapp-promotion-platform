@@ -35,6 +35,15 @@ export const MAX_NORMALISED_PIXELS = 1600 * 6400;   // bound on the WORKING imag
 // these rows are shown to a reviewer deciding whether to void an entry, so the
 // threshold stays where precision is best; missed re-photographs are still
 // caught by the canonical receipt identity, which is what actually decides.
+// THE PRICE, stated: recall over the manifest's 18 labelled duplicate pairs
+// moves the other way, 6/18 with the mean hash -> 4/18 here (it gains
+// valid-two-pack-C <-> ...-C-photo and loses valid-two-pack-A <-> dup-cropped
+// and one-pack <-> one-pack-photo). Rotated re-photographs (d=24) are still
+// missed by any single 64-bit hash of one orientation — closing that needs a
+// rotation-canonical hash or four hashes per asset and a change to the
+// comparison in duplicates.mjs, not a different threshold. This is a search
+// signal only: none of those pairs can earn a second entry, because the
+// canonical receipt identity blocks them (test/receipt-ocr.test.mjs T-07/T-14).
 export const PROBABLE_DUPLICATE_DIST = 6;
 // Below this standard deviation the 32x32 raster carries no structure at all: a
 // uniform capture used to collapse to phash ffffffffffffffff /

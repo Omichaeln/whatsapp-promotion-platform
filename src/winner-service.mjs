@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { id, tx, nowIso } from "./db.mjs";
 import { renderCopy } from "./copy.mjs";
+import { POLICY_BLOCK_CODES } from "./outbox.mjs";
 
 /**
  * Winner, alternate, claim and publication lifecycle (spec §15).
@@ -24,8 +25,23 @@ const TRANSITIONS = {
 
 /** Statuses that move a winner TOWARDS a prize; they must not run on a disqualified entry. */
 const ADVANCING = ["notified", "verified", "accepted", "collected"];
-/** Outbound states that prove the winner was NOT reached (the send is finished and failed). */
-const NOT_CONTACTED = ["retryable_failure", "permanent_failure", "unknown_outcome"];
+/** Outbound states in which the send is finished and failed: nothing more will be attempted. */
+const FINISHED_FAILURE = ["permanent_failure", "unknown_outcome"];
+/**
+ * Was the winner genuinely never reached?
+ * `retryable_failure` on its own proves nothing: src/outbox.mjs writes it
+ * together with next_attempt_at and the dispatcher re-leases exactly those
+ * rows, so a notification that happens to be mid-backoff when the expiry job
+ * runs would block the expiry AND raise a critical "the notification never
+ * left" alarm minutes before it does leave. Only a POLICY hold — paused
+ * outbound, no allowlist, no approved template — is parked until a human
+ * clears it, and those are the cases this guard exists for.
+ */
+function neverContacted(msg) {
+  if (!msg) return false;
+  if (FINISHED_FAILURE.includes(msg.status)) return true;
+  return msg.status === "retryable_failure" && POLICY_BLOCK_CODES.includes(msg.error_code);
+}
 
 export function createWinnerService(db, { outbox, domain, crm = null, now = nowIso, claimDays = 7 } = {}) {
   const getWinner = db.prepare(`select * from winners where id = ?`);
@@ -111,6 +127,12 @@ export function createWinnerService(db, { outbox, domain, crm = null, now = nowI
   function assertCollectionPoint(w, outletId) {
     const o = domain.getOutlet(outletId);
     if (!o || !o.collection_enabled || !o.active) throw Object.assign(new Error("outlet cannot distribute prizes"), { code: "VALIDATION" });
+    const today = now().slice(0, 10);
+    // outlets carries its OWN active_from/active_to besides the `active` flag; a
+    // branch closed on its master record but still inside an open campaign
+    // membership window was accepted as a hand-over point, sending a winner to
+    // a shop that no longer trades for this promotion.
+    if (String(o.active_from || "1970-01-01").slice(0, 10) > today || String(o.active_to || "9999-12-31").slice(0, 10) < today) throw Object.assign(new Error("outlet is outside its active window"), { code: "VALIDATION" });
     // The master flag is not the flag the console shows. campaign_outlets carries
     // its own collection_enabled and membership window, which is what Campaign ->
     // Outlets renders; validating only outlets.collection_enabled let ops record a
@@ -118,7 +140,6 @@ export function createWinnerService(db, { outbox, domain, crm = null, now = nowI
     const d = getDraw.get(w.draw_id);
     const m = db.prepare(`select collection_enabled, active_from, active_to from campaign_outlets where campaign_id=? and outlet_id=?`).get(d.campaign_id, outletId);
     if (!m || !m.collection_enabled) throw Object.assign(new Error("outlet is not a prize collection point for this campaign"), { code: "VALIDATION" });
-    const today = now().slice(0, 10);
     if (String(m.active_from || "1970-01-01").slice(0, 10) > today || String(m.active_to || "9999-12-31").slice(0, 10) < today) throw Object.assign(new Error("outlet is outside its collection window for this campaign"), { code: "VALIDATION" });
   }
   function transitionInTx(w, status, { actorId, note = null, reason = null, collectionOutletId = null, fulfilmentRef = null, evidence = null }) {
@@ -209,7 +230,13 @@ export function createWinnerService(db, { outbox, domain, crm = null, now = nowI
   /** Expire winners past their claim deadline (job); mutually consistent with fulfilment via row_version. */
   function expireDue() {
     const rows = db.prepare(`select id from winners where claim_expires_at < ? and status in ('notified','verified','accepted','unreachable')`).all(now());
-    let n = 0, notContacted = 0, skipped = 0;
+    let n = 0, skipped = 0;
+    // domain.alert de-duplicates by kind for an hour (src/services.mjs), so an
+    // alert raised per winner INSIDE this loop named only the FIRST winner of a
+    // batch and silently dropped every other one — precisely when a whole pool
+    // reaches its deadline together. Collect them and raise ONE alert per run
+    // that names them all.
+    const held = [], expired = [];
     for (const row of rows) {
       // The clock starts when the notification is ENQUEUED. If that send then
       // finished in a failure state (template paused, recipient not allowed,
@@ -217,11 +244,8 @@ export function createWinnerService(db, { outbox, domain, crm = null, now = nowI
       // them is irreversible ('expired' only moves to 'replaced'), so raise it
       // for re-notification instead of taking the prize away silently.
       const msg = lastNotifyMessage.get(`winner:${row.id}:notify:%`);
-      if (msg && NOT_CONTACTED.includes(msg.status)) {
-        notContacted++;
-        domain.alert({ kind: "winners.not_contacted", severity: "critical", runbook: "docs/runbooks/winners-claims.md",
-          message: `winner ${row.id} reached its claim deadline but the notification never left (${msg.status}${msg.error_code ? ` ${msg.error_code}` : ""}); not expired`,
-          detail: { winnerId: row.id, outboundStatus: msg.status, attempts: msg.attempts, errorCode: msg.error_code, lastError: msg.last_error } });
+      if (neverContacted(msg)) {
+        held.push({ winnerId: row.id, outboundStatus: msg.status, attempts: msg.attempts, errorCode: msg.error_code, lastError: msg.last_error });
         continue;
       }
       try {
@@ -235,14 +259,18 @@ export function createWinnerService(db, { outbox, domain, crm = null, now = nowI
           transitionInTx(w, "expired", { actorId: "system", reason: "claim deadline passed" });
           return true;
         });
-        if (done) {
-          n++;
-          domain.alert({ kind: "winners.expired", severity: "warning", runbook: "docs/runbooks/winners-claims.md",
-            message: `winner ${row.id} expired: claim deadline passed${msg ? ` (notification ${msg.status})` : ""}`, detail: { winnerId: row.id, outboundStatus: msg?.status || null } });
-        } else skipped++;
+        if (done) { n++; expired.push({ winnerId: row.id, outboundStatus: msg?.status || null }); } else skipped++;
       } catch { skipped++; /* concurrent fulfilment won */ }
     }
-    return { expired: n, notContacted, skipped };
+    if (held.length) domain.alert({ kind: "winners.not_contacted", runbook: "docs/runbooks/winners-claims.md",
+      // A send still scheduled for retry is not the same emergency as one that
+      // has finished and failed, so only the latter is critical.
+      severity: held.some((x) => FINISHED_FAILURE.includes(x.outboundStatus)) ? "critical" : "warning",
+      message: `${held.length} winner(s) reached the claim deadline with a notification that never left; not expired`,
+      detail: { winners: held } });
+    if (expired.length) domain.alert({ kind: "winners.expired", severity: "warning", runbook: "docs/runbooks/winners-claims.md",
+      message: `${expired.length} winner(s) expired: claim deadline passed`, detail: { winners: expired } });
+    return { expired: n, notContacted: held.length, skipped };
   }
   /** Publication is a separate permission from verification (§15). */
   function publish(winnerId, actorId) {

@@ -1,13 +1,16 @@
 // Regression tests for the adjudicated "domain" audit package:
 //   crosscut-5 / requirements-7  outlet + product master edits write no audit row
 //   privacy-3                    anonymisation leaves the phone, the ID and the winner name behind
+//                                (incl. after a support phone correction, and the queued work it leaves running)
 //   authz-2                      POST /api/mfa/enroll silently disables MFA
-//   schema-5 / schema-6          migrate(): racing migrators, stale schema_version ledger
-//   schema-4 / schema-7          duplicate-detection and draw-barrier indexes
+//   schema-5 / schema-6          migrate(): racing migrators, stale schema_version ledger,
+//                                and a ledger read failure that must not truncate schema_meta
+//   schema-4 / schema-7          duplicate-detection and draw-barrier indexes, and the boot-time
+//                                statistics refresh without which idx_receipts_media is never chosen
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { buildApp, before, after, describe, it, assert } from "./helpers.mjs";
+import { buildApp, before, after, describe, it, assert, ROOT } from "./helpers.mjs";
 import { openDb, migrate } from "../src/db.mjs";
 import { totp } from "../src/mfa.mjs";
 
@@ -110,30 +113,85 @@ describe("domain fixes", () => {
     assert.ok(payload.scrubbed.sessions >= 1);
   });
 
-  it("anonymisation refuses while the person is a published winner", async () => {
+  it("a published winner can still be erased, and the public list stops naming them", async () => {
     const phone = "263779900401";
     await h.register(phone, { first: "Nyasha", last: "Dube", identity: "ZZWIN5512X", town: "Harare" });
     const p = h.domain.getParticipantByPhone(phone);
     // Construct the published-winner state directly: the draw machinery is not
-    // under test here, only the erasure guard.
+    // under test here, only what erasure does to a published result.
     h.db.exec("pragma foreign_keys=OFF");
     try {
+      h.db.prepare(`insert into draws (id, campaign_id, draw_period, status, config_hash, snapshot_hash, created_at) values (?,?,?,?,?,?,?)`)
+        .run("drw_fixdom", h.campaign.id, "W9", "published", "ch", "sh", "2026-01-01");
       h.db.prepare(`insert into winners (id, draw_id, rank, entry_id, participant_id, prize_code, status, history_json, published_fields_json, publication_state, display_name, row_version)
         values (?,?,?,?,?,?,?,?,?,?,?,?)`).run("win_fixdom", "drw_fixdom", 1, "ent_fixdom", p.id, "P1", "collected", "[]", '{"prize":"Hamper"}', "published", "Nyasha D.", 1);
     } finally { h.db.exec("pragma foreign_keys=ON"); }
+    assert.equal(h.app.winners.listPublic(h.campaign.id).find((w) => w.rank === 1 && w.period === "W9")?.name, "Nyasha D.", "precondition: the name is on the public list");
 
+    // An earlier revision refused this with 409 ("withdraw the publication
+    // first"). listPublic now derives the name from the live participant status,
+    // so the refusal blocked a lawful erasure for no privacy gain.
     const r = await h.api(`/api/participants/${p.id}/anonymise`, { method: "POST", token: admin, body: { reason: "deletion request" } });
-    assert.equal(r.status, 409, "erasure must not silently leave a published name behind");
-    assert.equal(h.domain.getParticipant(p.id).status, "active", "nothing was erased");
-
-    // once the publication is withdrawn the erasure goes through and the name goes with it
-    h.app.winners.unpublish("win_fixdom", "adm_tester", "erasure request");
-    const ok = await h.api(`/api/participants/${p.id}/anonymise`, { method: "POST", token: admin, body: { reason: "deletion request" } });
-    assert.equal(ok.status, 200);
-    assert.equal(h.db.prepare(`select display_name from winners where id='win_fixdom'`).get().display_name, null, "the published name is cleared");
+    assert.equal(r.status, 200, "a lawful erasure request is not blocked by a published draw result");
+    assert.equal(h.domain.getParticipant(p.id).status, "deleted");
+    assert.equal(h.db.prepare(`select display_name from winners where id='win_fixdom'`).get().display_name, null, "the frozen published name is cleared");
+    const pub = h.app.winners.listPublic(h.campaign.id).find((w) => w.rank === 1 && w.period === "W9");
+    assert.ok(pub, "the result itself stays published: rank and prize are a compliance record");
+    assert.equal(pub.name, "[removed]", "the unauthenticated public list no longer names the erased person");
+    assert.equal(pub.location, null);
     h.db.exec("pragma foreign_keys=OFF");
     h.db.prepare(`delete from winners where id='win_fixdom'`).run();
+    h.db.prepare(`delete from draws where id='drw_fixdom'`).run();
     h.db.exec("pragma foreign_keys=ON");
+  });
+
+  it("erasure after a support phone correction leaves nothing under the old number", async () => {
+    const oldPhone = "263779900501";
+    const newPhone = "263779900502";
+    await h.register(oldPhone, { first: "Rudo", last: "Chuma", identity: "ZZMOVE331X", town: "Harare" });
+    const p = h.domain.getParticipantByPhone(oldPhone);
+    const inbound = h.db.prepare(`select count(*) n from channel_events where wa_phone_uid=?`).get(oldPhone).n;
+    assert.ok(inbound > 0, "precondition: history exists under the original number");
+
+    const moved = await h.api(`/api/participants/${p.id}/phone`, { method: "POST", token: admin, body: { phone: newPhone, reason: "support correction" } });
+    assert.equal(moved.status, 200);
+    // the correction must carry the history with the person, not orphan it
+    assert.equal(h.db.prepare(`select count(*) n from channel_events where wa_phone_uid=?`).get(oldPhone).n, 0, "inbound history follows the corrected number");
+    assert.equal(h.db.prepare(`select count(*) n from channel_events where wa_phone_uid=?`).get(newPhone).n, inbound);
+    assert.equal(h.db.prepare(`select count(*) n from conversation_sessions where wa_phone_uid=?`).get(newPhone).n, 1, "the session follows too");
+    const chg = h.db.prepare(`select payload_json from audit_events where action='participant.phone_change' and target_id=? order by id desc limit 1`).get(p.id);
+    assert.ok(JSON.parse(chg.payload_json).payload.moved.channelEvents >= 1, "the audit row records what moved");
+
+    const r = await h.api(`/api/participants/${p.id}/anonymise`, { method: "POST", token: admin, body: { reason: "deletion request" } });
+    assert.equal(r.status, 200);
+    for (const t of ["channel_events", "outbound_messages", "conversation_sessions"]) {
+      assert.equal(h.db.prepare(`select count(*) n from ${t} where wa_phone_uid=?`).get(oldPhone).n, 0, `${t} rows under the pre-correction number are erased too`);
+      assert.equal(h.db.prepare(`select count(*) n from ${t} where wa_phone_uid=?`).get(newPhone).n, 0, `${t} rows under the corrected number are erased`);
+    }
+    assert.deepEqual(scanForString(h.db, oldPhone).map((x) => x.table), [], "the pre-correction MSISDN survives nowhere");
+    assert.deepEqual(scanForString(h.db, "ZZMOVE331X").map((x) => x.table), [], "nor does the national ID");
+  });
+
+  it("erasure cancels queued inbound work instead of replying to a dead number", async () => {
+    const phone = "263779900601";
+    await h.register(phone, { first: "Tapiwa", last: "Sibanda", identity: "ZZQUEUE41X", town: "Gweru" });
+    const p = h.domain.getParticipantByPhone(phone);
+    // a message that arrived but has not been drained when the erasure lands
+    h.app.intake.receive({ provider: "simulator", providerMessageId: "fixdom_queued_1", phoneUid: phone, type: "message.text", text: "menu", timestamp: new Date().toISOString() });
+    // a reply that is leased to a worker (status 'sending') and never sent: outbox.next re-picks these once the lease expires
+    h.app.outbox.enqueueWhatsApp({ waPhoneUid: phone, payload: "held reply", idempotencyKey: "fixdom:held:1" });
+    h.db.prepare(`update outbound_messages set status='sending', lease_until='2000-01-01T00:00:00Z' where idempotency_key='fixdom:held:1'`).run();
+
+    const r = await h.api(`/api/participants/${p.id}/anonymise`, { method: "POST", token: admin, body: { reason: "deletion request" } });
+    assert.equal(r.status, 200);
+    assert.equal(h.db.prepare(`select count(*) n from outbound_messages where idempotency_key='fixdom:held:1'`).get().n, 0, "a leased but unsent message is dropped, not re-addressed to 'deleted:<id>'");
+    assert.equal(h.db.prepare(`select status from channel_events where provider_message_id='fixdom_queued_1'`).get().status, "ignored", "the queued inbound event is cancelled");
+
+    const dead = `deleted:${p.id}`;
+    const before = h.db.prepare(`select count(*) n from outbound_messages where wa_phone_uid=?`).get(dead).n;
+    await h.app.intake.drain(); await h.app.worker.tick();
+    assert.equal(h.db.prepare(`select status from channel_events where provider_message_id='fixdom_queued_1'`).get().status, "ignored", "the worker does not pick the cancelled event back up");
+    assert.equal(h.db.prepare(`select count(*) n from outbound_messages where wa_phone_uid=?`).get(dead).n, before, "no reply is enqueued to the erased participant");
   });
 
   // ---- authz-2 ---------------------------------------------------------------------
@@ -224,25 +282,45 @@ describe("migrations and indexes", () => {
   });
 
   it("duplicate detection and the draw barrier have indexes to work with", () => {
-    const db = openDb(path.join(dir, "idx.db"));
+    const file = path.join(dir, "idx.db");
+    let db = openDb(file);
     migrate(db, undefined, () => {});
     db.exec("pragma foreign_keys=OFF");
     const idx = db.prepare(`select name from sqlite_master where type='index'`).all().map((r) => r.name);
     assert.ok(idx.includes("idx_receipts_media"), "receipts(media_asset_id) is indexed");
     assert.ok(idx.includes("idx_entries_period_code"), "entries(campaign_id, period_code, status, participant_id) is indexed");
+    assert.ok(!idx.includes("idx_entries_draw"), "the superseded v1 draw_period index is gone");
+    assert.ok(!idx.includes("idx_receipts_processing"), "the never-chosen partial receipts(status) index is gone");
+    assert.ok(idx.includes("idx_entries_eligibility"), "the partial active-entry index is KEPT: it is the one the campaign pool scan uses");
 
     db.exec("begin");
     const im = db.prepare(`insert into media_assets (id, object_key, sha256, phash, dhash, size_bytes, mime, status, created_at) values (?,?,?,?,?,?,?,?,?)`);
-    const ir = db.prepare(`insert into receipts (id, provider_message_id, participant_id, campaign_id, campaign_version_id, media_asset_id, status, created_at, period_code) values (?,?,?,?,?,?,?,?,?)`);
+    const ir = db.prepare(`insert into receipts (id, provider_message_id, participant_id, campaign_id, campaign_version_id, media_asset_id, status, created_at, intake_at, period_code) values (?,?,?,?,?,?,?,?,?,?)`);
     const ip = db.prepare(`insert into participants (id, wa_phone_uid, first_name, surname, status, created_at, updated_at) values (?,?,?,?,?,?,?)`);
     const ie = db.prepare(`insert into entries (id, receipt_id, participant_id, campaign_id, campaign_version_id, draw_period, entry_no, status, created_at, period_code, weight_units) values (?,?,?,?,?,?,?,?,?,?,1)`);
-    for (let i = 0; i < 300; i++) {
+    // Spread across campaigns, periods and statuses. A fixture where every row
+    // shares one campaign and one period is degenerate: the filters then select
+    // 100% of the table and, once real statistics exist, a full scan IS the
+    // cheapest plan — the assertions below would be measuring the fixture, not
+    // the indexes.
+    for (let i = 0; i < 600; i++) {
+      const campaign = `cmp_${i % 5}`, period = `W${i % 4}`;
       ip.run(`p_${i}`, `26377${String(i).padStart(7, "0")}`, "x", "y", "active", "2026-01-01", "2026-01-01");
       im.run(`m_${i}`, `k_${i}`, `sha_${i}`, `${i}`, `${i}`, 10, "image/jpeg", "stored", "2026-01-01");
-      ir.run(`r_${i}`, `pm_${i}`, `p_${i}`, "cmp_1", "cv_1", `m_${i}`, "QUALIFIED", "2026-01-01T00:00:00Z", "W1");
-      ie.run(`e_${i}`, `r_${i}`, `p_${i}`, "cmp_1", "cv_1", "W1", i, "active", "2026-01-01", "W1");
+      ir.run(`r_${i}`, `pm_${i}`, `p_${i}`, campaign, "cv_1", `m_${i}`, i % 9 ? "QUALIFIED" : "received", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", period);
+      ie.run(`e_${i}`, `r_${i}`, `p_${i}`, campaign, "cv_1", period, i, i % 11 ? "active" : "excluded", "2026-01-01", period);
     }
     db.exec("commit");
+    db.close();
+
+    // Reopen exactly the way the server boots (openDb + migrate). Nothing in the
+    // product ever runs ANALYZE, so a test that calls it itself manufactures a
+    // precondition no deployed database reaches; migrate() ends with
+    // `PRAGMA analysis_limit=400; PRAGMA optimize`, and that is what has to make
+    // these plans come out right.
+    db = openDb(file);
+    migrate(db, undefined, () => {});
+    assert.equal(db.prepare(`select count(*) n from sqlite_master where name='sqlite_stat1'`).get().n, 1, "boot collected planner statistics");
 
     const barrier = `select e.id from entries e join participants p on p.id=e.participant_id where e.campaign_id=? and e.period_code=? and e.status='active' and p.status='active' order by e.id`;
     const bplan = db.prepare("explain query plan " + barrier).all("cmp_1", "W1").map((r) => r.detail).join(" | ");
@@ -250,15 +328,51 @@ describe("migrations and indexes", () => {
 
     const count = `select count(*) n from entries where participant_id=? and campaign_id=? and period_code=? and status='active'`;
     const cplan = db.prepare("explain query plan " + count).all("p_1", "cmp_1", "W1").map((r) => r.detail).join(" | ");
-    assert.match(cplan, /SEARCH/, "the per-receipt entry count still seeks");
+    assert.match(cplan, /COVERING INDEX idx_entries_period_code \(campaign_id=\? AND period_code=\? AND status=\? AND participant_id=\?\)/, "the per-receipt entry count is a covering seek on the claimed index, not just any SEARCH");
 
-    // With table statistics present the exact-duplicate lookup must be driven
-    // from the image hash, not by walking every receipt in the campaign.
-    db.exec("ANALYZE");
+    // The exact-duplicate lookup must be driven from the image hash, not by
+    // walking every receipt in the campaign.
     const sha = `select r.id, r.status from receipts r join media_assets m on m.id = r.media_asset_id where m.sha256 = ? and r.campaign_id = ? and r.id != ? order by r.created_at limit 5`;
     const splan = db.prepare("explain query plan " + sha).all("sha_5", "cmp_1", "r_9").map((r) => r.detail).join(" | ");
     assert.ok(!/SCAN r\b/.test(splan), `exact-duplicate lookup still scans receipts: ${splan}`);
-    assert.match(splan, /idx_receipts_media/);
+    assert.match(splan, /SEARCH m USING INDEX idx_media_sha/, `duplicate lookup is not driven from the image hash: ${splan}`);
+    assert.match(splan, /SEARCH r USING INDEX idx_receipts_media/, `duplicate lookup does not seek receipts by media id: ${splan}`);
+
+    // The draw barrier's unresolved-receipt check: idx_receipts_period already
+    // serves it, which is why widening idx_receipts_processing's predicate
+    // (finding schema-7's other option) would only have added a second dead index.
+    const unresolved = `select status, count(*) n from receipts where campaign_id=? and period_code=? and intake_at < ? and status in ('received','processing','delayed','REVIEW_REQUIRED') group by status`;
+    assert.match(db.prepare("explain query plan " + unresolved).all("cmp_1", "W1", "2030-01-01").map((r) => r.detail).join(" | "), /idx_receipts_period/, "the unresolved-receipt check seeks by campaign and period");
     db.close();
+  });
+
+  it("a transient ledger read failure inside a migration aborts instead of truncating schema_meta", () => {
+    const file = path.join(dir, "ledger.db");
+    const partial = path.join(dir, "mig-partial");
+    fs.mkdirSync(partial, { recursive: true });
+    const all = fs.readdirSync(path.join(ROOT, "db", "migrations")).filter((f) => f.endsWith(".sql")).sort();
+    for (const f of all) if (Number(f.slice(0, 3)) <= 10) fs.copyFileSync(path.join(ROOT, "db", "migrations", f), path.join(partial, f));
+    const real = openDb(file);
+    migrate(real, partial, () => {});
+    const ledgerBefore = real.prepare(`select value from schema_meta where key='migrations'`).get().value;
+
+    // readApplied() is now called a second time INSIDE the migration's
+    // BEGIN IMMEDIATE and its result is written straight back with
+    // `insert or replace`. Swallowing a storage failure there rebuilt the ledger
+    // from an EMPTY set and committed it.
+    let inTx = false;
+    const proxy = {
+      get isTransaction() { return real.isTransaction; },
+      exec: (sql) => { if (/^\s*begin/i.test(sql)) inTx = true; if (/^\s*(commit|rollback)/i.test(sql)) inTx = false; return real.exec(sql); },
+      prepare: (sql) => { if (inTx && /from schema_meta where key='migrations'/.test(sql)) throw new Error("disk I/O error"); return real.prepare(sql); },
+    };
+    assert.throws(() => migrate(proxy, undefined, () => {}), /disk I\/O error/, "the migration aborts on a real read failure");
+    assert.equal(real.prepare(`select value from schema_meta where key='migrations'`).get().value, ledgerBefore, "the ledger is not rewritten from an empty set");
+    real.close();
+
+    const next = openDb(file);
+    migrate(next, undefined, () => {});   // must not die replaying 007's ADD COLUMNs
+    assert.ok(next.prepare(`select value from schema_meta where key='migrations'`).get().value.split(",").some((f) => f.startsWith("012")), "the next boot completes the migration normally");
+    next.close();
   });
 });

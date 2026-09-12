@@ -1,6 +1,6 @@
 # Requirements traceability (FR-01 … FR-36)
 
-Build: branch `claude/funny-brown-r7wpo9`, statement revised 12 September 2026; the automated results in `docs/testing/evidence/test-results.txt` are the recorded run of commit `f0a7f7a8` (46 tests in 9 suites, `exit=0`) and predate the later suites (`test/audit-integrity.test.mjs`, `test/media-limits.test.mjs`) — regenerate with `npm test` before citing the counts as coverage of this tree. Status legend: **verified** (automated test green in this build), **verified-local** (works locally against simulated provider), **partial**, **blocked** (needs client input/access). Test ids refer to `docs/testing/test-plan.md`; UAT rows to `docs/testing/client-uat.md`.
+Build: branch `claude/funny-brown-r7wpo9`, statement revised 12 September 2026; the automated results in `docs/testing/evidence/test-results.txt` are the recorded run of commit `86ebef8` (46 tests in 9 suites, `exit=0`) and predate the later suites (`test/audit-integrity.test.mjs`, `test/media-limits.test.mjs`) — regenerate with `npm test` before citing the counts as coverage of this tree. Status legend: **verified** (automated test green in this build), **verified-local** (works locally against simulated provider), **partial**, **blocked** (needs client input/access). Test ids refer to `docs/testing/test-plan.md`; UAT rows to `docs/testing/client-uat.md`.
 
 | FR | Client wording (abridged) | Implementation | Tests | UAT | Status | Remaining dependency |
 |---|---|---|---|---|---|---|

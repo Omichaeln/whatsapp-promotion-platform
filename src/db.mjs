@@ -81,7 +81,17 @@ export function migrate(db, dir = MIGRATIONS_DIR, log = console.log) {
     try {
       const row = db.prepare(`select value from schema_meta where key='migrations'`).get();
       if (row) for (const m of row.value.split(",")) set.add(m);
-    } catch { db.exec("create table if not exists schema_meta (key text primary key, value text not null)"); }
+    } catch (e) {
+      // ONLY "the ledger table does not exist yet" may be swallowed. This is now
+      // re-read inside each migration's BEGIN IMMEDIATE and its result is
+      // written straight back with `insert or replace`, so treating any other
+      // failure (I/O error, locked database, corruption) as "nothing applied"
+      // would truncate schema_meta.migrations to the single file being applied
+      // and COMMIT that: the next boot would replay 007/009/011's ADD COLUMNs
+      // and die on "duplicate column name" with no way back.
+      if (!/no such table/i.test(e.message || "")) throw e;
+      db.exec("create table if not exists schema_meta (key text primary key, value text not null)");
+    }
     return set;
   };
   let applied = readApplied();
@@ -125,6 +135,21 @@ export function migrate(db, dir = MIGRATIONS_DIR, log = console.log) {
       db.prepare(`insert or replace into schema_meta (key, value) values ('schema_version', ?)`).run(version);
     }
   } catch { /* schema_meta absent: nothing was applied */ }
+  // Refresh the planner statistics on every boot.
+  //
+  // Migration 011 added idx_receipts_media so duplicates.exactImageMatches could
+  // be driven from the image hash instead of walking every receipt in the
+  // campaign — but SQLite only picks that plan once sqlite_stat1 exists, and
+  // nothing ran ANALYZE, so on every deployed database the query still planned
+  // as `SEARCH r USING idx_receipts_period (campaign_id=?)` (measured: 73 ms per
+  // 50 lookups at 5k receipts, 1 ms with statistics present).
+  // `PRAGMA optimize` (not plain ANALYZE) is what makes this safe to run
+  // unconditionally: on a freshly migrated, empty database it writes one
+  // sqlite_stat1 row rather than freezing "empty table" estimates for all nine
+  // indexed tables, and it re-analyses a table only once its size has moved.
+  // analysis_limit bounds the work so a large table cannot stall a boot.
+  try { db.exec("PRAGMA analysis_limit=400; PRAGMA optimize;"); }
+  catch (e) { log?.(`[db] statistics refresh skipped: ${e.message}`); }   // never let maintenance fail a boot
   if (count > 0 || fresh) log?.(`[db] applied ${count} migration(s)`);
   else log?.(`[db] schema up to date`);
   return count;

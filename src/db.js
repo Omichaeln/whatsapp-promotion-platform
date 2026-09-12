@@ -6,6 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, loadEnvFile, ROOT } from "./config.mjs";
+import { DatabaseSync } from "node:sqlite";
 import { openDb, migrate } from "./db.mjs";
 import { ensureDemoSeed } from "./demo-seed.mjs";
 
@@ -25,7 +26,11 @@ if (command === "migrate" && dry) {
   const files = fs.readdirSync(path.join(ROOT, "db", "migrations")).filter((f) => f.endsWith(".sql")).sort();
   let applied = [];
   if (cfg.database !== ":memory:" && fs.existsSync(cfg.database)) {
-    const db = openDb(cfg.database);
+    // Read-only on purpose: openDb runs `PRAGMA journal_mode=WAL`, which
+    // rewrites the header of a non-WAL database and leaves -wal/-shm siblings.
+    // A command whose whole defect was "it writes when it says it does not"
+    // must not open the production file read-write.
+    const db = new DatabaseSync(cfg.database, { readOnly: true });
     const hasMeta = !!db.prepare(`select name from sqlite_master where type='table' and name='schema_meta'`).get();
     applied = hasMeta ? (db.prepare(`select value from schema_meta where key='migrations'`).get()?.value?.split(",").filter(Boolean) || []) : [];
     db.close();

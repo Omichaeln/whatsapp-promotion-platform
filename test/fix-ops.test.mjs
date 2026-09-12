@@ -9,11 +9,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { describe, it, before, after, assert, buildApp, ROOT } from "./helpers.mjs";
-import { loadConfig, validateConfig, dataVolumeStatus, markDataVolume } from "../src/config.mjs";
+import { loadConfig, validateConfig, dataVolumeStatus, markDataVolume, ensureDataVolume } from "../src/config.mjs";
 import { openDb } from "../src/db.mjs";
-import { runPopulatedSeed, seedEntries, seedReviewTasks, SEED_PHONES, SEED_MARKER_KEY } from "../src/demo-journeys.mjs";
+import { runPopulatedSeed, seedComplete, seedEntries, seedReviewTasks, SEED_PHONES, SEED_MARKER_KEY } from "../src/demo-journeys.mjs";
 
 const NODE = process.execPath;
 const tmpDirs = [];
@@ -23,6 +23,18 @@ const run = (script, args, env) => {
   catch (e) { return { code: e.status ?? 1, out: `${e.stdout || ""}${e.stderr || ""}` }; }
 };
 const baseEnv = (extra) => ({ PATH: process.env.PATH, HOME: process.env.HOME, ...extra });
+/** Start an entrypoint that stays up, wait for `file` to appear, then kill it. */
+const runUntilFile = (script, env, file, timeoutMs = 25_000) => new Promise((resolve) => {
+  const child = spawn(NODE, ["--no-warnings=ExperimentalWarning", script], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+  let out = ""; const add = (d) => { out += d; };
+  child.stdout.on("data", add); child.stderr.on("data", add);
+  const t0 = Date.now();
+  const done = (appeared) => { clearInterval(timer); child.kill("SIGKILL"); resolve({ appeared, out }); };
+  const timer = setInterval(() => {
+    if (fs.existsSync(file)) return done(true);
+    if (child.exitCode !== null || Date.now() - t0 > timeoutMs) return done(fs.existsSync(file));
+  }, 100);
+});
 
 describe("ops package fixes", () => {
   after(() => { for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true }); });
@@ -42,6 +54,17 @@ describe("ops package fixes", () => {
     db.close();
     const dry2 = run("src/db.js", ["migrate", "--dry"], baseEnv({ DATABASE: dbFile }));
     assert.match(dry2.out, /dry run: 0 migration\(s\) would apply/);
+
+    // ...and must not touch the existing file either: openDb runs
+    // `PRAGMA journal_mode=WAL`, which rewrites the header of a non-WAL
+    // database and drops -wal/-shm beside it. A command whose defect was
+    // "it writes when it says it does not" opens read-only.
+    const plain = openDb(dbFile); plain.exec("PRAGMA journal_mode=delete"); plain.close();
+    const before = fs.readFileSync(dbFile);
+    const dry3 = run("src/db.js", ["migrate", "--dry"], baseEnv({ DATABASE: dbFile }));
+    assert.match(dry3.out, /dry run: 0 migration\(s\) would apply/, dry3.out);
+    assert.deepEqual(fs.readFileSync(dbFile), before, "a dry run must leave the database byte-identical");
+    assert.equal(fs.existsSync(`${dbFile}-wal`), false, "a dry run must not leave WAL siblings beside the production file");
   });
 
   it("ops-3/ops-4: production refuses the simulator transport, a typo'd transport and a missing AUDIT_CHECKPOINT_KEY", () => {
@@ -73,6 +96,22 @@ describe("ops package fixes", () => {
     assert.deepEqual(validateConfig(cfg), []);
     const local = loadConfig({ ENVIRONMENT: "local", VOLUME_PATH: tmp("vol-local"), DATABASE: path.join(dir, "promotions.db") });
     assert.equal(dataVolumeStatus(local).checked, false, "local development is never gated on a volume");
+
+    // VOLUME_INIT is re-read on every boot and stays set in a Railway variable
+    // group once used, so it must be loud in both directions: it disables the
+    // check for every future deploy, including one onto an ephemeral directory
+    // after the volume is detached.
+    const fresh = tmp("vol-init");
+    const cfg2 = loadConfig({ ENVIRONMENT: "staging", VOLUME_PATH: fresh, DATABASE: path.join(fresh, "promotions.db"), MEDIA_DIR: path.join(fresh, "media"), ADMIN_PASSWORD: "StagingPassword12345", IDENTITY_KEY: "identity-key-0123456789" });
+    const errs = []; const log = { log: () => {}, error: (m) => errs.push(String(m)) };
+    assert.equal(ensureDataVolume(cfg2, { init: "", log }).ok, false, "an empty directory is not the volume");
+    assert.equal(fs.existsSync(path.join(fresh, ".volume-id")), false, "a refusal must write nothing");
+    assert.equal(ensureDataVolume(cfg2, { init: "true", log }).ok, true);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(fresh, ".volume-id"), "utf8")).provisionedBy, "VOLUME_INIT", "the marker records who provisioned it");
+    assert.ok(errs.some((m) => /UNSET VOLUME_INIT/.test(m)), `provisioning must say to unset it: ${errs.join(" | ")}`);
+    errs.length = 0;
+    ensureDataVolume(cfg2, { init: "true", log });   // the next deploy, variable still set
+    assert.ok(errs.some((m) => /still set/.test(m)), "a VOLUME_INIT left set must warn on every later boot, not pass silently");
   });
 
   it("ops-8: preflight validates the configuration from the env file, not the defaults", () => {
@@ -104,6 +143,146 @@ describe("ops package fixes", () => {
     assert.equal(second.code, 0, second.out);
     const stamps = fs.readdirSync(path.join(backups, "backups"));
     assert.equal(stamps.length, 1, `backups must be pruned to the retention window, found ${stamps.join(", ")}`);
+
+    // Only THIS run's copy was removed, so the stamps earlier runs left behind
+    // stayed for ever: the audit found two, 42 MB of full database plus every
+    // receipt image, invisible to anonymisation, media purge and retention.
+    const stale = path.join(backups, "restore-test", "2026-01-01T00-00-00-000Z");
+    fs.mkdirSync(stale, { recursive: true });
+    fs.writeFileSync(path.join(stale, "promotions.db"), "an earlier rehearsal's copy of every name, phone and receipt");
+    const third = run("scripts/backup-restore-rehearsal.mjs", ["--backup-dir", backups, "--keep", "1"], env);
+    assert.equal(third.code, 0, third.out);
+    const thirdReport = JSON.parse(third.out.slice(third.out.indexOf("{")));
+    assert.deepEqual(thirdReport.restore.prunedStale, ["2026-01-01T00-00-00-000Z"], JSON.stringify(thirdReport.restore));
+    assert.equal(fs.existsSync(stale), false, "a restore copy from an earlier run must not survive the rehearsal");
+    assert.equal(fs.existsSync(path.join(backups, "restore-test")), false);
+
+    // npm's `restore:rehearsal` is not started with --env-file-if-exists, so
+    // BACKUP_DIR in a .env was read by nobody and the rehearsal quietly wrote
+    // its copies onto the data volume it exists to prove it can lose.
+    const envFile = path.join(dir, "rehearsal.env");
+    const fromEnv = path.join(dir, "bk-from-env");
+    fs.writeFileSync(envFile, `BACKUP_DIR=${fromEnv}\n`);
+    const viaEnv = run("scripts/backup-restore-rehearsal.mjs", [], baseEnv({ DATABASE: dbFile, MEDIA_DIR: path.join(dir, "media"), ENV_FILE: envFile }));
+    assert.equal(viaEnv.code, 0, viaEnv.out);
+    assert.ok(fs.existsSync(path.join(fromEnv, "backups")), "BACKUP_DIR from the env file must be honoured");
+    assert.equal(fs.existsSync(path.join(ROOT, "data", "restore-test")), false, "the default data directory must not collect restore copies");
+  });
+
+  it("durability-2: runPopulatedSeed backdates only its own entries while a tester is using the same campaign", async () => {
+    // The load-bearing half of durability-2 is WHERE the seed's UPDATEs point,
+    // and that lives in runPopulatedSeed, not in the selectors: the call sites
+    // can go back to the campaign-only queries with seedEntries/seedReviewTasks
+    // still exported and still correct. So drive the real seed, with a tester
+    // registering and submitting DURING the run — exactly the window the seed
+    // occupies on a live UAT environment, 1-2 minutes after the server is up.
+    const dir = tmp("seedrun");
+    const h = await buildApp({ extractor: "simulator", env: { DATABASE: path.join(dir, "s.db"), MEDIA_DIR: path.join(dir, "media") } });
+    try {
+      const tester = "263771555002";
+      const seedPhone = SEED_PHONES[11];
+      const [imgA, imgB, imgS] = await Promise.all([h.simImage(h.simReceipt({ no: "880001" })), h.simImage(h.simReceipt({ no: "880002" })), h.simImage(h.simReceipt({ no: "880003" }))]);
+      let mid = 0;
+      const send = (phone, text, image = null) => h.app.intake.receive({ provider: "simulator", providerMessageId: `inj_${++mid}`, phoneUid: phone, type: image ? "message.image" : "message.text", text: text || "", inlineMediaB64: image ? image.toString("base64") : null, timestamp: new Date().toISOString() });
+      const submit = (phone, image) => { send(phone, "2"); send(phone, "sunrise westgate harare"); send(phone, "1"); send(phone, "", image); };
+      // intake.receive is synchronous and durable, so the seed's own
+      // drain()/tick() picks these up: a tester message arriving mid-run.
+      let joined = false, planted = false, lateStageAt = null;
+      const logs = [];
+      const log = (m) => {
+        logs.push(String(m));
+        if (!joined && /fixture receipts/.test(String(m))) {
+          joined = true;
+          for (const t of ["hi", "1", "Tester", "One", "TEST7777X", "Harare", "yes", "yes"]) send(tester, t);
+          submit(tester, imgA); submit(tester, imgB);
+          submit(seedPhone, imgS);  // a seed-owned entry, so "nothing was moved" cannot pass vacuously
+        } else if (joined && !planted && /draw-pool receipts/.test(String(m))) {
+          planted = true;
+          lateStageAt = new Date().toISOString();
+          const rs = h.db.prepare(`select r.id from receipts r join participants p on p.id=r.participant_id where p.wa_phone_uid=? order by r.created_at`).all(tester);
+          assert.equal(rs.length, 2, "the tester's two receipts reached the pipeline mid-seed");
+          // The second receipt is put where the seed's review sweep aims: a
+          // tester's receipt awaiting a human decision in the historical window
+          // (a back-dated or unreadable slip). The sweep decides every such task
+          // NOT_QUALIFIED to clear the draw barrier; deciding a tester's is the
+          // failure. REVIEW_REQUIRED matters — receipt-pipeline.review refuses a
+          // QUALIFIED receipt, so a credited one could not show the difference.
+          h.db.prepare(`update receipts set period_code='W-2', status='REVIEW_REQUIRED' where id=?`).run(rs[1].id);
+          h.db.prepare(`delete from entries where receipt_id=?`).run(rs[1].id);
+          h.db.prepare(`insert into review_tasks (id, receipt_id, state, sla_due_at, created_at) values (?,?,'open',?,?)`).run("rt_tester_seed", rs[1].id, new Date().toISOString(), new Date().toISOString());
+        }
+      };
+      await runPopulatedSeed(h.app, { log });
+      assert.ok(joined && planted, `the seed did not reach both injection points:\n${logs.join("\n")}`);
+
+      const entriesFor = (phone) => h.db.prepare(`select e.period_code, e.draw_period from entries e join participants p on p.id=e.participant_id where p.wa_phone_uid=?`).all(phone);
+      const testerEntries = entriesFor(tester);
+      assert.equal(testerEntries.length, 1, "the tester's live entry survived the seed");
+      for (const e of testerEntries) {
+        assert.ok(!["W-2", "W-1"].includes(e.period_code), `the seed rewrote a tester's entry into the historical pool (${e.period_code})`);
+        assert.ok(!["W-2", "W-1"].includes(e.draw_period), `the seed made a tester's entry drawable in ${e.draw_period}`);
+      }
+      assert.ok(entriesFor(seedPhone).some((e) => ["W-2", "W-1"].includes(e.period_code)), "the seed did backdate its OWN entry, so the sweep really ran");
+      const strays = h.db.prepare(`select p.wa_phone_uid u from entries e join participants p on p.id=e.participant_id where e.period_code in ('W-2','W-1')`).all().map((r) => r.u).filter((u) => !SEED_PHONES.includes(u));
+      assert.deepEqual(strays, [], "the historical draw pool must hold only the seed's own participants");
+      assert.notEqual(h.db.prepare(`select state from review_tasks where id='rt_tester_seed'`).get().state, "decided", "the seed's review sweep decided a tester's task");
+
+      // startedAt was recomputed inside stage(), so the marker recorded the LAST
+      // stage transition instead of when the run began.
+      const done = h.domain.getSetting(SEED_MARKER_KEY, null);
+      assert.ok(done.startedAt < lateStageAt, `startedAt (${done.startedAt}) must predate the late stages (${lateStageAt}), not be rewritten by them`);
+      assert.ok(done.startedAt <= done.completedAt);
+
+      // durability-6: the same finished run, seen as a database seeded before
+      // the completion marker existed. The draw here is left blocked (the seed
+      // logs it and moves on), so "a published draw with winners" reported a
+      // finished run as INCOMPLETE for ever — and told the operator to wipe it.
+      assert.ok(logs.some((l) => /draw W-2 blocked/.test(l)), `this case needs the blocked-draw run:\n${logs.join("\n")}`);
+      h.db.prepare(`delete from settings where key=?`).run(SEED_MARKER_KEY);
+      assert.equal(seedComplete(h.db, h.domain, h.campaign.id).complete, true, "a finished pre-marker run whose draw was blocked must not read as incomplete");
+      const again = await runPopulatedSeed(h.app, { log: () => {} });
+      assert.equal(again.complete, true, JSON.stringify(again));
+      assert.ok(!again.incomplete);
+      assert.ok(h.domain.getSetting(SEED_MARKER_KEY, null)?.completedAt, "the inferred completion is written back once");
+    } finally { await h.close(); }
+  });
+
+  it("ops-9 (bootstrap): the deploy entrypoint refuses a directory only preflight/migrate touched, and still adopts a live one", async () => {
+    // The bootstrap block is the half of ops-9 that decides whether every
+    // existing deployment keeps booting, and it had no test. Adoption used to
+    // key on "promotions.db exists" — which `npm run preflight` and
+    // `npm run migrate`, the two commands docs/TEST_READINESS.md tells the
+    // operator to run first, create themselves on a host with no volume.
+    const dir = tmp("boot");
+    const dbFile = path.join(dir, "promotions.db");
+    const marker = path.join(dir, ".volume-id");
+    const env = baseEnv({ ENVIRONMENT: "staging", VOLUME_PATH: dir, DATABASE: dbFile, MEDIA_DIR: path.join(dir, "media"), ADMIN_PASSWORD: "StagingPassword12345", IDENTITY_KEY: "identity-key-0123456789", AUDIT_CHECKPOINT_KEY: "checkpoint-key", PORT: "5987", ENV_FILE: path.join(dir, "absent.env") });
+
+    const empty = run("src/bootstrap.mjs", [], env);
+    assert.equal(empty.code, 1, `an unmarked directory must refuse to boot:\n${empty.out}`);
+    assert.match(empty.out, /\.volume-id/);
+    assert.match(empty.out, /VOLUME_INIT/, "the refusal must name the remedy");
+    assert.equal(fs.existsSync(dbFile), false, "the refused boot must not create the database in ephemeral storage");
+
+    const pre = run("scripts/preflight.mjs", [], env);
+    assert.equal(pre.code, 1, `preflight must fail on an unmounted volume:\n${pre.out}`);
+    assert.equal(fs.existsSync(dbFile), false, "preflight must not create the database inside the directory whose absence it is reporting");
+    assert.equal(fs.existsSync(path.join(dir, "media")), false, "preflight must not create the media dir there either");
+
+    assert.equal(run("src/db.js", ["migrate"], env).code, 0);
+    assert.ok(fs.existsSync(dbFile), "migrate does create the file (that is its job)");
+    const afterMigrate = run("src/bootstrap.mjs", [], env);
+    assert.equal(afterMigrate.code, 1, `a migrate-only database is not evidence of a mounted volume:\n${afterMigrate.out}`);
+    assert.equal(fs.existsSync(marker), false, "nothing may be adopted on the strength of a file migrate created");
+
+    // A database a service has actually run against IS the volume: existing
+    // deployments must keep booting.
+    const db = openDb(dbFile);
+    db.prepare(`insert or ignore into schema_meta (key, value) values ('environment', 'staging')`).run();
+    db.close();
+    const live = await runUntilFile("src/bootstrap.mjs", env, marker);
+    assert.equal(live.appeared, true, `an existing deployment must still be adopted:\n${live.out}`);
+    assert.equal(JSON.parse(fs.readFileSync(marker, "utf8")).provisionedBy, "adopted-live-database");
   });
 
   describe("with a running app", () => {
@@ -111,7 +290,7 @@ describe("ops package fixes", () => {
     before(async () => { dir = tmp("app"); h = await buildApp({ extractor: "simulator", env: { DATABASE: path.join(dir, "t.db"), MEDIA_DIR: path.join(dir, "media") } }); });
     after(async () => { if (!closed) await h.close(); });
 
-    it("durability-2: the sample seed's backdating never selects a real tester's entry or review task", async () => {
+    it("durability-2 (unit): the seed's selectors return only seed-owned rows", async () => {
       const tester = "263771555001";
       await h.register(tester);
       const s = await h.submit(tester, await h.simImage(h.simReceipt({ no: "770001" })));
