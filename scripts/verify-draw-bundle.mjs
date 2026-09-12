@@ -45,6 +45,14 @@ ok("candidates unique", new Set(snap.candidates.map((c) => c.entryId)).size === 
 if (d.status === "frozen") { ok("no result yet (frozen)", b.output == null && b.seed_hex == null, "randomness withheld until execution"); }
 else {
   ok("seed present", typeof b.seed_hex === "string" && b.seed_hex.length >= 32);
+  // The seed must match a commitment made BEFORE any result existed, otherwise
+  // an operator could re-roll the draw until it produced the winners they
+  // wanted and every self-consistent hash here would still agree.
+  if (d.seed_commitment) {
+    ok("seed matches the commitment made at freeze", sha(b.seed_hex) === d.seed_commitment, d.seed_commitment);
+  } else {
+    ok("seed was committed at freeze", false, "no seed_commitment in this bundle: the randomness was not pinned before the result, so a swapped seed cannot be ruled out");
+  }
   const ordered = sortition(snap.candidates, b.seed_hex);
   const sel = select(ordered, snap.plan);
   const recomputed = { algorithm: d.algorithm, sequence: ordered.map((s) => s.entryId), winners: sel.winners, alternates: sel.alternates, plan: snap.plan };
@@ -83,6 +91,20 @@ for (const e of events) {
 }
 ok("draw audit events recompute", chainOk, events.length);
 ok("audit event attribution matches the signed body", attributionOk, unattributed ? `${unattributed} legacy event(s) carry no signed attribution` : "all events signed with attribution");
+// Tie the bundle's headline hashes to what the hash-chained audit events
+// recorded at the time. Without this the bundle is only self-consistent: every
+// digest agrees with every other digest in the same file.
+const signedPayload = (action) => { const e = events.filter((x) => x.action === action).pop(); if (!e) return null; try { return JSON.parse(e.payload_json); } catch { return null; } };
+const frozen = signedPayload("draw.frozen"), executed = signedPayload("draw.executed");
+if (frozen) {
+  ok("snapshot digest matches the signed freeze event", frozen.payload?.snapshotHash === d.snapshot_hash || frozen.snapshotHash === d.snapshot_hash, d.snapshot_hash);
+  const committed = frozen.payload?.seedCommitment ?? frozen.seedCommitment ?? null;
+  ok("seed commitment matches the signed freeze event", !d.seed_commitment || committed === d.seed_commitment,
+    committed ? "recorded before any result existed" : "the freeze event carries no seed commitment");
+}
+if (executed && d.output_hash) {
+  ok("output digest matches the signed execute event", (executed.payload?.outputHash ?? executed.outputHash) === d.output_hash, d.output_hash);
+}
 ok("audit trail has freeze+execute(+approve)", ["draw.frozen", "draw.executed"].every((a) => events.some((e) => e.action === a)) && (d.status === "executed" || events.some((e) => e.action === "draw.approved") || d.status === "frozen"));
 if (["approved", "published"].includes(d.status)) {
   // Separation of duties proven from the signed audit body, not from the draw row.

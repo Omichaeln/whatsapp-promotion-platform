@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
+import crypto from "node:crypto";
 import { describe, it, before, after, assert, buildApp, ROOT } from "./helpers.mjs";
 import { sortition, selectWinners, planFrom } from "../src/draw.mjs";
 
@@ -68,6 +69,62 @@ describe("draws, winners and publication", () => {
     assert.equal(h.app.drawService.verifyStored(h.app.drawService.get(d.id)).ok, true);
     assert.throws(() => h.app.drawService.freeze({ campaignId: h.campaign.id, periodId: period.id, actorId: officer.id }), /DRAW_EXISTS/);
   });
+  it("the draw seed is committed before any result exists: swapping it is refused and a forged commitment fails verification", async () => {
+    // freeze() stored seed_hex but committed it to nothing, so an operator with
+    // database access could replace the seed between freeze and execute,
+    // re-roll until the winners suited them, and the independent verifier still
+    // reported VERIFIED. Reproduced before this was fixed.
+    // Runs on its own app so it cannot disturb the shared fixture's periods.
+    const g = await buildApp({ extractor: "simulator" });
+    try {
+      const off = g.app.auth.listUsers().find((u) => u.email === "draw@example.test");
+      const app2 = g.app.auth.listUsers().find((u) => u.email === "approver@example.test");
+      const aud = g.app.auth.listUsers().find((u) => u.email === "auditor@example.test");
+      const per = g.domain.listPeriods(g.campaign.id).find((x) => x.code === "W-1");
+      for (let i = 1; i <= 6; i++) {
+        const ph = `26377193000${i}`;
+        await g.register(ph, { first: `Seed${"ABCDEF"[i - 1]}`, last: "Probe", identity: `TESTSD${i}ZZ` });
+        await g.submit(ph, await g.simImage(g.simReceipt({ no: `SEEDC-${i}` })));
+      }
+      const at = new Date(Date.parse(per.starts_at) + 3600_000).toISOString();
+      g.db.prepare(`update entries set period_code='W-1', draw_period='W-1', created_at=? where campaign_id=?`).run(at, g.campaign.id);
+      g.db.prepare(`update receipts set period_code='W-1', intake_at=? where campaign_id=?`).run(at, g.campaign.id);
+      const b0 = g.app.drawService.barrier(g.campaign.id, per.id);
+      assert.ok(b0.ok, `barrier blocked: ${b0.blockers.map((x) => x.code).join(",")}`);
+
+      const d = g.app.drawService.freeze({ campaignId: g.campaign.id, periodId: per.id, actorId: off.id });
+      const row = g.db.prepare(`select seed_hex, seed_commitment from draws where id=?`).get(d.id);
+      assert.ok(row.seed_commitment, "freeze must record a commitment to the seed");
+      assert.equal(row.seed_commitment, crypto.createHash("sha256").update(row.seed_hex).digest("hex"));
+      const frozenEvent = g.db.prepare(`select payload_json from audit_events where action='draw.frozen' and target_id=?`).get(d.id);
+      assert.match(frozenEvent.payload_json, /seedCommitment/, "the commitment must be inside the hash-chained freeze event");
+
+      g.db.prepare(`update draws set seed_hex=? where id=?`).run("ab".repeat(32), d.id);
+      assert.throws(() => g.app.drawService.execute(d.id, off.id), /commitment/i, "a swapped seed must be refused");
+      assert.ok(g.db.prepare(`select count(*) n from alerts where kind='draw.seed_tampered'`).get().n > 0, "a swapped seed raises a critical alert");
+
+      g.db.prepare(`update draws set seed_hex=?, status='frozen' where id=?`).run(row.seed_hex, d.id);
+      g.app.drawService.execute(d.id, off.id);
+      g.app.drawService.approve(d.id, app2.id, { expectedOutputHash: g.app.drawService.get(d.id).output_hash, note: "ok" });
+      const bundle = g.app.drawService.bundle(d.id, aud.id);
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "seedb-")); const file = path.join(dir, "b.json");
+      const run = (f) => { try { return { code: 0, out: execFileSync("node", ["--no-warnings", path.join(ROOT, "scripts", "verify-draw-bundle.mjs"), f, "--checkpoint-key", "test-checkpoint-key"], { encoding: "utf8" }) }; } catch (e) { return { code: e.status, out: e.stdout }; } };
+      fs.writeFileSync(file, JSON.stringify(bundle));
+      assert.equal(run(file).code, 0, "the honest draw still verifies");
+
+      // Rewrite the seed AND the commitment so the bundle is self-consistent;
+      // the commitment inside the signed freeze event is what gives it away.
+      const forged = JSON.parse(JSON.stringify(bundle));
+      forged.seed_hex = "cd".repeat(32);
+      forged.draw.seed_commitment = crypto.createHash("sha256").update(forged.seed_hex).digest("hex");
+      fs.writeFileSync(file, JSON.stringify(forged));
+      const r = run(file);
+      assert.equal(r.code, 1, "a self-consistent forged seed must still fail");
+      assert.match(r.out, /seed commitment matches the signed freeze event[\s\S]*?"pass": false/);
+      fs.rmSync(dir, { recursive: true, force: true });
+    } finally { await g.close(); }
+  });
+
   it("T-22: the exported bundle verifies independently and fails when tampered", async () => {
     const d = h.app.drawService.list(h.campaign.id)[0];
     const bundle = h.app.drawService.bundle(d.id, auditor.id);

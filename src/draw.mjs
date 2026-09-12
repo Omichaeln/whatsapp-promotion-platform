@@ -108,14 +108,19 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
       const candidates = b.eligible.map((e) => ({ entryId: e.id, participantId: e.participant_id, weightUnits: Number(e.weight_units || 1) }));
       const snapshot = { drawId, campaignId, periodCode: b.period.code, rulesVersion: version?.config_hash || null, plan: b.plan, candidates, exclusions: b.exclusions };
       const snapshotHash = snapshotHashOf(snapshot);
-      const seedHex = crypto.randomBytes(randomBytes).toString("hex");  // committed before any result exists
-      db.prepare(`insert into draws (id, campaign_id, draw_period, status, config_hash, snapshot_json, snapshot_hash, algorithm, seed_hex, evidence_json, operator_id, created_at, period_id, rules_version_id, prize_plan_json, barrier_json, verifier_version)
-        values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(drawId, campaignId, label, "frozen", version?.config_hash || "", JSON.stringify(snapshot), snapshotHash, DRAW_ALGORITHM, seedHex, JSON.stringify({ frozen_by: actorId, frozen_at: now(), override }), actorId, now(), periodId, version?.id || null, JSON.stringify(b.plan), JSON.stringify({ checkedAt: now(), blockers: b.blockers, overridden: override }), VERIFIER_VERSION);
+      // The seed must be COMMITTED before any result exists: sha256(seed) goes
+      // into the draw row and into the hash-chained draw.frozen audit payload,
+      // so swapping the seed before execution is detectable by anyone holding
+      // the bundle. Storing the seed alone committed it to nothing.
+      const seedHex = crypto.randomBytes(randomBytes).toString("hex");
+      const seedCommitment = sha256(seedHex);
+      db.prepare(`insert into draws (id, campaign_id, draw_period, status, config_hash, snapshot_json, snapshot_hash, algorithm, seed_hex, seed_commitment, evidence_json, operator_id, created_at, period_id, rules_version_id, prize_plan_json, barrier_json, verifier_version)
+        values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(drawId, campaignId, label, "frozen", version?.config_hash || "", JSON.stringify(snapshot), snapshotHash, DRAW_ALGORITHM, seedHex, seedCommitment, JSON.stringify({ frozen_by: actorId, frozen_at: now(), override }), actorId, now(), periodId, version?.id || null, JSON.stringify(b.plan), JSON.stringify({ checkedAt: now(), blockers: b.blockers, overridden: override }), VERIFIER_VERSION);
       const ins = db.prepare(`insert into draw_candidates (id, draw_id, position, entry_id, status, exclusion_reason) values (?,?,?,?,?,?)`);
       candidates.forEach((c, i) => ins.run(id("cand"), drawId, i, c.entryId, "eligible", null));
       b.exclusions.forEach((x, i) => ins.run(id("cand"), drawId, 100000 + i, x.entryId, "excluded", x.reason));
       domain.setPeriodStatus(periodId, "closed", actorId);
-      domain.audit({ actorType: "admin", actorId, action: "draw.frozen", targetType: "draw", targetId: drawId, payload: { periodCode: b.period.code, candidates: candidates.length, exclusions: b.exclusions.length, snapshotHash, override } });
+      domain.audit({ actorType: "admin", actorId, action: "draw.frozen", targetType: "draw", targetId: drawId, payload: { periodCode: b.period.code, candidates: candidates.length, exclusions: b.exclusions.length, snapshotHash, seedCommitment, override } });
       return get.get(drawId);
     });
   }
@@ -130,6 +135,16 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
       // another executor holds the reservation (or a crash left it): resume deterministically
       db.prepare(`insert into draw_attempts (id, draw_id, actor_id, outcome, detail, created_at) values (?,?,?,?,?,?)`).run(id("dat"), drawId, actorId, "resumed", "reservation already held; recomputing deterministically", now());
     } else db.prepare(`insert into draw_attempts (id, draw_id, actor_id, outcome, created_at) values (?,?,?,?,?)`).run(id("dat"), drawId, actorId, "reserved", now());
+    // A seed that no longer matches the commitment made at freeze means the
+    // randomness was replaced after the candidate pool was fixed. Refuse.
+    if (d.seed_commitment && sha256(d.seed_hex) !== d.seed_commitment) {
+      db.prepare(`insert into draw_attempts (id, draw_id, actor_id, outcome, detail, created_at) values (?,?,?,?,?,?)`)
+        .run(id("dat"), drawId, actorId, "refused", "seed does not match the commitment made at freeze", now());
+      domain.alert({ kind: "draw.seed_tampered", severity: "critical", runbook: "docs/runbooks/draw-and-verification.md",
+        message: `draw ${drawId}: the seed does not match the commitment recorded at freeze; execution refused` });
+      domain.audit({ actorType: "admin", actorId, action: "draw.seed_mismatch", targetType: "draw", targetId: drawId, payload: { expected: d.seed_commitment, actual: sha256(d.seed_hex) } });
+      throw Object.assign(new Error("draw seed does not match the commitment recorded at freeze"), { code: "INTEGRITY" });
+    }
     const snapshot = JSON.parse(d.snapshot_json);
     const output = computeOutput(snapshot, d.seed_hex);
     const outputHash = outputHashOf(output);
@@ -226,7 +241,7 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
     domain.audit({ actorType: "admin", actorId, action: "draw.bundle_exported", targetType: "draw", targetId: drawId });
     return {
       bundle_version: VERIFIER_VERSION, exported_at: now(), exported_by: actorId,
-      draw: { id: d.id, campaign_id: d.campaign_id, period: d.period_code, draw_label: d.draw_period, status: d.status, algorithm: d.algorithm, snapshot_hash: d.snapshot_hash, output_hash: d.output_hash, operator_id: d.operator_id, approver_id: d.approver_id, executed_at: d.executed_at, approved_at: d.approved_at, published_at: d.published_at, rules_version: d.config_hash, supersedes: d.supersedes, superseded_by: d.superseded_by },
+      draw: { id: d.id, campaign_id: d.campaign_id, period: d.period_code, draw_label: d.draw_period, status: d.status, algorithm: d.algorithm, snapshot_hash: d.snapshot_hash, output_hash: d.output_hash, seed_commitment: d.seed_commitment, operator_id: d.operator_id, approver_id: d.approver_id, executed_at: d.executed_at, approved_at: d.approved_at, published_at: d.published_at, rules_version: d.config_hash, supersedes: d.supersedes, superseded_by: d.superseded_by },
       snapshot: JSON.parse(d.snapshot_json), seed_hex: d.status === "frozen" ? null : d.seed_hex,   // pre-execution randomness is never exported
       output: d.output_json ? JSON.parse(d.output_json) : null,
       attempts: db.prepare(`select actor_id, outcome, detail, created_at from draw_attempts where draw_id=? order by created_at`).all(drawId),
