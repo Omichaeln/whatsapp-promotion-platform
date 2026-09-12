@@ -17,7 +17,15 @@ export function createWorker({ db, transport, outbox, crm, intake, domain, cfg, 
   // housekeeping interval to tens of minutes — the backlog alerts and the winner
   // expiry driver degraded in proportion to the backlog they exist to report.
   let lastHousekeepingAt = Date.now();
-  const stallMs = stallAfterMs ?? Math.max(10 * intervalMs, 60_000);
+  // A tick is a BATCH, not a single operation: up to 25 inbound events (each of
+  // which may run OCR), 10 jobs, 25 provider sends and 10 CRM deliveries, plus
+  // a bounded reconcile once a minute. At the default 1.5s interval the old
+  // 60s threshold was below the duration of a legitimately busy tick, so the
+  // critical "the whole queue is stopped" alert fired on healthy load and
+  // trained operators to ignore the one alarm that means the queue is wedged.
+  // Five minutes is longer than any bounded tick can take and still far short
+  // of a wedge that matters.
+  const stallMs = stallAfterMs ?? Math.max(20 * intervalMs, 5 * 60_000);
 
   function lastInboundAt(phoneUid) {
     const last = db.prepare(`select received_at from channel_events where wa_phone_uid=? and event_kind like 'message.%' order by received_at desc limit 1`).get(phoneUid);
@@ -111,9 +119,12 @@ export function createWorker({ db, transport, outbox, crm, intake, domain, cfg, 
    * the ONLY thing that ever resolved them was a human clicking Reconcile in the
    * console — a transient CRM blip during an award burst left those entries
    * permanently absent from the CRM. Awaited and hard-bounded: reconcile does one
-   * network read per row and runs inside the tick's single-flight guard.
+   * network read per row and runs inside the tick's single-flight guard, so its
+   * budget is part of the tick's worst case. Three rows a minute clears a
+   * backlog steadily without letting a slow CRM dominate the tick; the console's
+   * manual Reconcile is still there for a burst.
    */
-  async function reconcileCrm({ limit = 10 } = {}) {
+  async function reconcileCrm({ limit = 3 } = {}) {
     try {
       if (!crm?.reconcile || crm.reconcileView?.().provider === "none") return null;
       return await crm.reconcile({ limit });

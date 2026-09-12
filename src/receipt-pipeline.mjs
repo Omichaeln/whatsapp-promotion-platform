@@ -162,7 +162,15 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
       // alone: the key embeds the total, so one unreadable or misread TOTAL on
       // one of two photographs of the same slip used to mint a second canonical
       // row and credit the same purchase twice.
-      let canonical = duplicates.claim(r.campaign_id, { outletId: r.selected_outlet_id, date: x.transaction.date, receiptNo: x.transaction.receiptNo, totalMinor: x.transaction.totalMinor });
+      const claimed = duplicates.claim(r.campaign_id, { outletId: r.selected_outlet_id, date: x.transaction.date, receiptNo: x.transaction.receiptNo, totalMinor: x.transaction.totalMinor });
+      // A match on the printed identity ALONE, where both totals were read and
+      // disagree, is not proof of one purchase: a till counter repeats, so two
+      // genuinely different purchases at one branch on one day can print the
+      // same number, and the total is the only field separating them. Collapsing
+      // them would silently refuse the second buyer's real receipt. Keep the
+      // identities apart and let a person decide (sameOutletConflict below).
+      let canonical = claimed && !claimed.totalsDiffer ? claimed.row : null;
+      const sameOutletConflict = claimed && claimed.totalsDiffer ? claimed.row : null;
       let dupOf = null;
       if (canonical && canonical.first_receipt_id !== receiptId) {
         const firstR = getReceipt.get(canonical.first_receipt_id);
@@ -184,7 +192,11 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
       // independently of the selection. Route to review rather than rejecting:
       // two different shops can legitimately print the same number on the same
       // day for the same total, and a person should decide which is which.
-      if (!canonical && !dupOf && key) {
+      if (sameOutletConflict && !dupOf) {
+        disposition = DISPOSITION.REVIEW; reason = "possible_duplicate_same_outlet";
+        insertCandidate.run(id("dup"), receiptId, sameOutletConflict.credited_receipt_id || sameOutletConflict.first_receipt_id, "printed_identity", 0.8, "open", now());
+      }
+      if (!canonical && !sameOutletConflict && !dupOf && key) {
         const others = duplicates.crossOutletClaims({ campaignId: r.campaign_id, date: x.transaction.date, receiptNo: x.transaction.receiptNo, totalMinor: x.transaction.totalMinor, outletId: r.selected_outlet_id });
         if (others.length) {
           disposition = DISPOSITION.REVIEW; reason = "possible_duplicate_other_outlet";
@@ -334,7 +346,12 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
         if (!key) throw Object.assign(new Error("cannot credit: receipt identity (outlet, date, number) is incomplete — resolve the fields first"), { code: "IDENTITY_INCOMPLETE" });
         // Same stable identity as process(): crediting a receipt whose total was
         // unreadable must not mint a second claim on a purchase already claimed.
-        const can = duplicates.claim(r.campaign_id, identity) || duplicates.canonical(r.campaign_id, key);
+        // Same discrimination as process(): a printed-identity match whose
+        // totals disagree is two purchases, not one, and the reviewer looking
+        // at both slips is exactly who is entitled to say so — do not let it
+        // block their decision. Only a key match (or an exact-key row) holds.
+        const claimed = duplicates.claim(r.campaign_id, identity);
+        const can = (claimed && !claimed.totalsDiffer ? claimed.row : null) || duplicates.canonical(r.campaign_id, key);
         // A reviewer's explicit QUALIFIED used to be rewritten to DUPLICATE in
         // silence: the participant was told "already used" and nothing told the
         // reviewer their decision had not been applied. Name the holder so the

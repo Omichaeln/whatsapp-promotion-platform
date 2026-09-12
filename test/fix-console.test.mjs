@@ -133,14 +133,22 @@ const inputWithPlaceholder = (n, ph) => [...hostsOf(n, "input"), ...hostsOf(n, "
  * Mounts a console component. `stub(method, path, body)` may answer a request
  * itself; anything it does not answer goes to the live test server.
  */
-function mountConsole(mod, { base, token = "", stub = null, confirm = true } = {}) {
+function mountConsole(mod, { base, token = "", stub = null, confirm = true, prompts = null } = {}) {
   const flush = createRenderer(mod);
   const calls = [];
   const saved = { fetch: globalThis.fetch, localStorage: globalThis.localStorage, window: globalThis.window, alert: globalThis.alert, prompt: globalThis.prompt };
   globalThis.localStorage = { getItem: () => token, setItem: () => {}, removeItem: () => {} };
   globalThis.window = { confirm: () => confirm, open: () => {} };
   globalThis.alert = () => {};
-  globalThis.prompt = () => { throw new Error("the console must not ask for structured input with prompt()"); };
+  // Structured input must not come from prompt() — except on the two
+  // entry controls that deliberately mirror each other (Disqualify /
+  // Reinstate), where a test opts in by naming the answers it gives.
+  globalThis.prompt = (q) => {
+    if (!prompts) throw new Error("the console must not ask for structured input with prompt()");
+    const hit = Object.keys(prompts).find((k) => String(q || "").toLowerCase().includes(k.toLowerCase()));
+    if (hit === undefined) throw new Error(`unexpected prompt: ${q}`);
+    return prompts[hit];
+  };
   globalThis.fetch = async (url, opts = {}) => {
     const body = opts.body ? JSON.parse(opts.body) : null;
     const method = opts.method || "GET";
@@ -466,5 +474,40 @@ describe("console shell", () => {
     const keys = mod.__ui.TABS.map(([k]) => k);
     assert.ok(keys.includes("support"), `no support tab: ${keys.join(", ")}`);
     assert.ok(mod.__ui.VIEWS.support, "the support tab must be wired to a view");
+  });
+});
+
+describe("dual-control reinstatement has to be reachable from the console", () => {
+  // reinstateEntry refuses without an approver when the disqualification it
+  // reverses was itself dual-controlled. The Reinstate control posted only a
+  // reason, so every such entry was permanently stuck: the server asked for an
+  // approver the product had no way to send. Disqualify already prompts for
+  // one; Reinstate now mirrors it.
+  let entryId;
+  before(async () => {
+    const phone = "263771970911";
+    await h.register(phone, { first: "Dual", last: "Control", identity: "TESTDUAL01" });
+    const r = await h.submit(phone, await h.simImage(h.simReceipt({ no: "911001" })), { outlet: "sunrise westgate harare" });
+    assert.equal(r.receipt.status, "QUALIFIED");
+    entryId = h.db.prepare(`select id from entries where receipt_id=?`).get(r.receiptId).id;
+    const d = await h.api(`/api/entries/${entryId}/disqualify`, { token: me["manager@example.test"].token, method: "POST", body: { reason: "audit finding", approved_by: me["reviewer@example.test"].me.id } });
+    assert.equal(d.status, 200, JSON.stringify(d.data));
+  });
+
+  it("the Reinstate control asks for an approver and sends it", async () => {
+    const ui = as("manager@example.test", { prompts: { "reinstatement reason": "cleared on appeal", "approver user id": me["reviewer@example.test"].me.id } });
+    try {
+      await ui.render(mod.__ui.VIEWS.entries, { me: me["manager@example.test"].me });
+      // open the trace for this entry, then reinstate
+      const rows = hostsOf(ui.tree, "tr").filter((t) => textOf(t).includes(String(entryId).slice(0, 8)));
+      assert.ok(rows.length, "the disqualified entry must be listed");
+      await hostsOf(rows[0], "button")[0].props.onClick({ preventDefault() {} });
+      await ui.again();
+      await ui.click("Reinstate");
+      const post = ui.calls.find((c) => c.method === "POST" && c.url.includes("/reinstate"));
+      assert.ok(post, `no reinstate call: ${ui.calls.map((c) => `${c.method} ${c.url}`).join(" | ")}`);
+      assert.equal(post.body.approved_by, me["reviewer@example.test"].me.id, "the approver the operator named must reach the server");
+      assert.equal(h.db.prepare(`select status from entries where id=?`).get(entryId).status, "active", "and the entry must actually come back");
+    } finally { ui.restore(); }
   });
 });

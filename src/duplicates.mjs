@@ -78,17 +78,30 @@ export function createDuplicateDetector({ db, phashDistance = PROBABLE_DUPLICATE
     },
     canonical(campaignId, key) { return key ? byCanonical.get(campaignId, key) : null; },
     /**
-     * The canonical row for this purchase. Tries the exact key first, then the
-     * printed identity at the SAME outlet ignoring the total, so a receipt
-     * whose total was unreadable and a second photograph of the same slip
-     * whose total was readable resolve to ONE identity instead of two.
+     * The canonical row for this purchase, and HOW it was matched.
+     * Returns null, or { row, matchedBy: "key" | "identity", totalsDiffer }.
+     *
+     * "key" is the exact canonical key and is conclusive. "identity" matched
+     * only outlet + date + printed number, ignoring the total, so that a
+     * receipt whose TOTAL was unreadable and a second photograph of the same
+     * slip whose total was readable resolve to ONE identity instead of two.
+     *
+     * That fallback cannot be conclusive on its own. A till counter repeats,
+     * and two genuinely different purchases at one branch on one day can print
+     * the same number; the total is then the ONLY field that separates them.
+     * `totalsDiffer` reports exactly that disagreement (both totals present and
+     * unequal) so the caller can route it to a person instead of silently
+     * collapsing two purchases into one claim.
      */
     claim(campaignId, { outletId, date, receiptNo, totalMinor }) {
       const key = canonicalKeyOf({ outletId, date, receiptNo, totalMinor });
       const exact = key ? byCanonical.get(campaignId, key) : null;
-      if (exact) return exact;
+      if (exact) return { row: exact, matchedBy: "key", totalsDiffer: false };
       if (!outletId || !date || !receiptNo) return null;
-      return byOutletIdentity.get(campaignId, outletId, date, normaliseReceiptNo(receiptNo)) || null;
+      const row = byOutletIdentity.get(campaignId, outletId, date, normaliseReceiptNo(receiptNo));
+      if (!row) return null;
+      const totalsDiffer = row.total_minor != null && totalMinor != null && Number(row.total_minor) !== Number(totalMinor);
+      return { row, matchedBy: "identity", totalsDiffer };
     },
   };
 }
