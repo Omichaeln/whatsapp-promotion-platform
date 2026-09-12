@@ -86,6 +86,7 @@ export const DEFAULT_COPY = {
     total_unclear: "the receipt total is not readable",
     duplicate_receipt: "the receipt was already used",
     ownership_dispute: "this receipt was also sent from another phone; a team member will check it",
+    possible_duplicate_other_outlet: "this receipt looks like one already sent for a different branch; a team member will check it",
     auto_qualification_paused: "automatic checks are paused; a team member will review it",
     reviewer_decision: "our team could not verify the receipt",
   },

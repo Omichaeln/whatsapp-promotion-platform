@@ -14,8 +14,8 @@ const cfg = loadConfig();
 if (cfg.environment === "production") { console.error("refusing to seed sample data in production"); process.exit(2); }
 { const db = openDb(cfg.database); const r = ensureDemoSeed(db); db.close(); console.log(r.seeded ? `[seed] created ${SAMPLE_CODE}` : `[seed] ${SAMPLE_CODE} already present`); }
 const app = await createServer({ config: cfg, log: { log: () => {}, error: (...a) => console.error(...a) } });
-const { auth } = app;
-const staff = ensureSampleStaff(auth);
+const { auth, db } = app;
+const staff = ensureSampleStaff(auth, { db });
 for (const s of staff) console.log(`[seed] staff ${s.email} (${s.roles.join(",")}) temporary password: ${s.temporaryPassword}`);
 const light = process.argv.includes("--light");
 if (light) { console.log("[seed] light seed; done"); await app.close(); process.exit(0); }

@@ -2,7 +2,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { ReceiptExtractor, emptyExtraction, EXTRACTION_SCHEMA_VERSION } from "./receipt-extractor.mjs";
 import { parseReceiptText } from "./parse-receipt.mjs";
-import { normaliseForOcr } from "../media.mjs";
+import { normaliseForOcr, MAX_PIXELS } from "../media.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -71,7 +71,7 @@ export class TesseractExtractor extends ReceiptExtractor {
       if (parsed.document.kind !== "receipt" && Date.now() - t1 < 8000) {
         const sharp = (await import("sharp")).default;
         for (const deg of [90, 270]) {
-          const rotated = await sharp(png).rotate(deg).png().toBuffer();
+          const rotated = await sharp(png, { limitInputPixels: MAX_PIXELS }).rotate(deg).png().toBuffer();
           const alt = await this.recognise(rotated);
           const altParsed = parse(alt.data.text);
           if (altParsed.document.score > parsed.document.score) { data = alt.data; parsed = altParsed; rotation = deg; }

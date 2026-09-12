@@ -19,6 +19,8 @@ import { id, sha256hex, nowIso, addMinutes } from "./db.mjs";
 export const ALLOWED_FORMATS = new Set(["jpeg", "png", "webp", "heif", "gif", "tiff"]);
 export const MAX_BYTES = 10 * 1024 * 1024;
 export const MAX_PIXELS = 40_000_000;      // 40 MP: bounded decode work
+export const MAX_ASPECT = 20;              // a till receipt is long, not a ribbon
+export const MAX_NORMALISED_PIXELS = 1600 * 6400;   // bound on the WORKING image
 export const PROBABLE_DUPLICATE_DIST = 6;    // Hamming distance on 64-bit hashes (reviewer search signal only)
 
 export async function inspectImage(bytes) {
@@ -31,13 +33,26 @@ export async function inspectImage(bytes) {
   if (!meta.format || !ALLOWED_FORMATS.has(meta.format)) throw Object.assign(new Error(`unsupported image format ${meta.format || "unknown"}`), { code: "BAD_TYPE" });
   if ((meta.width || 0) * (meta.height || 0) > MAX_PIXELS) throw Object.assign(new Error("image dimensions too large"), { code: "TOO_LARGE" });
   if ((meta.width || 0) < 64 || (meta.height || 0) < 64) throw Object.assign(new Error("image too small to be a receipt"), { code: "TOO_SMALL" });
+  // A 400x100000 PNG compresses to a few hundred KB and passes every check
+  // above (it is exactly at MAX_PIXELS), but normalisation then upscales it by
+  // width alone into a 640-megapixel working image: a minute of CPU per upload,
+  // inside the inbound path, from any consumer. Receipts are long, not ribbons.
+  const longest = Math.max(meta.width || 0, meta.height || 0), shortest = Math.min(meta.width || 0, meta.height || 0);
+  if (shortest > 0 && longest / shortest > MAX_ASPECT) throw Object.assign(new Error("image shape does not look like a receipt photo"), { code: "BAD_TYPE" });
   const mime = { jpeg: "image/jpeg", png: "image/png", webp: "image/webp", heif: "image/heic", gif: "image/gif", tiff: "image/tiff" }[meta.format];
   return { format: meta.format, mime, width: meta.width, height: meta.height, orientation: meta.orientation || 1, pages: meta.pages || 1 };
 }
 
 /** Normalised working image (PNG): EXIF-rotated, greyscale, width-bounded. */
 export async function normaliseForOcr(bytes, { width = 1600 } = {}) {
-  return sharp(bytes, { limitInputPixels: MAX_PIXELS }).rotate().grayscale().normalise().resize({ width, withoutEnlargement: false }).png().toBuffer();
+  // Enlargement stays on: small receipt photos must be upscaled to ~1600px for
+  // tesseract to read them. But bound the OTHER side too, or a tall input is
+  // scaled up into a working image far larger than the input-pixel budget this
+  // module claims to enforce. fit:"inside" keeps the aspect ratio and makes the
+  // cap the binding constraint only for shapes no real receipt has.
+  const height = Math.max(1, Math.floor(MAX_NORMALISED_PIXELS / width));
+  return sharp(bytes, { limitInputPixels: MAX_PIXELS }).rotate().grayscale().normalise()
+    .resize({ width, height, fit: "inside", withoutEnlargement: false }).png().toBuffer();
 }
 
 /** Small greyscale raster used for hashing and quality signals. */

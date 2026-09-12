@@ -40,7 +40,15 @@ export async function createServer({ config, log = console, transport: transport
   // The database records its environment on first boot; it never silently changes afterwards.
   db.prepare(`insert or ignore into schema_meta (key, value) values ('environment', ?)`).run(cfg.environment);
   const environment = db.prepare(`select value from schema_meta where key='environment'`).get().value;
-  if (environment !== cfg.environment) log.warn?.(`[server] database environment is "${environment}" but ENVIRONMENT=${cfg.environment}; the database value governs`);
+  if (environment !== cfg.environment) {
+    // Every production gate reads the recorded value. Booting a production
+    // database while the process believes it is staging enables the simulator,
+    // sample seeding and dev keys against live data, so refuse rather than warn.
+    if (environment === "production") {
+      throw new Error(`this database is recorded as production but ENVIRONMENT=${cfg.environment}; refusing to start. Set ENVIRONMENT=production, or point at a different database.`);
+    }
+    log.warn?.(`[server] database environment is "${environment}" but ENVIRONMENT=${cfg.environment}; the database value governs`);
+  }
 
   // ---- domain wiring ----------------------------------------------------------
   const domain = createDomain(db, cfg.identityKey || "dev-only-key", nowIso, { checkpointKey: cfg.auditCheckpointKey, retention: cfg.retention });

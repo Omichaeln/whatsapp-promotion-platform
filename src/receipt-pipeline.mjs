@@ -1,6 +1,6 @@
 import { id, tx, nowIso } from "./db.mjs";
 import { evaluateEligibility, DISPOSITION, REASONS } from "./eligibility.mjs";
-import { canonicalKeyOf } from "./duplicates.mjs";
+import { canonicalKeyOf, normaliseReceiptNo } from "./duplicates.mjs";
 import { renderCopy, reasonLabel, shortRef } from "./copy.mjs";
 
 /**
@@ -124,6 +124,21 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
         const credited = exact.map((c) => getReceipt.get(c.receiptId)).find((rr) => rr?.status === "QUALIFIED");
         if (credited) dupOf = credited.id;
       }
+      // One physical receipt, two outlet SELECTIONS. The canonical key embeds
+      // the outlet the participant chose, so choosing another branch mints a
+      // second identity for the same purchase and credits it twice. The printed
+      // identity (date + number + total) belongs to the receipt, so check it
+      // independently of the selection. Route to review rather than rejecting:
+      // two different shops can legitimately print the same number on the same
+      // day for the same total, and a person should decide which is which.
+      if (!canonical && !dupOf && key) {
+        const others = duplicates.crossOutletClaims({ campaignId: r.campaign_id, date: x.transaction.date, receiptNo: x.transaction.receiptNo, totalMinor: x.transaction.totalMinor, outletId: r.selected_outlet_id });
+        if (others.length) {
+          disposition = DISPOSITION.REVIEW; reason = "possible_duplicate_other_outlet";
+          for (const o of others) insertCandidate.run(id("dup"), receiptId, o.credited_receipt_id || o.first_receipt_id, "printed_identity", 0.9, "open", now());
+        }
+      }
+
       // Visual-hash candidates are recorded for reviewers (search signal only).
       // Receipts from one till look alike at 8x8, so they never decide on their
       // own: the deterministic identity (outlet|date|number|total) does.
@@ -134,8 +149,8 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
       if (key && !canonical && disposition !== DISPOSITION.DUPLICATE) {
         canonicalId = id("can");
         try {
-          db.prepare(`insert into canonical_receipts (id, campaign_id, canonical_key, outlet_id, txn_date, receipt_no, total_minor, currency, first_receipt_id, status, created_at) values (?,?,?,?,?,?,?,?,?,?,?)`)
-            .run(canonicalId, r.campaign_id, key, r.selected_outlet_id, x.transaction.date, x.transaction.receiptNo, x.transaction.totalMinor, x.transaction.currency, receiptId, disposition === DISPOSITION.QUALIFIED ? "credited" : "pending", now());
+          db.prepare(`insert into canonical_receipts (id, campaign_id, canonical_key, outlet_id, txn_date, receipt_no, receipt_no_norm, total_minor, currency, first_receipt_id, status, created_at) values (?,?,?,?,?,?,?,?,?,?,?,?)`)
+            .run(canonicalId, r.campaign_id, key, r.selected_outlet_id, x.transaction.date, x.transaction.receiptNo, normaliseReceiptNo(x.transaction.receiptNo), x.transaction.totalMinor, x.transaction.currency, receiptId, disposition === DISPOSITION.QUALIFIED ? "credited" : "pending", now());
         } catch (e) {
           if (!String(e.message).includes("UNIQUE")) throw e;
           const winner = duplicates.canonical(r.campaign_id, key);
