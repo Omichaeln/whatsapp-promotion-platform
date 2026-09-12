@@ -13,24 +13,73 @@ import { id, nowIso } from "./db.mjs";
  */
 export const OUTBOUND_STATES = ["pending", "sending", "sent", "delivered", "read", "retryable_failure", "permanent_failure", "unknown_outcome"];
 const MAX_ATTEMPTS = 6;
+/**
+ * Codes THIS platform writes when it decides not to send. They are not provider
+ * trouble, so they must not be counted into the `outbound.failures` warning,
+ * whose runbook (provider-outage.md) tells an operator to check Meta's status
+ * page, rotate the access token and retry the rows: a participant exercising
+ * their right to withdraw, or a campaign an operator paused on purpose, would
+ * otherwise raise a provider-outage alarm every hour and teach operators to
+ * ignore the one alert that means WhatsApp is actually down.
+ */
+export const POLICY_BLOCK_CODES = ["CONSENT_WITHDRAWN", "RECIPIENT_NOT_ALLOWED", "OUTBOUND_PAUSED", "TEMPLATE_REQUIRED"];
+/**
+ * ...of those, the holds a human has to clear: nobody can send the message (the
+ * 24h window closed and no approved template is configured) or the deployment
+ * was never given an allowlist. A pause ends when the operator ends it and a
+ * withdrawal is permanent by design, so neither needs an alarm.
+ */
+const ACTIONABLE_HOLD_CODES = ["TEMPLATE_REQUIRED", "RECIPIENT_NOT_ALLOWED"];
+const inList = (xs) => xs.map(() => "?").join(",");
 
 export function createOutbox(db, now = nowIso) {
   const insert = db.prepare(`insert or ignore into outbound_messages
     (id, provider, wa_phone_uid, kind, payload_json, idempotency_key, status, created_at, purpose, campaign_id, correlation_id, template_name)
     values (?,?,?,?,?,?,?,?,?,?,?,?)`);
   const byKey = db.prepare(`select id from outbound_messages where idempotency_key=?`);
-  const next = db.prepare(`select * from outbound_messages where (next_attempt_at is null or next_attempt_at <= ?) and ((status in ('pending','retryable_failure') and (lease_until is null or lease_until < ?)) or (status='sending' and lease_until < ?)) order by created_at limit 1`);
-  const lease = db.prepare(`update outbound_messages set status='sending', lease_until=?, attempts=attempts+1 where id=? and (status in ('pending','retryable_failure') or (status='sending' and lease_until < ?))`);
+  // A 'sending' row whose lease has expired is NOT re-dispatchable. It used to be
+  // (`or (status='sending' and lease_until < ?)` in both statements): the row is
+  // only moved off 'sending' after `await dispatch(...)` returns, so a process
+  // killed between the provider accepting the message and that update left the
+  // row leased, and 60s later the next worker sent the identical body again —
+  // a winner received "You are a WINNER. Claim ref ABC123." twice, and with no
+  // attempt cap on that path it could repeat. Shutdown now drains the in-flight
+  // tick (worker.stop -> server.close), so the ordinary redeploy no longer
+  // abandons a row at all; whatever SIGKILL still leaves is reclaimed by
+  // reclaimStalled() into unknown_outcome — the state this module already
+  // defines for "the provider may have accepted it" — for an operator to check
+  // against the provider log and Retry.
+  const next = db.prepare(`select * from outbound_messages where (next_attempt_at is null or next_attempt_at <= ?) and status in ('pending','retryable_failure') and (lease_until is null or lease_until < ?) order by created_at limit 1`);
+  const lease = db.prepare(`update outbound_messages set status='sending', lease_until=?, attempts=attempts+1 where id=? and status in ('pending','retryable_failure')`);
+  const stalled = db.prepare(`select id from outbound_messages where status='sending' and lease_until is not null and lease_until < ? order by created_at limit ?`);
+  const reclaim = db.prepare(`update outbound_messages set status='unknown_outcome', lease_until=null, error_code=coalesce(error_code,'DISPATCH_INTERRUPTED'), last_error=? where id=? and status='sending'`);
 
   return {
-    enqueueWhatsApp({ waPhoneUid, kind = "text", payload, idempotencyKey, provider = "whatsapp", purpose = "reply", campaignId = null, correlationId = null, templateName = null }) {
+    /**
+     * `holdUntil` parks the row so no worker tick can pick it up before that
+     * instant (the selector requires next_attempt_at <= now). Used to keep an
+     * AUTOMATED participant message out of a conversation an operator has taken
+     * over — see receipt-pipeline's handoffHold — and released early by
+     * releaseHold() when the operator hands the conversation back. It is a hold,
+     * not a policy block: a blocked row burns an attempt on every tick and
+     * outbox.mjs never consults MAX_ATTEMPTS on that branch, so an indefinite
+     * handoff would have churned the row for ever.
+     */
+    enqueueWhatsApp({ waPhoneUid, kind = "text", payload, idempotencyKey, provider = "whatsapp", purpose = "reply", campaignId = null, correlationId = null, templateName = null, holdUntil = null, holdCode = "HELD" }) {
       if (!idempotencyKey) throw new Error("idempotencyKey required");
       const row = byKey.get(idempotencyKey);
       if (row) return { existed: true, id: row.id, key: idempotencyKey };
       const outId = id("out");
+      // payload_json holds the MESSAGE ONLY. Routing metadata (recipient, kind,
+      // idempotency key) lives in its own columns: it used to be spread into the
+      // same object, so for kind='template' the internal idempotency key and the
+      // phone uid ended up inside Meta's `template` object on the wire — unknown
+      // params Graph may reject with a 400, which this adapter treats as
+      // permanent and would fail every winner notification of a live draw.
       const envelope = typeof payload === "string" ? { body: payload } : { ...payload };
-      insert.run(outId, provider, waPhoneUid, kind, JSON.stringify({ ...envelope, waPhoneUid, kind, idempotencyKey }), idempotencyKey, "pending", now(), purpose, campaignId, correlationId, templateName);
-      return { id: outId, key: idempotencyKey };
+      insert.run(outId, provider, waPhoneUid, kind, JSON.stringify(envelope), idempotencyKey, "pending", now(), purpose, campaignId, correlationId, templateName);
+      if (holdUntil) db.prepare(`update outbound_messages set next_attempt_at=?, error_code=? where id=?`).run(holdUntil, holdCode, outId);
+      return { id: outId, key: idempotencyKey, held: holdUntil || null };
     },
     /**
      * Deliver one message. `dispatch(row, payload)` must return
@@ -39,9 +88,9 @@ export function createOutbox(db, now = nowIso) {
      * `policy(row)` may return { blocked: true, code, message, retryable }.
      */
     async processPendingWhatsApp(dispatch, { policy = null, leaseSeconds = 60 } = {}) {
-      const row = next.get(now(), now(), now());
+      const row = next.get(now(), now());
       if (!row) return null;
-      const leased = lease.run(new Date(Date.now() + leaseSeconds * 1000).toISOString(), row.id, now());
+      const leased = lease.run(new Date(Date.now() + leaseSeconds * 1000).toISOString(), row.id);
       if (leased.changes === 0) return { id: row.id, skipped: true };
       const payload = JSON.parse(row.payload_json);
       if (policy) {
@@ -65,6 +114,28 @@ export function createOutbox(db, now = nowIso) {
         return { id: row.id, error: e.message, status };
       }
     },
+    /**
+     * Reclaim rows abandoned mid-dispatch (the process stopped between the lease
+     * and the result) into unknown_outcome, where the runbook says to check the
+     * provider's message log before pressing Retry. They are deliberately NOT
+     * re-dispatched: the provider may already have accepted the message.
+     * Called from the worker's housekeeping pass, which also alerts on the
+     * resulting unknown_outcome rows (outbound.failures).
+     */
+    reclaimStalled({ limit = 50 } = {}) {
+      const rows = stalled.all(now(), limit);
+      for (const r of rows) reclaim.run("process stopped after the message was handed to the provider: outcome unknown, check the provider log before Retry", r.id);
+      return rows.length;
+    },
+    /**
+     * Release rows held for one recipient (the operator handed the conversation
+     * back): they become deliverable on the next tick, in the order they were
+     * queued. Only rows still pending and carrying this hold code are touched.
+     */
+    releaseHold({ waPhoneUid, code = "HELD" }) {
+      if (!waPhoneUid) return 0;
+      return db.prepare(`update outbound_messages set next_attempt_at=null, error_code=null where wa_phone_uid=? and status='pending' and error_code=? and next_attempt_at is not null`).run(waPhoneUid, code).changes;
+    },
     /** Provider delivery callback (sent/delivered/read/failed) by provider message id. */
     markDelivery(providerMessageId, status, { errorCode = null, at = null } = {}) {
       const row = db.prepare(`select id, status from outbound_messages where provider_message_id=?`).get(providerMessageId);
@@ -72,20 +143,57 @@ export function createOutbox(db, now = nowIso) {
       const ts = at || now();
       if (status === "delivered") db.prepare(`update outbound_messages set status=case when status='read' then status else 'delivered' end, delivered_at=coalesce(delivered_at, ?) where id=?`).run(ts, row.id);
       else if (status === "read") db.prepare(`update outbound_messages set status='read', read_at=coalesce(read_at, ?), delivered_at=coalesce(delivered_at, ?) where id=?`).run(ts, ts, row.id);
-      else if (status === "failed") db.prepare(`update outbound_messages set status='permanent_failure', error_code=?, last_error='provider reported failure' where id=?`).run(errorCode, row.id);
+      else if (status === "failed") {
+        // Provider statuses are not ordered: a 'failed' can arrive after the
+        // recipient has already read the message. Overwriting a proven
+        // delivered/read state destroyed that evidence AND unlocked the console
+        // Retry button (the runbook tells operators to retry permanent_failure),
+        // which re-sent a winner notification someone had already read.
+        const code = providerErrorCode(errorCode);
+        if (row.status === "delivered" || row.status === "read") {
+          db.prepare(`update outbound_messages set last_error=?, error_code=coalesce(error_code, ?) where id=?`).run(`provider reported failure after ${row.status}; ignored (delivery already proven)`, code, row.id);
+        } else {
+          db.prepare(`update outbound_messages set status='permanent_failure', error_code=?, last_error='provider reported failure' where id=?`).run(code, row.id);
+        }
+      }
       else if (status === "sent") db.prepare(`update outbound_messages set sent_at=coalesce(sent_at, ?) where id=?`).run(ts, row.id);
       return true;
     },
     /** Operator retry of a failed / unknown row (audited by caller). */
     retry(outId) {
-      const r = db.prepare(`update outbound_messages set status='pending', next_attempt_at=null, lease_until=null, attempts=0 where id=? and status in ('retryable_failure','permanent_failure','unknown_outcome')`).run(outId);
+      // Never requeue a message whose recipient has been erased. Anonymisation
+      // deletes everything that never left (sent_at is null) and rewrites the
+      // survivors to wa_phone_uid='deleted:<pid>' with the body replaced by
+      // '[erased]'; a row that WAS sent and then got a provider 'failed' webhook
+      // keeps sent_at, so it survived as permanent_failure and Retry dispatched
+      // an empty envelope to a dead address for a participant who had exercised
+      // their right to erasure.
+      const r = db.prepare(`update outbound_messages set status='pending', next_attempt_at=null, lease_until=null, attempts=0 where id=? and status in ('retryable_failure','permanent_failure','unknown_outcome') and wa_phone_uid not like 'deleted:%'`).run(outId);
       return r.changes > 0;
     },
     get: (outId) => db.prepare(`select * from outbound_messages where id=?`).get(outId),
     stats() {
       const rows = db.prepare(`select status, count(*) n from outbound_messages group by status`).all();
       const oldest = db.prepare(`select created_at from outbound_messages where status in ('pending','retryable_failure') order by created_at limit 1`).get()?.created_at || null;
-      return { byStatus: Object.fromEntries(rows.map((r) => [r.status, r.n])), oldestPending: oldest };
+      // A policy-blocked row sits in retryable_failure, which the failure alert
+      // does not count — a message could be held indefinitely with nobody told.
+      // Surface the age of the oldest hold SOMEONE CAN CLEAR only: an
+      // OUTBOUND_PAUSED row is held for exactly as long as the operator wants
+      // the campaign paused, and a row with no error_code is an ordinary
+      // transient provider retry sitting in backoff. Counting either made any
+      // pause longer than half an hour, and every provider blip, raise a warning
+      // on the hour.
+      const held = db.prepare(`select created_at from outbound_messages where status='retryable_failure' and error_code in (${inList(ACTIONABLE_HOLD_CODES)}) order by created_at limit 1`).get(...ACTIONABLE_HOLD_CODES)?.created_at || null;
+      // Failures the PROVIDER caused: everything terminal except our own policy
+      // decisions (see POLICY_BLOCK_CODES). unknown_outcome is always provider
+      // trouble — the call timed out after the message may have been accepted.
+      const providerFailures = db.prepare(`select count(*) n from outbound_messages where status='unknown_outcome' or (status='permanent_failure' and (error_code is null or error_code not in (${inList(POLICY_BLOCK_CODES)})))`).get(...POLICY_BLOCK_CODES).n;
+      // A message that can never now be delivered because the service window
+      // closed on it: the winner is marked 'notified' and nothing was sent.
+      // RECIPIENT_NOT_ALLOWED is deliberately absent — a permanent block on a
+      // number that is not a designated test recipient is the allowlist working.
+      const undeliverable = db.prepare(`select count(*) n from outbound_messages where status='permanent_failure' and error_code='TEMPLATE_REQUIRED'`).get().n;
+      return { byStatus: Object.fromEntries(rows.map((r) => [r.status, r.n])), oldestPending: oldest, oldestHeld: held, providerFailures, undeliverable };
     },
     list({ status = null, limit = 100 } = {}) {
       return status ? db.prepare(`select id, wa_phone_uid, kind, purpose, status, attempts, last_error, error_code, provider_message_id, created_at, sent_at, delivered_at from outbound_messages where status=? order by created_at desc limit ?`).all(status, limit)
@@ -95,3 +203,16 @@ export function createOutbox(db, now = nowIso) {
 }
 
 function backoff(attempts) { return new Date(Date.now() + Math.min(2 ** attempts, 300) * 1000 + Math.floor(Math.random() * 1000)).toISOString(); }
+
+/**
+ * One shape for error_code whatever the source. The send path records Meta
+ * errors as `META_<code>`; the delivery-status path bound the raw JSON number
+ * into a TEXT column, which node:sqlite stores as '131047.0', so no console
+ * filter on a documented Meta code could ever match either form.
+ */
+function providerErrorCode(raw) {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = typeof raw === "number" ? raw : (/^\d+(\.0+)?$/.test(String(raw)) ? Number(raw) : NaN);
+  if (Number.isFinite(n)) return `META_${Math.trunc(n)}`;
+  return String(raw).startsWith("META_") ? String(raw) : String(raw).slice(0, 60);
+}

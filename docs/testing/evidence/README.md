@@ -1,10 +1,10 @@
-# Evidence index (build of 10 September 2026, branch `claude/funny-brown-r7wpo9`, code commit `f0a7f7a8f4fdbd5f2a57fd12f8359d29d25a3ab5`)
+# Evidence index (build of 10 September 2026, branch `claude/funny-brown-r7wpo9`)
 
-Every file here was produced by running the commands listed against the code in this branch. Nothing is hand-edited except the redaction of temporary passwords in `seed-run.txt`. No file contains a secret value.
+Every file here was produced by running the commands listed against the code in this branch. **Provenance, taken from git rather than from memory:** every artefact except the two recordings named next was produced at commit `d0bf6327ea646726b51d106ff190b42e62d7439a`; `test-results.txt` and `remote-smoke-staging-rehearsal.txt`/`.json` were last regenerated later, at `86ebef8a71dc424dae292f7232b90cbb157562b0`. Check either with `git log -1 -- docs/testing/evidence/<file>`. (Revisions of this page up to the round-two audit cited a pre-rebase hash that is not reachable from this branch at all; a delivery document that names a commit nobody can check out is worse than one that names none, so every hash on this page and in `docs/TEST_READINESS.md` / `docs/requirements-traceability.md` is now asserted to be an ancestor of HEAD by `test/fix-docs.test.mjs`.) Nothing is hand-edited except the redaction of temporary passwords in `seed-run.txt`. No file contains a secret value.
 
 | File | Produced by | What it shows |
 |---|---|---|
-| `test-results.txt` | `npm test` | TAP output of all suites (unit, integration, real OCR, contract, security); final line `exit=0` |
+| `test-results.txt` | `npm test` | TAP output of the suites that existed at this commit (unit, integration, real OCR, contract, security): 46 tests in 9 suites, final line `exit=0`. **Stale**: `test/audit-integrity.test.mjs` and `test/media-limits.test.mjs` were added later and are not in this recording — re-run `npm test` and replace this file before the counts are quoted as coverage of the branch tip |
 | `receipt-benchmark.json` | `npm run bench` | per-fixture OCR outcome vs label, false accepts/rejects, review rate, latency percentiles, by-layout summary |
 | `load-benchmark.json` | `npm run load -- --receipts 30 --concurrency 5` | intake/processing throughput and latency with real OCR on one worker (engineering benchmark, not a capacity claim); the same six fixture images are shared across phones on purpose, so most outcomes are DUPLICATE / ownership-dispute REVIEW — the integrity check is `double_credits: 0` |
 | `migration-rehearsal.json` | rehearsal script (see `docs/release/migrations.md`) | migration 007 applied to a populated v1-shaped database with foreign keys ON; row counts identical, integrity ok |

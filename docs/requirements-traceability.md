@@ -1,6 +1,6 @@
 # Requirements traceability (FR-01 … FR-36)
 
-Build: 10 September 2026, branch `claude/funny-brown-r7wpo9`; automated results in `docs/testing/evidence/test-results.txt` (46/46). Status legend: **verified** (automated test green in this build), **verified-local** (works locally against simulated provider), **partial**, **blocked** (needs client input/access). Test ids refer to `docs/testing/test-plan.md`; UAT rows to `docs/testing/client-uat.md`.
+Build: branch `claude/funny-brown-r7wpo9`, statement revised 12 September 2026; the automated results in `docs/testing/evidence/test-results.txt` are the recorded run of commit `86ebef8` (46 tests in 9 suites, `exit=0`) and predate the later suites (`test/audit-integrity.test.mjs`, `test/media-limits.test.mjs`) — regenerate with `npm test` before citing the counts as coverage of this tree. Status legend: **verified** (automated test green in this build), **verified-local** (works locally against simulated provider), **partial**, **blocked** (needs client input/access). Test ids refer to `docs/testing/test-plan.md`; UAT rows to `docs/testing/client-uat.md`.
 
 | FR | Client wording (abridged) | Implementation | Tests | UAT | Status | Remaining dependency |
 |---|---|---|---|---|---|---|
@@ -27,7 +27,7 @@ Build: 10 September 2026, branch `claude/funny-brown-r7wpo9`; automated results 
 | FR-21 | Winners by week | `winners.publishedPeriods/listPublic`, WINNERS state | T-16, T-25 | 11 | verified | D-18 |
 | FR-22 | Staff configuration without code | console Campaigns (versions, content, periods, outlets CSV, decisions, pause) | T-17, T-18 | — | verified-local (API + console) | — |
 | FR-23 | Secure human review | review queue/workspace, signed images, version checks | T-09, T-11, T-15, T-29 | 6 | verified | staffing D-14 |
-| FR-24 | Audited decisions/overrides/changes | `src/audit.mjs` single writer, checkpoints | T-15, T-17, T-21, T-22 | 9 | verified | — |
+| FR-24 | Audited decisions/overrides/changes | `src/audit.mjs` single writer, checkpoints | T-15, T-17, T-21, T-22, `test/audit-integrity.test.mjs` (attribution + chain fork; added after the recorded evidence run) | 9 | verified | — |
 | FR-25 | Frozen pool + secure random draw | `draw.mjs` barrier/snapshot/seed/HMAC | T-19, T-20, T-21, T-22 | 8 | verified | D-16 |
 | FR-26 | Controlled execution, independent approval/audit | SoD, hash-verified approval, bundle verifier | T-21, T-22, T-29 | 8c, 8d, 9 | verified | named approver |
 | FR-27 | Winner contact + claim lifecycle | `winner-service.mjs`, template gate | T-23, T-24, T-28 | 10 | verified-local | Meta template (D-23), D-17 |

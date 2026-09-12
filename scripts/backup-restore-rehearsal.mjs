@@ -3,20 +3,35 @@
 // timestamped backup, restores them into an ISOLATED directory, opens the
 // restored database, runs ledger/draw/audit integrity checks, and reports
 // measured RTO and the data-loss window (last write vs backup time).
+// The restore copy is ALWAYS deleted again: it is a second unencrypted copy of
+// every name, phone, conversation log and receipt image, invisible to media
+// purge, anonymisation and retention. Backups are pruned to --keep runs for the
+// same reason, and --backup-dir can place them off the data volume (whose loss
+// is the event the rehearsal exists to survive).
 // Usage: node scripts/backup-restore-rehearsal.mjs [--out docs/testing/evidence/restore-rehearsal.json]
+//                                                  [--backup-dir DIR] [--keep N]
 import fs from "node:fs";
 import path from "node:path";
-import { loadConfig, ROOT } from "../src/config.mjs";
+import { loadConfig, loadEnvFile, ROOT } from "../src/config.mjs";
 import { openDb } from "../src/db.mjs";
 import { createAudit } from "../src/audit.mjs";
 import { createDrawService } from "../src/draw.mjs";
 import { createDomain } from "../src/services.mjs";
 
+// npm's `restore:rehearsal` script does not pass --env-file-if-exists, so
+// without this the rehearsal backed up the DEFAULT database while the service
+// ran the one named in .env - and BACKUP_DIR/BACKUP_KEEP placed in that file
+// were silently ignored.
+loadEnvFile();
 const cfg = loadConfig();
-const args = process.argv.slice(2); const oi = args.indexOf("--out"); const outFile = oi >= 0 ? args[oi + 1] : null;
+const args = process.argv.slice(2); const arg = (name, dflt = null) => { const i = args.indexOf(name); return i >= 0 && args[i + 1] ? args[i + 1] : dflt; };
+const outFile = arg("--out");
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-const backupDir = path.join(ROOT, "data", "backups", stamp);
-const restoreDir = path.join(ROOT, "data", "restore-test", stamp);
+const baseDir = path.resolve(arg("--backup-dir", process.env.BACKUP_DIR || path.join(ROOT, "data")));
+const keep = Math.max(1, Number(arg("--keep", process.env.BACKUP_KEEP || "7")) || 7);
+const backupsRoot = path.join(baseDir, "backups");
+const backupDir = path.join(backupsRoot, stamp);
+const restoreDir = path.join(baseDir, "restore-test", stamp);
 fs.mkdirSync(backupDir, { recursive: true }); fs.mkdirSync(restoreDir, { recursive: true });
 const report = { startedAt: new Date().toISOString(), source: { db: cfg.database, media: cfg.mediaDir }, backup: {}, restore: {}, checks: [] };
 
@@ -29,8 +44,10 @@ src.close();
 if (fs.existsSync(cfg.mediaDir)) fs.cpSync(cfg.mediaDir, path.join(backupDir, "media"), { recursive: true });
 report.backup = { dir: backupDir, ms: Date.now() - t0, dbBytes: fs.statSync(path.join(backupDir, "promotions.db")).size, lastWriteBefore: lastWrite, backupAt: new Date().toISOString() };
 
-// 2. restore into isolation
+// 2. restore into isolation. The copy holds full personal data, so it is
+// removed again in the finally below whatever the checks do.
 t0 = Date.now();
+try {
 fs.copyFileSync(path.join(backupDir, "promotions.db"), path.join(restoreDir, "promotions.db"));
 if (fs.existsSync(path.join(backupDir, "media"))) fs.cpSync(path.join(backupDir, "media"), path.join(restoreDir, "media"), { recursive: true });
 const db = openDb(path.join(restoreDir, "promotions.db"));
@@ -46,6 +63,31 @@ const pendingJobs = db.prepare(`select count(*) n from jobs where status in ('pe
 ok("outstanding work identified for replay", true, `jobs=${pendingJobs} outbound=${pendingOut} (replay via worker; leases expire; no consumer is contacted twice thanks to idempotency keys)`);
 db.close();
 report.restore = { dir: restoreDir, ms: Date.now() - t0 };
+} finally {
+  // rm the whole directory: openDb runs in WAL mode, so promotions.db-wal and
+  // -shm sit beside the copy and were left behind with it.
+  fs.rmSync(restoreDir, { recursive: true, force: true });
+  // Earlier runs left their own stamp directories behind - full unencrypted
+  // copies of every name, phone, conversation log and receipt image, invisible
+  // to anonymisation, media purge and retention, kept until someone deleted
+  // them by hand (the audit found two, 42 MB). A restore copy is never worth
+  // keeping, so sweep the whole tree, not just this run's directory.
+  const staleRoot = path.join(baseDir, "restore-test");
+  const prunedStale = [];
+  try {
+    for (const d of fs.readdirSync(staleRoot, { withFileTypes: true })) { fs.rmSync(path.join(staleRoot, d.name), { recursive: true, force: true }); prunedStale.push(d.name); }
+    fs.rmdirSync(staleRoot);
+  } catch (e) { if (e.code !== "ENOENT") report.restore = { ...(report.restore || {}), pruneStaleError: e.message }; }
+  report.restore = { ...(report.restore || {}), dir: restoreDir, removed: true, prunedStale };
+}
+// Prune old backups: rehearsal copies carry the same erasure obligations as
+// the live database, and nothing else ever deletes them.
+report.backup.kept = keep;
+report.backup.pruned = [];
+try {
+  const stamps = fs.readdirSync(backupsRoot, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
+  for (const old of stamps.slice(0, Math.max(0, stamps.length - keep))) { fs.rmSync(path.join(backupsRoot, old), { recursive: true, force: true }); report.backup.pruned.push(old); }
+} catch (e) { report.backup.pruneError = e.message; }
 report.rto_seconds = Number(((report.backup.ms + report.restore.ms) / 1000).toFixed(2));
 report.rpo_note = "backup is point-in-time (VACUUM INTO); data-loss window = writes after backupAt. For production, schedule backups at <=15 min intervals (D-22 / release doc).";
 report.ok = report.checks.every((c) => c.pass);

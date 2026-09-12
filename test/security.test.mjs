@@ -1,7 +1,79 @@
 // Authorisation, adversarial API use, privacy and audit (T-29, T-30, T-31, T-36, T-15 concurrency).
-import { describe, it, before, after, assert, buildApp } from "./helpers.mjs";
+import { describe, it, before, after, assert, buildApp, ROOT } from "./helpers.mjs";
+import { createRouter } from "../src/http.mjs";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+import { openDb, tx } from "../src/db.mjs";
 
 describe("security, RBAC, privacy, audit", () => {
+  it("a reviewer can actually open the receipt image: signed media needs the session, and the console sends it", async () => {
+    // The console rendered <img src={signedUrl}>, which sends no Authorization
+    // header, so every receipt image in the review workspace returned 401 and
+    // the human-review control the design depends on was unusable.
+    const reviewer = tokens.reviewer;
+    const rec = h.db.prepare(`select id from receipts where media_asset_id is not null limit 1`).get();
+    const det = await fetch(`${h.base}/api/receipts/${rec.id}`, { headers: { authorization: `Bearer ${reviewer}` } }).then((x) => x.json());
+    const url = det.media?.original?.url;
+    assert.ok(url, "the reviewer receives a signed media url");
+    assert.equal((await fetch(h.base + url)).status, 401, "a signed link alone is not a credential");
+    const ok = await fetch(h.base + url, { headers: { authorization: `Bearer ${reviewer}` } });
+    assert.equal(ok.status, 200, "the reviewer's session opens it");
+    assert.match(ok.headers.get("content-type") || "", /^image\//);
+    const support = await fetch(h.base + url, { headers: { authorization: `Bearer ${tokens.support}` } });
+    assert.equal(support.status, 403, "support has no reason to see receipt images");
+
+    // and the console must not go back to a bare <img> on a protected URL
+    const src = fs.readFileSync(path.join(ROOT, "src", "web-console", "src", "App.jsx"), "utf8");
+    assert.doesNotMatch(src, /<img\s+src=\{[^}]*media\.[a-z]+\.url/i, "media images must be fetched with the session, not via <img src>");
+  });
+
+  it("a handled error inside a transaction does not poison the connection or lose later writes", () => {
+    // tx() used `savepoint tx` / `rollback to tx` and never RELEASEd on the
+    // error path. ROLLBACK TO does not pop the savepoint, so the implicit
+    // transaction stayed open for the life of the process: every later write
+    // looked fine, was invisible to any other connection, locked that
+    // connection out, and was discarded on the next restart.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "txsec-"));
+    const file = path.join(dir, "t.db");
+    const a = openDb(file);
+    a.exec("create table t (id integer primary key, v text)");
+    a.prepare("insert into t (v) values (?)").run("before");
+    assert.throws(() => tx(a, () => { a.prepare("insert into t (v) values (?)").run("doomed"); throw new Error("an ordinary 409"); }), /ordinary 409/);
+    assert.equal(a.isTransaction, false, "the connection must be back in autocommit");
+    a.prepare("insert into t (v) values (?)").run("after");
+
+    const b = openDb(file);                                   // a second process
+    assert.equal(b.prepare("select count(*) n from t").get().n, 2, "the later write is committed and visible elsewhere");
+    b.prepare("insert into t (v) values ('worker')").run();   // not locked out
+    a.close(); b.close();
+    const c = openDb(file);                                   // survives a restart
+    assert.deepEqual(c.prepare("select v from t order by id").all().map((r) => r.v), ["before", "after", "worker"]);
+    c.close();
+
+    // nesting still rolls back only the inner unit of work
+    const d = openDb(path.join(dir, "n.db"));
+    d.exec("create table t (id integer primary key, v text)");
+    tx(d, () => {
+      d.prepare("insert into t (v) values ('outer')").run();
+      assert.throws(() => tx(d, () => { d.prepare("insert into t (v) values ('inner')").run(); throw new Error("inner fails"); }), /inner fails/);
+      d.prepare("insert into t (v) values ('after-inner')").run();
+    });
+    assert.deepEqual(d.prepare("select v from t order by id").all().map((r) => r.v), ["outer", "after-inner"]);
+    d.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("the router refuses a route that does not declare its roles (deny by default)", () => {
+    const r = createRouter({ auth: { authenticate: () => null, hasRole: () => false }, log: { error() {}, info() {} } });
+    assert.throws(() => r.add("GET", "/api/oops", { tag: "x" }, () => ({})), /must declare roles/,
+      "a route with no roles option must not be registered as public");
+    assert.throws(() => r.add("GET", "/api/empty", { roles: [] }, () => ({})), /empty roles list/);
+    r.add("GET", "/api/fine", { roles: "public" }, () => ({}));
+    r.add("GET", "/api/alsofine", { roles: ["auditor"] }, () => ({}));
+    assert.equal(r.routes.filter((x) => x.pathPattern.startsWith("/api/")).length, 2, "only the well-formed routes registered");
+  });
+
   let h, admin, tokens = {};
   before(async () => {
     h = await buildApp({ extractor: "simulator" });

@@ -1,0 +1,247 @@
+// Regression tests for the `pipeline` audit package: receipts that re-enter
+// review, reinstatement controls, awards into an already-drawn period, credit
+// that is already held elsewhere, the total-independent receipt identity, a
+// campaign paused while a receipt is queued, and a non-retryable extraction
+// failure. Each assertion fails against the pre-fix pipeline.
+import { describe, it, before, after, assert, buildApp } from "./helpers.mjs";
+
+const TODAY = () => new Date().toISOString().slice(0, 10).split("-").reverse().join("/");
+/** One till slip; `total:false` is the faded TOTAL line the parser cannot read. */
+const slip = (no, { total = true, packs = 2 } = {}) => {
+  const amt = (packs * 3.1).toFixed(2);
+  return `SUNRISE SUPERMARKET\nWestgate Branch, Harare\nTel 0242 000000\nReceipt No: ${no}  Till 03\nDate: ${TODAY()} 14:22\nGOLDCANE BROWN SUGAR 2KG\n${packs} x 3.10  ${amt}\n${total ? `TOTAL ${amt}\n` : ""}CASH 10.00\nThank you`;
+};
+
+describe("pipeline audit fixes", () => {
+  let h, reviewer, approver, drawOfficer;
+  const user = (email) => h.app.auth.listUsers().find((u) => u.email === email);
+  const entryVersions = (entryId) => h.db.prepare(`select entity_version, payload_json from crm_events where entity_type='entry' and entity_id=? order by entity_version`).all(entryId);
+  const entriesFor = (receiptId) => h.db.prepare(`select count(*) n from entries where receipt_id=?`).get(receiptId).n;
+
+  before(async () => {
+    h = await buildApp({ extractor: "simulator" });
+    reviewer = user("reviewer@example.test"); approver = user("approver@example.test"); drawOfficer = user("draw@example.test");
+  });
+  after(async () => { await h.close(); });
+
+  it("a receipt that returns to REVIEW_REQUIRED after a reprocess is back in the queue and still decidable", async () => {
+    const ph = "263771000901"; await h.register(ph, { first: "Re", last: "Process", identity: "TESTRP01X" });
+    const r = await h.submit(ph, await h.simImage(h.simReceipt({ no: "" })));   // no receipt number -> review
+    assert.equal(r.receipt.status, "REVIEW_REQUIRED");
+    const task = () => h.db.prepare(`select * from review_tasks where receipt_id=?`).get(r.receiptId);
+    assert.equal(task().state, "open");
+
+    h.app.pipeline.reprocess(r.receiptId, reviewer.id, "extractor rules corrected");
+    await h.app.worker.tick();   // the queued receipt.process job re-runs and decides REVIEW again
+
+    assert.equal(h.db.prepare(`select status from receipts where id=?`).get(r.receiptId).status, "REVIEW_REQUIRED");
+    assert.equal(task().state, "open", "the task is reopened, not left 'decided' on a receipt in review");
+    assert.equal(task().decision, null);
+    // the same filter GET /api/reviews/queue and the console use
+    assert.equal(h.db.prepare(`select count(*) n from review_tasks where receipt_id=? and state!='decided'`).get(r.receiptId).n, 1);
+    const out = h.app.pipeline.review(r.receiptId, { reviewer: reviewer.id, decision: "NOT_QUALIFIED", reasonCode: "reviewer_decision" });
+    assert.equal(out.decision, "NOT_QUALIFIED");
+  });
+
+  it("reinstating an entry carries the controls that removed it, and the CRM is told", async () => {
+    const ph = "263771000902"; await h.register(ph, { first: "Rein", last: "State", identity: "TESTRS02X" });
+    const r = await h.submit(ph, await h.simImage(slip("RS0001")));
+    assert.equal(r.receipt.status, "QUALIFIED");
+    const entry = h.db.prepare(`select * from entries where receipt_id=?`).get(r.receiptId);
+    h.app.pipeline.disqualifyEntry(entry.id, { actorId: reviewer.id, reason: "refund found", approvedBy: approver.id });
+
+    assert.throws(() => h.app.pipeline.reinstateEntry(entry.id, { actorId: reviewer.id }), /reason required/);
+    assert.throws(() => h.app.pipeline.reinstateEntry(entry.id, { actorId: reviewer.id, reason: "cleared", approvedBy: reviewer.id }), /differ/);
+    assert.throws(() => h.app.pipeline.reinstateEntry(entry.id, { actorId: reviewer.id, reason: "cleared" }), /independent approver/);
+    assert.equal(h.db.prepare(`select status from entries where id=?`).get(entry.id).status, "excluded", "a refused reinstatement changes nothing");
+
+    h.app.pipeline.reinstateEntry(entry.id, { actorId: reviewer.id, reason: "investigation cleared the participant", approvedBy: approver.id });
+    assert.equal(h.db.prepare(`select status from entries where id=?`).get(entry.id).status, "active");
+    const v = entryVersions(entry.id);
+    assert.deepEqual(v.map((x) => x.entity_version), [1, 2, 3], "the reinstatement reaches the CRM as its own version");
+    assert.match(v[2].payload_json, /"status":"active"/);
+    const audited = h.db.prepare(`select payload_json from audit_events where action='entry.reinstated' and target_id=? order by id desc limit 1`).get(entry.id);
+    assert.match(audited.payload_json, new RegExp(approver.id), "the approver is in the signed audit payload");
+
+    h.app.pipeline.disqualifyEntry(entry.id, { actorId: reviewer.id, reason: "refund confirmed", approvedBy: approver.id });
+    assert.deepEqual(entryVersions(entry.id).map((x) => x.entity_version), [1, 2, 3, 4], "a second disqualification is not dropped as a repeat of version 2");
+  });
+
+  it("a reviewer's QUALIFIED on a purchase already credited elsewhere is refused by name, not silently rewritten to DUPLICATE", async () => {
+    const a = "263771000903", b = "263771000904";
+    await h.register(a, { first: "Own", last: "Alpha", identity: "TESTOW03X" });
+    await h.register(b, { first: "Own", last: "Bravo", identity: "TESTOW04X" });
+    const ra = await h.submit(a, await h.simImage(slip("OWN7001")));
+    assert.equal(ra.receipt.status, "QUALIFIED");
+    const rb = await h.submit(b, await h.simImage(slip("OWN7001") + "\n"));   // same slip, other phone, different bytes
+    assert.equal(rb.receipt.status, "DUPLICATE");
+    const entryA = h.db.prepare(`select * from entries where receipt_id=?`).get(ra.receiptId);
+    h.app.pipeline.disqualifyEntry(entryA.id, { actorId: reviewer.id, reason: "wrong claimant", approvedBy: approver.id });
+
+    assert.throws(() => h.app.pipeline.review(rb.receiptId, { reviewer: reviewer.id, decision: "QUALIFIED", note: "B is the genuine shopper" }),
+      (e) => e.code === "CONFLICT" && /already credited to receipt R-/.test(e.message));
+    assert.equal(entriesFor(rb.receiptId), 0, "nothing was awarded behind the refusal");
+  });
+
+  it("a purchase whose total was unreadable on one photograph is credited once, not twice", async () => {
+    const a = "263771000905", b = "263771000906";
+    await h.register(a, { first: "Split", last: "Alpha", identity: "TESTSP05X" });
+    await h.register(b, { first: "Split", last: "Bravo", identity: "TESTSP06X" });
+    const ra = await h.submit(a, await h.simImage(slip("SPL0001", { total: false })));
+    assert.equal(ra.receipt.status, "REVIEW_REQUIRED");
+    assert.equal(ra.receipt.reason_code, "total_unclear");
+    const out = h.app.pipeline.review(ra.receiptId, { reviewer: reviewer.id, decision: "QUALIFIED", note: "total legible in the image" });
+    assert.equal(out.decision, "QUALIFIED"); assert.ok(out.entryId);
+
+    // the same slip photographed again, this time with a readable total
+    const rb = await h.submit(b, await h.simImage(slip("SPL0001", { total: true })));
+    assert.notEqual(rb.receipt.status, "QUALIFIED", "the readable total must not mint a second identity");
+    assert.equal(entriesFor(rb.receiptId), 0);
+    assert.equal(h.db.prepare(`select count(*) n from canonical_receipts where campaign_id=? and receipt_no=?`).get(h.campaign.id, "SPL0001").n, 1, "one purchase, one canonical receipt");
+    assert.equal(h.db.prepare(`select count(*) n from entries where status='active' and canonical_receipt_id in (select id from canonical_receipts where receipt_no=?)`).get("SPL0001").n, 1);
+  });
+
+  it("pausing the campaign while a receipt is queued does not retro-reject it as 'the promotion was not open'", async () => {
+    const ph = "263771000907"; await h.register(ph, { first: "Paws", last: "Timing", identity: "TESTPA07X" });
+    await h.selectOutlet(ph);
+    const ev = await h.say(ph, "", { image: await h.simImage(slip("PAUSE001")), drain: false });
+    // handle the inbound message ONLY (intake.drain would also run the job):
+    // the receipt row carries an in-window intake_at and its receipt.process
+    // job is still pending, which is the state a pause lands on.
+    for (let i = 0; i < 10 && await h.app.intake.processNext(); i++) { /* events only */ }
+    assert.ok(h.db.prepare(`select count(*) n from jobs where kind='receipt.process' and status='pending'`).get().n >= 1);
+    const rid = JSON.parse(h.db.prepare(`select result_json from channel_events where id=?`).get(ev.id).result_json).receiptId;
+    h.domain.setCampaignStatus(h.campaign.id, "paused", "adm_test", "supplier issue");
+    try { await h.app.worker.tick(); } finally { h.domain.setCampaignStatus(h.campaign.id, "active", "adm_test", "resumed"); }
+    const rec = h.db.prepare(`select * from receipts where id=?`).get(rid);
+    assert.notEqual(rec.reason_code, "campaign_not_open", "eligibility is judged as at intake, not at processing time");
+    assert.equal(rec.status, "QUALIFIED");
+  });
+
+  it("a non-retryable extraction failure alerts the operator immediately instead of re-queueing OCR for an hour", async () => {
+    const ph = "263771000908"; await h.register(ph, { first: "Perm", last: "Fail", identity: "TESTPF08X" });
+    assert.equal(h.db.prepare(`select count(*) n from alerts where kind='receipt.stuck'`).get().n, 0);
+    const real = h.app.extractor.extract.bind(h.app.extractor);
+    h.app.extractor.extract = async () => { throw Object.assign(new Error("provider rejected the API key"), { code: "EXTRACTOR_UNAVAILABLE", transient: false }); };
+    let rid = null;
+    try {
+      const r = await h.submit(ph, await h.simImage(slip("PERM001")));
+      rid = r.receiptId;
+      assert.equal(r.receipt.status, "delayed", "the participant's receipt is never rejected for a platform fault");
+    } finally { h.app.extractor.extract = real; }
+    assert.equal(h.db.prepare(`select count(*) n from jobs where kind='receipt.process' and payload_json=?`).get(JSON.stringify({ receiptId: rid })).n, 1, "no retry queued for a failure that cannot succeed");
+    assert.equal(h.db.prepare(`select count(*) n from alerts where kind='receipt.stuck'`).get().n, 1, "operator alerted at once");
+  });
+
+  // Round 2: the total-independent identity must not collapse two genuinely
+  // different purchases that happen to share a printed receipt number. A till
+  // counter repeats, so outlet + date + number alone is not proof of one
+  // purchase; when both totals are readable and disagree, they are two.
+  it("two purchases at one branch on one day that share a till number are kept apart, and a reviewer can credit the second", async () => {
+    const a = "263771000910", b = "263771000911";
+    await h.register(a, { first: "Till", last: "Alpha", identity: "TESTTA10X" });
+    await h.register(b, { first: "Till", last: "Bravo", identity: "TESTTB11X" });
+    const ra = await h.submit(a, await h.simImage(slip("TILL9001", { packs: 2 })));   // total 6.20
+    assert.equal(ra.receipt.status, "QUALIFIED");
+    const rb = await h.submit(b, await h.simImage(slip("TILL9001", { packs: 4 })));   // same number, total 12.40
+    assert.equal(rb.receipt.status, "REVIEW_REQUIRED", "a repeated till number with a different total is a question for a person, not a duplicate");
+    assert.equal(rb.receipt.reason_code, "possible_duplicate_same_outlet");
+    assert.doesNotMatch(rb.outcomes.join(" "), /already been used/, "the second buyer is never told their real receipt was already used");
+
+    // the reviewer holding both slips can say they are different purchases
+    const out = h.app.pipeline.review(rb.receiptId, { reviewer: reviewer.id, decision: "QUALIFIED", note: "two slips, two totals" });
+    assert.equal(out.decision, "QUALIFIED");
+    assert.equal(entriesFor(rb.receiptId), 1, "the second purchase is credited, not refused as already credited");
+    assert.equal(h.db.prepare(`select count(*) n from canonical_receipts where campaign_id=? and receipt_no_norm=?`).get(h.campaign.id, "TILL9001").n, 2);
+  });
+
+  // Round 2: which disqualification is being reversed decides whether an
+  // approver is required. created_at is millisecond ISO and ids are random, so
+  // ordering by (created_at, id) picked a random one of two events written in
+  // the same millisecond.
+  it("reinstatement checks the disqualification it actually reverses, not a random one from the same millisecond", async () => {
+    const evs = (entryId) => h.db.prepare(`select rowid, id, type, approved_by from entry_events where entry_id=? order by rowid`).all(entryId);
+    /** Same-millisecond history, with the ids pinned to the order that used to decide it (id() is random bytes). */
+    const collide = (entryId) => {
+      const rows = evs(entryId);
+      h.db.prepare(`update entry_events set created_at=(select created_at from entry_events where rowid=?) where entry_id=?`).run(rows[0].rowid, entryId);
+      const tail = entryId.slice(-8);
+      h.db.prepare(`update entry_events set id=? where rowid=?`).run(`eev_zzzz${tail}`, rows[0].rowid);
+      h.db.prepare(`update entry_events set id=? where rowid=?`).run(`eev_0000${tail}`, rows[2].rowid);
+    };
+    const entryOf = async (phone, name, identity, no) => {
+      await h.register(phone, { first: name, last: "Order", identity });
+      const r = await h.submit(phone, await h.simImage(slip(no)));
+      assert.equal(r.receipt.status, "QUALIFIED");
+      return h.db.prepare(`select * from entries where receipt_id=?`).get(r.receiptId);
+    };
+
+    // (a) the reversal that must NOT ask for an approver: the live decision was single-actor
+    const e1 = await entryOf("263771000912", "Ord", "TESTOR12X", "ORD0001");
+    h.app.pipeline.disqualifyEntry(e1.id, { actorId: reviewer.id, reason: "refund suspected", approvedBy: approver.id });
+    h.app.pipeline.reinstateEntry(e1.id, { actorId: reviewer.id, reason: "cleared", approvedBy: approver.id });
+    h.app.pipeline.disqualifyEntry(e1.id, { actorId: reviewer.id, reason: "keyed in error" });
+    collide(e1.id);
+    h.app.pipeline.reinstateEntry(e1.id, { actorId: reviewer.id, reason: "keying error corrected" });
+    assert.equal(h.db.prepare(`select status from entries where id=?`).get(e1.id).status, "active",
+      "an entry removed by one actor can be put back by one actor, whatever an older dual-controlled event said");
+
+    // (b) the reversal that MUST ask for an approver: the live decision was dual-controlled
+    const e2 = await entryOf("263771000913", "Dual", "TESTDU13X", "ORD0002");
+    h.app.pipeline.disqualifyEntry(e2.id, { actorId: reviewer.id, reason: "keyed in error" });
+    h.app.pipeline.reinstateEntry(e2.id, { actorId: reviewer.id, reason: "keying error corrected" });
+    h.app.pipeline.disqualifyEntry(e2.id, { actorId: reviewer.id, reason: "refund confirmed", approvedBy: approver.id });
+    collide(e2.id);
+    assert.throws(() => h.app.pipeline.reinstateEntry(e2.id, { actorId: reviewer.id, reason: "no second pair of eyes" }),
+      (e) => e.code === "APPROVAL_REQUIRED", "dual control is not waived by an older single-actor event in the same millisecond");
+    assert.equal(h.db.prepare(`select status from entries where id=?`).get(e2.id).status, "excluded");
+  });
+
+  // Round 2: the retry ladder counts extraction attempts, so an operator
+  // pressing Reprocess must not spend the participant's automatic retries.
+  it("an operator reprocess does not consume the delayed-receipt retry budget", async () => {
+    const ph = "263771000914"; await h.register(ph, { first: "Bud", last: "Get", identity: "TESTBG14X" });
+    const real = h.app.extractor.extract.bind(h.app.extractor);
+    h.app.extractor.extract = async () => { throw Object.assign(new Error("ocr down"), { code: "EXTRACTOR_DOWN", transient: true }); };
+    try {
+      const r = await h.submit(ph, await h.simImage(slip("BUDG001")));
+      const rid = r.receiptId;
+      assert.equal(r.receipt.status, "delayed");
+      // a retry is any receipt.process job for this receipt scheduled into the
+      // future; submit() and reprocess() queue theirs to run at once (no marker
+      // assumed, so the test holds whatever the retry job looks like)
+      const gap = (j) => Math.round((Date.parse(j.run_after) - Date.parse(j.created_at)) / 60_000);
+      const retries = () => h.db.prepare(`select created_at, run_after from jobs where kind='receipt.process' and payload_json like ? order by created_at`).all(`%${rid}%`).filter((j) => gap(j) > 0);
+      assert.equal(retries().length, 1); assert.equal(gap(retries()[0]), 2, "first retry: step one of the ladder");
+
+      for (let i = 0; i < 5; i++) h.app.pipeline.reprocess(rid, reviewer.id, `operator reprocess ${i + 1}`);
+      await h.app.pipeline.process(rid);   // the reprocessed run meets the same outage
+
+      assert.equal(retries().length, 2, "the receipt is still being retried after an operator has reprocessed it");
+      assert.equal(gap(retries()[1]), 4, "the ladder advanced by one step, not by one step per reprocess");
+      assert.equal(h.db.prepare(`select count(*) n from alerts where kind='receipt.stuck' and message like ?`).get(`%${rid}%`).n, 0,
+        "no 'stuck after N attempts' alarm from console reprocesses");
+    } finally { h.app.extractor.extract = real; }
+  });
+
+  it("no entry is awarded into a period whose draw is already frozen", async () => {
+    const ph = "263771000909"; await h.register(ph, { first: "Late", last: "Award", identity: "TESTLA09X" });
+    const rev = await h.submit(ph, await h.simImage(h.simReceipt({ no: "" })));
+    assert.equal(rev.receipt.status, "REVIEW_REQUIRED");
+    const period = h.domain.listPeriods(h.campaign.id).find((p) => p.code === rev.receipt.period_code);
+    const draw = h.app.drawService.freeze({ campaignId: h.campaign.id, periodId: period.id, actorId: drawOfficer.id, override: { allow: ["PERIOD_OPEN", "UNRESOLVED_SUBMISSIONS", "NO_CANDIDATES", "INSUFFICIENT_CANDIDATES"], reason: "draw day" } });
+    assert.equal(draw.status, "frozen");
+
+    assert.throws(() => h.app.pipeline.review(rev.receiptId, { reviewer: reviewer.id, decision: "QUALIFIED" }),
+      (e) => e.code === "CONFLICT" && /already been drawn/.test(e.message));
+    assert.equal(entriesFor(rev.receiptId), 0);
+    assert.equal(h.db.prepare(`select state from review_tasks where receipt_id=?`).get(rev.receiptId).state, "open", "the receipt is still decidable");
+
+    // the automatic path sends the would-be award to a human instead of orphaning it
+    const late = await h.submit(ph, await h.simImage(slip("LATE001")));
+    assert.equal(late.receipt.status, "REVIEW_REQUIRED");
+    assert.equal(late.receipt.reason_code, "period_already_drawn");
+    assert.equal(entriesFor(late.receiptId), 0);
+    assert.doesNotMatch(late.outcomes.join(" "), /ONE entry has been added/, "the participant is never promised an entry that can enter no draw");
+  });
+});

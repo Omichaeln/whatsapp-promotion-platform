@@ -20,7 +20,9 @@ Legend: **verified** (evidence in repo/tests), **open** (consequence stated), **
 - Single-node SQLite — **open** risk (ADR-0002); mitigation: backups ≤15 min, restore rehearsal script.
 
 ## Observability and operations
-- Structured request logs with correlation ids, metrics table, alerts with runbooks — verified; external alert routing (email/Slack) **open** (destination not configured; alerts are in-console).
+- Per-request structured logs (one JSON line: method, path, status, duration, correlation id, staff user) — **open**: the router's info sink is wired only when `LOG_LEVEL=debug` (`src/server.mjs`), so at the documented default `LOG_LEVEL=info` no request lines are written at all, and an incident responder has nothing to grep by correlation id in the deploy log. At `debug` the request path is logged verbatim, so the phone-bearing routes (`/api/conversations/:phone`, `/api/simulator/transcript/:phone`) write full E.164 numbers into the log stream — enabling it in production is a personal-data decision, not a toggle.
+- Correlation ids — verified for `/api/*`: returned in the `x-correlation-id` response header and inside every error envelope, so a reporter can quote one even with request logging off.
+- Metrics table, alerts with runbooks — verified; external alert routing (email/Slack) **open** (destination not configured; alerts are in-console).
 - Runbooks — verified (docs/runbooks).
 
 ## Data

@@ -76,39 +76,113 @@ export function parseTime(text) {
 }
 
 // --- receipt number / till -----------------------------------------------------------
+// Every candidate on the page is scored and the best-evidenced one wins.
+// Groups are (keyword, label, separator, value) in both patterns. The keyword
+// alternation is boundary-anchored — an un-anchored "rec" used to match inside
+// "RECEIVED" — and longer alternatives come first.
+const RCPT_PATTERNS = [
+  /\b(receipt|rcpt|rec|invoice|inv|slip|document|doc|transaction|trans|txn|reference|ref)\s*(no|nr|number|#)?(?![a-z])\s*([:#.])?\s*([A-Z0-9][A-Z0-9\-\/]{2,})/gi,
+  /\b(no|nr)()\s*([:#.])\s*([A-Z0-9][A-Z0-9\-\/]{3,})/gi,
+];
+const RCPT_KEY_WEIGHT = { receipt: 3, rcpt: 3, rec: 3, slip: 3, invoice: 2, inv: 2, no: 2, nr: 2, document: 1, doc: 1, transaction: 1, trans: 1, txn: 1, reference: 1, ref: 1 };
 export function parseReceiptNo(text) {
   const t = String(text || "");
-  const pats = [
-    /(?:receipt|rcpt|rec|invoice|inv|slip|doc(?:ument)?|trans(?:action)?|txn|ref)\s*(?:no|nr|number|#)?\s*[:#.]?\s*([A-Z0-9][A-Z0-9\-\/]{2,})/i,
-    /\b(?:no|nr)\s*[:#.]\s*([A-Z0-9][A-Z0-9\-\/]{3,})/i,
-  ];
-  for (const p of pats) {
-    const m = t.match(p);
-    if (!m) continue;
-    const v = m[1].toUpperCase().replace(/[^A-Z0-9]/g, "");
-    // a receipt number must carry at least one digit; "TILL", "DATE" etc. are labels, not numbers
-    if (!/\d/.test(v) || /^(TILL|DATE|TIME|NO|NR|POS)$/.test(v)) continue;
-    return { receiptNo: v, raw: m[0] };
+  let best = null;
+  for (const p of RCPT_PATTERNS) {
+    for (const m of t.matchAll(p)) {
+      const [raw, kw, label, sep, value] = m;
+      const v = value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+      // A receipt number must carry at least one digit; "TILL", "DATE" etc. are
+      // labels, and a printed date is not an identifier. Reject THIS candidate
+      // and keep scanning: the old code gave up on the whole pattern after its
+      // first match, so a header "TAX INVOICE / 0242-123456" made the store's
+      // phone number the receipt number of every receipt from that store — one
+      // canonical identity for every purchase, so honest customers were refused
+      // as duplicates.
+      if (!/\d/.test(v) || /^(TILL|DATE|TIME|NO|NR|POS)$/.test(v)) continue;
+      if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$/.test(value) || /^\d{4}-\d{2}-\d{2}$/.test(value)) continue;
+      let score = (RCPT_KEY_WEIGHT[kw.toLowerCase()] || 1) + (label ? 2 : 0) + (sep ? 1 : 0);
+      // A bare keyword whose value sits on ANOTHER line is weak evidence (a
+      // header word followed by whatever number is printed next); it must never
+      // beat a labelled number printed beside its label.
+      if (/\n/.test(raw) && !label && !sep) score -= 5;
+      if (!best || score > best.score) best = { receiptNo: v, raw: raw.trim(), score };
+    }
   }
-  return { receiptNo: null, raw: null };
+  // Positive evidence is required. A candidate whose only support is a bare
+  // keyword on ANOTHER line scores below zero and used to be adopted anyway
+  // when it was the only one on the page, so a store header printing "TAX
+  // INVOICE" above its phone number still minted ONE canonical identity for
+  // every receipt it issued and the second honest customer was refused as a
+  // DUPLICATE. With no credible number the receipt goes to a reviewer
+  // (missing_receipt_number) instead.
+  return best && best.score > 0 ? { receiptNo: best.receiptNo, raw: best.raw } : { receiptNo: null, raw: null };
 }
 export function parseTill(text) {
   const m = String(text || "").match(/\b(?:till|terminal|pos|register|lane)\s*(?:no|#)?\s*[:#.]?\s*([A-Z0-9]{1,6})\b/i);
   return m ? m[1].toUpperCase() : null;
 }
+// The total is labelled at the START of its line and the label is the total
+// itself, not a qualified variant of it ("SUB TOTAL", "VAT TOTAL", "CASH TOTAL",
+// "TOTAL TENDERED", "TOTAL DISCOUNT"); "TOTAL DUE" / "AMOUNT DUE" are the total.
+// Only non-alphanumerics may precede the label, so OCR noise ("| TOTAL") is
+// tolerated while a qualifying word before it ("CASH TOTAL") is not.
+const TOTAL_LABEL = /^[^0-9A-Za-z]*(?:grand\s+|net\s+|invoice\s+|sale\s+)?(?:total(?:\s+(?:due|payable))?|amount\s+(?:due|payable))/i;
+// Words between the label and the amount that make the line a settlement, an
+// aggregate or a component rather than the receipt's own total. This is a
+// DENYLIST on purpose: an allowlist of currency tokens rejected the very common
+// "TOTAL AMOUNT DUE", "TOTAL AMOUNT", "TOTAL INCL VAT" and unlisted currencies
+// ("TOTAL RTGS", "TOTAL ZAR"), so every receipt from such a till — and any
+// receipt where OCR left a stray letter after TOTAL — lost its total and landed
+// in the review queue as total_unclear.
+const TOTAL_NOT_THE_TOTAL = /\b(?:tender(?:ed)?|paid|cash|card|change|due\s*-?\s*back|discount|savings?|round(?:ing|ed)?|items?|qty|quantity|points?|excl(?:uding)?\.?\s*vat|ex\.?\s*vat)\b/i;
+// A tax word between the label and the amount makes the line a COMPONENT of the
+// total ("TOTAL VAT 0.81"), and with first-match-wins that component was being
+// read as the purchase total: a wrong total both misjudges the receipt and moves
+// the canonical identity (outlet|date|number|total), so two photographs of one
+// slip stop resolving to one claim. "TOTAL INCL VAT" is the opposite statement —
+// it says the amount already contains the tax — so an inclusive qualifier lifts
+// the rejection.
+const TOTAL_COMPONENT = /\b(?:vat|tax|levy|duty)\b/i;
+const TOTAL_INCLUSIVE = /\b(?:inc|incl|including|inclusive)\b/i;
+// The amount must start at its own left edge. Without the lookbehind, a
+// thousands-grouped total was read from the middle: "TOTAL 1,480.00" matched
+// "480.00" and a 1,480.00 purchase was recorded — and qualified — as 480.00.
+// The first alternative takes the grouped form whole; the second is the plain
+// one. A trailing digit (or separator-then-digit) after the match means we
+// stopped inside a longer number, so it is not the amount.
+const TOTAL_AMOUNT = /(?<![\d.,])(\d{1,3}(?:[,\s]\d{3})+[.,]\d{2}|\d+[.,]\d{2})(?!\d)(?![.,]\d)/;
+// "6,20" is a decimal comma; "1,234.56" is a thousands comma. The presence of a
+// dot decides which, so a grouped total is not mangled into "1.234.56".
+const normaliseAmount = (s) => (s.includes(".") ? s.replace(/[,\s]/g, "") : s.replace(",", "."));
 export function parseTotal(text) {
-  const lines = String(text || "").split(/\r?\n/);
-  let best = null;
-  for (const l of lines) {
-    if (/sub\s*total|total\s*items|total\s*qty|total\s*savings/i.test(l)) continue;
-    const m = l.match(/\b(?:grand\s+)?total\b[^0-9]*(\d+[.,]\d{2})\b/i);
-    if (m) { const v = parseMoneyMinor(m[1].replace(",", ".")); if (v != null) best = { totalMinor: v, raw: l.trim() }; }
+  for (const l of String(text || "").split(/\r?\n/)) {
+    const lab = l.match(TOTAL_LABEL);
+    if (!lab) continue;
+    const rest = l.slice(lab[0].length);
+    const m = rest.match(TOTAL_AMOUNT);
+    if (!m) continue;
+    const between = rest.slice(0, m.index);
+    if (TOTAL_NOT_THE_TOTAL.test(between)) continue;
+    if (TOTAL_COMPONENT.test(between) && !TOTAL_INCLUSIVE.test(between)) continue;
+    const v = parseMoneyMinor(normaliseAmount(m[1]));
+    // FIRST valid total wins. Taking the last total-like line let trailing
+    // "TOTAL TENDERED" / "VAT TOTAL" / "TOTAL DISCOUNT" lines overwrite the real
+    // total: the stored total was wrong and the canonical receipt identity
+    // (outlet|date|number|total) moved with whether that footer line happened to
+    // be read, so two photos of one purchase could each be credited.
+    if (v != null) return { totalMinor: v, raw: l.trim() };
   }
-  return best || { totalMinor: null, raw: null };
+  return { totalMinor: null, raw: null };
 }
 
 // --- line items ------------------------------------------------------------------------
 const VOID_RE = /\b(void|voided|refund|return|reversal|cancel(?:led)?)\b/i;
+// words a cancellation line carries about ITSELF — they never name a product,
+// so a void line left with none of its own words is a bare cancellation
+const VOID_CONTEXT_WORD = /^(void|voided|refund|refunded|return|returned|reversal|reversed|cancel|cancelled|item|items|line|sale|transaction|txn|entry|last|previous|correction|supervisor|manager|cashier|operator|override)$/;
+// a bare cancellation that names the TRANSACTION rather than a line
+const VOID_WHOLE_TXN = /\b(?:transaction|txn|sale)\b/i;
 const PACK_RE = /(\d+(?:[.,]\d+)?)\s*(kg|kgs|g|gr|grams?|kilograms?)\b/i;
 
 export function packGramsFrom(desc) {
@@ -129,6 +203,8 @@ export function packGramsFrom(desc) {
 export function parseLineItems(text) {
   const lines = String(text || "").split(/\r?\n/).map((l) => cleanOcrLine(l)).filter(Boolean);
   const items = [];
+  const at = [];                                  // source line index per item; the void post-pass needs page order
+  const push = (it, idx) => { items.push(it); at.push(idx); };
   // "2 x 3.10 6.20" / "3 X 3.10 9.30" / OCR noise like "3 X01 3.19°9_30" -> qty is the leading integer
   const qtyLine = /^(\d{1,3})\s*(?:x|@|\*)/i;
   const inlineQty = /^(.*?[A-Za-z]{3,}.*?)\s+(\d{1,3})\s*(?:x|@|\*)\s*(\d+[.,]\d{2})\s+(\d+[.,]\d{2})\s*$/i; // "DESC 2 x 3.10 6.20"
@@ -138,31 +214,58 @@ export function parseLineItems(text) {
     const l = lines[i];
     if (stop.test(l) && !/\d\s*(kg|g)\b/i.test(l)) continue;
     let m = l.match(inlineQty);
-    if (m) { items.push(item(m[1], Number(m[2]), m[3], m[4], l)); continue; }
+    if (m) { push(item(m[1], Number(m[2]), m[3], m[4], l), i); continue; }
     m = l.match(descPrice);
     if (m && !/^\d/.test(l)) {
       const next = lines[i + 1] || "";
       const q = next.match(qtyLine);
-      if (q) { const [unit, amount] = moneyTokens(next); items.push(item(m[1], Number(q[1]), unit, amount, `${l} | ${next}`)); i++; continue; }
-      items.push(item(m[1], 1, null, m[2], l));
+      if (q) { const [unit, amount] = moneyTokens(next); push(item(m[1], Number(q[1]), unit, amount, `${l} | ${next}`), i + 1); i++; continue; }
+      push(item(m[1], 1, null, m[2], l), i);
       continue;
     }
     // description line followed by quantity line
     if (/[A-Za-z]{3,}/.test(l) && !/\d+[.,]\d{2}\s*$/.test(l)) {
       const next = lines[i + 1] || "";
       const q = next.match(qtyLine);
-      if (q) { const [unit, amount] = moneyTokens(next); items.push(item(l, Number(q[1]), unit, amount, `${l} | ${next}`)); i++; }
+      if (q) { const [unit, amount] = moneyTokens(next); push(item(l, Number(q[1]), unit, amount, `${l} | ${next}`), i + 1); i++; }
     }
   }
   // Post-pass: a VOID/REFUND line printed after an item cancels the nearest
-  // preceding item whose description it repeats (or the immediately preceding item).
+  // preceding item whose description it repeats, or — when it names no product
+  // at all — the item it follows.
+  const totalsAt = lines.findIndex((l) => /^\s*(?:grand\s+|net\s+|sale\s+)?(?:sub\s*)?total\b|^\s*amount\s+(?:due|payable)\b|^\s*balance\b/i.test(l));
+  const itemBlockEnd = totalsAt === -1 ? lines.length : totalsAt;
   for (let i = 0; i < lines.length; i++) {
     if (!VOID_RE.test(lines[i])) continue;
-    const toks = norm(lines[i]).split(" ").filter((w) => w.length > 2 && !/^(void|voided|refund|return|reversal|cancel|cancelled)$/.test(w));
+    const toks = norm(lines[i]).split(" ").filter((w) => w.length > 2 && !VOID_CONTEXT_WORD.test(w));
     let target = null;
     for (let j = items.length - 1; j >= 0; j--) {
+      if (at[j] > i) continue;                                  // a void cancels what was printed BEFORE it
       const d = norm(items[j].description).split(" ");
       if (toks.some((t) => d.includes(t))) { target = items[j]; break; }
+    }
+    // Bare cancellations — "*** VOID ***", "VOID ITEM", "VOIDED BY SUPERVISOR",
+    // "VOID  -3.10" — used to cancel nothing, so a customer whose sugar was
+    // voided at the till still got an entry (D-09). They carry no product word,
+    // so they cancel the line they follow (matching the printed negative amount
+    // when there is one). Restricted to the item block: a returns-policy footer
+    // ("NO RETURN WITHOUT THIS SLIP") must never silently void a real line.
+    if (!target && !toks.length && i < itemBlockEnd) {
+      const neg = lines[i].match(/-\s*(\d+[.,]\d{2})\b/);
+      const negMinor = neg ? parseMoneyMinor(neg[1].replace(",", ".")) : null;
+      // A WHOLE-TRANSACTION cancellation ("TRANSACTION CANCELLED", "SALE
+      // VOIDED") printed with no amount voids the whole basket, not just the
+      // line above it: cancelling one of three qualifying packs still left two
+      // counted, so an abandoned purchase was credited with an entry (D-09).
+      if (negMinor == null && VOID_WHOLE_TXN.test(lines[i])) {
+        for (let j = 0; j < items.length; j++) if (at[j] <= i) items[j].voided = true;
+        continue;
+      }
+      for (let j = items.length - 1; j >= 0; j--) {
+        if (at[j] > i) continue;
+        if (negMinor != null && items[j].amountMinor !== negMinor) continue;
+        target = items[j]; break;
+      }
     }
     if (target) target.voided = true;
   }
@@ -198,6 +301,9 @@ function norm(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9 ]/g, "
  * + 0.6 * location match (branch, town or an alias). A retailer-only match
  * (0.4) is below the default acceptance threshold (0.5): the same chain has
  * many branches, so the branch must also be legible for automatic acceptance.
+ * A location-only match is capped the same way: many chains share a branch
+ * name and a town, so the retailer must be legible too. Both remain
+ * CANDIDATES a reviewer can accept; neither is automatic acceptance.
  */
 export function matchOutlets(headerText, outlets) {
   const header = norm(headerText);
@@ -210,7 +316,15 @@ export function matchOutlets(headerText, outlets) {
     const r = overlap(o.retailer);
     const local = Math.max(overlap(o.branch), overlap(o.town), ...aliases.map((a) => overlap(a) >= 0.99 ? 1 : 0));
     const aliasFull = aliases.some((a) => overlap(a) >= 0.99);
-    const score = aliasFull ? 1 : Number((0.4 * r + 0.6 * local).toFixed(2));
+    const raw = aliasFull ? 1 : Number((0.4 * r + 0.6 * local).toFixed(2));
+    // A location-only match cannot identify a shop: different retailers have a
+    // "Westgate" branch in the same town, and a bare town token alone used to
+    // score 0.60 — above the 0.5 acceptance threshold — so a receipt was
+    // auto-credited against an outlet the participant never visited, and the
+    // same purchase could mint a second canonical identity under another
+    // branch. Without the retailer the match is evidence for a reviewer
+    // (candidate), never grounds for automatic acceptance.
+    const score = !aliasFull && r < 0.5 ? Math.min(raw, 0.4) : raw;
     if (score >= 0.4) out.push({ outletId: o.id, score, basis: `retailer=${r.toFixed(2)} local=${local.toFixed(2)}` });
   }
   return out.sort((a, b) => b.score - a.score).slice(0, 5);

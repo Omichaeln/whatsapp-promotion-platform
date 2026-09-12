@@ -20,6 +20,9 @@ export const DEFAULT_COPY = {
   ask_location: "Which town or city do you live in?",
   ask_retry_short: "Please reply with at least 2 characters.",
   confirm_details: "Please confirm your details:\nName: {first_name} {surname}\nID: {identity_masked}\nTown: {location}\nWhatsApp number: {phone}\n\nReply YES to confirm, or reply with the number to change: 1 name, 2 surname, 3 ID, 4 town.",
+  // Used when the campaign version does not collect the national ID at
+  // registration: offering "3 ID" there did nothing at all when pressed.
+  confirm_details_no_identity: "Please confirm your details:\nName: {first_name} {surname}\nTown: {location}\nWhatsApp number: {phone}\n\nReply YES to confirm, or reply with the number to change: 1 name, 2 surname, 3 town.",
   ask_terms: "By entering you confirm you are 18 or older and accept the Promotion Terms ({terms_version}) and Privacy Notice ({privacy_version}). Read them: {terms_url}\n\nReply YES to accept and continue, or NO to stop.",
   terms_declined: "No problem. You have not been registered and nothing has been saved. Reply MENU to start again.",
   registered: "You're registered, {first_name}! You can now enter the promotion.",
@@ -27,7 +30,7 @@ export const DEFAULT_COPY = {
   ask_outlet_retailer: "Where did you buy? Choose the RETAILER:\n{options}\nReply with a number, or type part of the branch name to search.",
   ask_outlet_town: "{retailer}: choose the TOWN:\n{options}\nReply with a number, BACK, or type to search.",
   ask_outlet_branch: "{retailer}, {town}: choose the BRANCH:\n{options}\nReply with a number, BACK, or type to search.",
-  outlet_search_results: "Matching branches:\n{options}\nReply with a number, or type again to search. BACK for the list.",
+  outlet_search_results: "Matching branches ({shown} of {total}):\n{options}\nReply with a number, MORE for the next page, or type again to search. BACK for the list.",
   outlet_no_match: "No branch matched \"{query}\". Try another word (retailer, town or branch), or reply BACK for the list.",
   outlet_choose_number: "Please reply with one of the numbers shown, type to search, or BACK.",
   outlet_confirmed: "Outlet: {outlet}.\n\nNow send ONE clear photo of the whole receipt. Make sure the shop name, date, receipt number and the sugar line are readable. Avoid glare and shadows.",
@@ -61,7 +64,28 @@ export const DEFAULT_COPY = {
   help: "Help: reply 1 to register, 2 to enter, 3 how it works, 4 terms, 5 prizes, 6 winners, 8 help. MENU returns here, BACK goes one step back, CANCEL stops the current step. For support, reply SUPPORT.",
   support_handoff: "A member of our team will pick this up and reply here. Automatic replies are paused until they close the conversation.",
   support_active: "Our team is handling your conversation. Please wait for their reply.",
+  // An unclaimed handoff used to freeze the participant out of every automated
+  // flow for ever; it now hands the conversation back with an apology.
+  support_timeout: "Sorry for the wait — nobody from our team was able to pick up your request. You can carry on here, or reply SUPPORT to try again.",
   cancel: "Cancelled. Reply MENU to start again.",
+  // STOP is the universal WhatsApp opt-out; it used to be answered "Cancelled.
+  // Reply MENU to start again." with the registration and consent still live.
+  // NOTE: neither key names a campaign. domain.withdrawParticipant closes EVERY
+  // consent and EVERY campaign enrolment for the number and sets the profile to
+  // 'withdrawn' globally, so "you have been withdrawn from {campaign}" told a
+  // participant enrolled in two promotions that one had ended when in fact both
+  // had — and this copy is the consent record the participant sees.
+  opted_out: "You have been withdrawn from our promotions. Your consent is recorded as withdrawn, your registration is closed and you will not be entered into any further draws. If this was a mistake, reply SUPPORT and our team can restore your registration.",
+  opted_out_none: "You are not registered for {campaign}, so there is nothing to withdraw.",
+  registration_withdrawn: "Your details were removed from our promotions at your request, so this number cannot be registered again automatically. Reply SUPPORT and our team will restore your registration.",
+  // A profile that is not active but was NOT withdrawn by the participant
+  // (suspended or blocked by staff, or any future status): saying "removed at
+  // your request" would be false and unexplainable at the support desk.
+  account_on_hold: "We can't continue with this number at the moment — the registration for it is on hold. Reply SUPPORT and our team will look into it for you.",
+  something_went_wrong: "Sorry — something went wrong on our side and we could not complete that step. Please try again in a few minutes, or reply SUPPORT to speak to our team.",
+  need_outlet_first: "Thanks for the photo. First tell us where you shopped — reply 2 to choose the outlet, then send the photo again.",
+  claim_ack: "Thanks {first_name} — we have recorded your claim for {prize}. Our team will contact you on this number to verify your details. Please have your ID ready; we will confirm where and when to collect.",
+  claim_not_found: "We could not match a prize claim for this number. If you believe this is an error, reply SUPPORT and our team will check for you.",
   unknown_input: "Sorry, I didn't understand that. {menu}",
   winner_contact: "Congratulations {first_name}! You have been selected as a winner in the {campaign} {period} draw for: {prize}. To claim your prize we need to verify your details. Please reply CLAIM to continue. Your claim reference is {claim_ref}. This offer is valid until {deadline}.",
   winner_collect: "Your prize ({prize}) is ready for collection at {outlet}. Bring your ID and quote claim reference {claim_ref}.",
@@ -86,6 +110,9 @@ export const DEFAULT_COPY = {
     total_unclear: "the receipt total is not readable",
     duplicate_receipt: "the receipt was already used",
     ownership_dispute: "this receipt was also sent from another phone; a team member will check it",
+    possible_duplicate_other_outlet: "this receipt looks like one already sent for a different branch; a team member will check it",
+    possible_duplicate_same_outlet: "this receipt number matches one already sent from the same shop on the same day; a team member will check it",
+    period_already_drawn: "this week's draw has already been made; a team member will decide this receipt",
     auto_qualification_paused: "automatic checks are paused; a team member will review it",
     reviewer_decision: "our team could not verify the receipt",
   },

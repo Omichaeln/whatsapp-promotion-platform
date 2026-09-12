@@ -106,3 +106,32 @@ describe("participant journeys (T-01, T-02, T-03, T-05, T-06, T-13, T-16)", () =
     assert.match((await h.say(P1, "menu")).replies[0], /1\. Register/);
   });
 });
+
+describe("one purchase, one entry — whatever outlet the participant picks", () => {
+  it("the same printed receipt against a second branch is never auto-credited", async () => {
+    // The canonical key is outlet|date|number|total, and the OUTLET is the
+    // participant's own selection, so submitting one physical receipt against
+    // two branches minted two identities and two entries for one purchase.
+    // Reproduced before this was fixed. Two different shops CAN legitimately
+    // print the same number on the same day for the same total, so the second
+    // submission goes to a reviewer rather than being rejected outright.
+    const g = await buildApp({ extractor: "simulator" });
+    try {
+      g.domain.upsertOutlet({ outlet_code: "SUN-HRE-02", retailer: "Sunrise Supermarket", branch: "Avondale", town: "Harare", province: "Harare", collection_enabled: 1, aliases: [] }, "test");
+      g.domain.setCampaignOutlets(g.campaign.id, g.domain.listOutlets().map((o) => o.id), "test");
+      const phone = "263771970555";
+      await g.register(phone, { first: "Dup", last: "Branch", identity: "TESTDUPBR1" });
+      const img = await g.simImage(g.simReceipt({ no: "888002" }));
+      const a = await g.submit(phone, img, { outlet: "sunrise westgate harare" });
+      assert.equal(a.receipt.status, "QUALIFIED");
+      // different bytes, same printed receipt, different branch selected
+      const b = await g.submit(phone, Buffer.concat([img, Buffer.from([7])]), { outlet: "sunrise avondale harare" });
+      assert.equal(b.receipt.status, "REVIEW_REQUIRED", "a second branch must not mint a second identity");
+      assert.equal(b.receipt.reason_code, "possible_duplicate_other_outlet");
+      const active = g.db.prepare(`select count(*) n from entries where participant_id=(select id from participants where wa_phone_uid=?) and status='active'`).get(phone).n;
+      assert.equal(active, 1, "one purchase is one entry");
+      const kinds = g.db.prepare(`select kind from duplicate_candidates where receipt_id=?`).all(b.receiptId).map((x) => x.kind);
+      assert.ok(kinds.includes("printed_identity"), `the reviewer is shown why: ${kinds.join(",")}`);
+    } finally { await g.close(); }
+  });
+});
