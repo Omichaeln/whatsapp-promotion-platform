@@ -56,6 +56,17 @@ export function createIntake({ db, conversation, outbox, pipeline, domain, trans
           outbox.enqueueWhatsApp({ waPhoneUid: ev.wa_phone_uid, kind: "text", purpose: "reply", campaignId: result.campaignId || null, correlationId: ev.correlation_id, payload: reply, idempotencyKey: `conv:${ev.id}:${i}` });
         }
       }
+      // Retention at the source: the event has been handled, so the second full
+      // copy of the image (inlineMediaB64) is redundant — the bytes live in the
+      // media store under its own retention — and a message body the
+      // conversation flagged as personal data (the national ID) must not be
+      // kept in cleartext. Scrubbing here bounds channel_events instead of
+      // relying on a sweep that may never run.
+      const scrubbed = { ...payload };
+      let scrub = false;
+      if (scrubbed.inlineMediaB64) { scrubbed.inlineMediaB64 = null; scrubbed.inlineMediaRedacted = true; scrub = true; }
+      if (result?.redactInbound && scrubbed.text) { scrubbed.text = "[redacted: personal identifier]"; scrubbed.textRedacted = true; scrub = true; }
+      if (scrub) db.prepare(`update channel_events set payload_json=? where id=?`).run(JSON.stringify(scrubbed), ev.id);
       db.prepare(`update channel_events set status='processed', processed_at=?, lease_until=null, result_json=?, error=null where id=?`).run(now(), JSON.stringify({ state: result?.state || null, replies: (result?.replies || []).length, receiptId: result?.receiptId || null }), ev.id);
       domain.metric("inbound.processed_ms", Date.now() - t0, { kind: ev.event_kind });
       return { id: ev.id, ok: true, result };
@@ -81,7 +92,12 @@ export function createIntake({ db, conversation, outbox, pipeline, domain, trans
         result = await pipeline.process(payload.receiptId, { correlationId: job.correlation_id });
         await conversation.onReceiptOutcome?.(payload.receiptId, result);
       } else if (job.kind === "winner.expire") result = await conversation.services?.winners?.expireDue?.();
-      else if (job.kind === "media.purge") result = { purged: conversation.services?.mediaStore?.purgeExpired?.() };
+      else if (job.kind === "media.purge") {
+        // purgeExpired caps each call, so a backlog needs several passes.
+        const store = conversation.services?.mediaStore; let purged = 0, pass = 0;
+        while (store?.purgeExpired && pass < 50) { const n = Number(store.purgeExpired(200) || 0); purged += n; pass += 1; if (n < 200) break; }
+        result = { purged };
+      } else if (job.kind === "retention.scrub") result = domain.retentionScrub();
       else throw Object.assign(new Error(`unknown job kind ${job.kind}`), { permanent: true });
       db.prepare(`update jobs set status='done', finished_at=?, lease_until=null where id=?`).run(now(), job.id);
       return { id: job.id, ok: true, result };

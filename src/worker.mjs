@@ -50,7 +50,19 @@ export function createWorker({ db, transport, outbox, crm, intake, domain, cfg, 
       const ob = outbox.stats();
       if ((ob.byStatus.unknown_outcome || 0) + (ob.byStatus.permanent_failure || 0) > 0) domain.alert({ kind: "outbound.failures", severity: "warning", message: `outbound failures: ${JSON.stringify(ob.byStatus)}`, runbook: "docs/runbooks/provider-outage.md" });
       db.prepare(`insert into jobs (id, kind, payload_json, status, run_after, created_at) select 'job_exp_' || strftime('%Y%m%d%H', 'now'), 'winner.expire', '{}', 'pending', ?, ? where not exists (select 1 from jobs where id='job_exp_' || strftime('%Y%m%d%H', 'now'))`).run(new Date().toISOString(), new Date().toISOString());
-    } catch (e) { log.error?.("[worker] housekeeping", e.message); }
+      // Retention. media.purge and the facts sweep were implemented but nothing
+      // ever enqueued them, so receipt images and extracted OCR text were kept
+      // for ever despite the documented 90/180-day commitments. Daily ids keep
+      // this idempotent across the many housekeeping passes in a day.
+      db.prepare(`insert into jobs (id, kind, payload_json, status, run_after, created_at) select 'job_purge_' || strftime('%Y%m%d', 'now'), 'media.purge', '{}', 'pending', ?, ? where not exists (select 1 from jobs where id = 'job_purge_' || strftime('%Y%m%d', 'now'))`).run(new Date().toISOString(), new Date().toISOString());
+      db.prepare(`insert into jobs (id, kind, payload_json, status, run_after, created_at) select 'job_facts_' || strftime('%Y%m%d', 'now'), 'retention.scrub', '{}', 'pending', ?, ? where not exists (select 1 from jobs where id = 'job_facts_' || strftime('%Y%m%d', 'now'))`).run(new Date().toISOString(), new Date().toISOString());
+    } catch (e) {
+      // Housekeeping schedules retention and expiry. A silent catch here hid a
+      // ReferenceError that stopped the retention jobs being enqueued at all,
+      // and nothing surfaced it: log AND alert so a broken pass is visible.
+      log.error?.("[worker] housekeeping", e.message);
+      try { domain.alert({ kind: "worker.housekeeping_failed", severity: "critical", message: `housekeeping pass failed: ${e.message}`, runbook: "docs/runbooks/queue-replay.md" }); } catch { /* alerting itself is down */ }
+    }
   }
   return {
     start() { if (!timer) timer = setInterval(tick, intervalMs); },

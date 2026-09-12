@@ -95,6 +95,38 @@ describe("CRM integration and reliability", () => {
     assert.equal(raised.severity, "critical");
   });
 
+  it("retention actually runs: the duplicate image copy, the raw identifier, expired images and old OCR text all go", async () => {
+    // media.purge and the facts sweep existed but nothing ever enqueued them,
+    // so images and extracted text were kept for ever against a documented
+    // 90/180-day commitment; channel_events also kept a second base64 copy of
+    // every receipt and the national ID in cleartext.
+    const phone = "263771960777";
+    await h.register(phone, { first: "Ret", last: "Probe", identity: "TESTRETN99" });
+    const r = await h.submit(phone, await h.simImage(h.simReceipt({ no: "RETN-1" })));
+    assert.ok(r.receiptId);
+    const img = h.db.prepare(`select payload_json from channel_events where event_kind='message.image' order by received_at desc limit 1`).get();
+    assert.equal(JSON.parse(img.payload_json).inlineMediaB64, null, "the second full copy of the image must not be retained");
+    assert.equal(h.db.prepare(`select count(*) n from channel_events where payload_json like '%TESTRETN99%'`).get().n, 0,
+      "the national ID must not survive in the inbound message log");
+
+    h.db.prepare(`update media_assets set expires_at='2000-01-01T00:00:00.000Z'`).run();
+    h.db.prepare(`update validation_results set created_at='2000-01-01T00:00:00.000Z'`).run();
+    h.app.worker.housekeeping();
+    const kinds = h.db.prepare(`select kind from jobs`).all().map((x) => x.kind);
+    assert.ok(kinds.includes("media.purge"), `media.purge must be scheduled, got ${kinds.join(",")}`);
+    assert.ok(kinds.includes("retention.scrub"), `retention.scrub must be scheduled, got ${kinds.join(",")}`);
+    // housekeeping schedules these once a day by design, so drive the effect
+    // from explicit jobs rather than depending on what earlier tests consumed.
+    const at = new Date().toISOString();
+    for (const [jid, kind] of [["job_purge_probe", "media.purge"], ["job_facts_probe", "retention.scrub"]]) {
+      h.db.prepare(`insert or ignore into jobs (id, kind, payload_json, status, run_after, created_at) values (?,?,'{}','pending',?,?)`).run(jid, kind, at, at);
+    }
+    await h.app.intake.drain();
+    assert.equal(h.db.prepare(`select count(*) n from media_assets where status='stored'`).get().n, 0, "expired images are purged");
+    assert.equal(h.db.prepare(`select count(*) n from validation_results where ocr_text is not null`).get().n, 0, "old OCR text is scrubbed");
+    assert.equal(h.db.prepare(`select count(*) n from alerts where kind='worker.housekeeping_failed'`).get().n, 0, "housekeeping did not fail silently");
+  });
+
   it("not_configured provider: events queue visibly and nothing is marked delivered", async () => {
     const h2 = await buildApp({ extractor: "simulator" });
     try { await h2.register("263771000503", { first: "Nina", last: "Cee", identity: "TESTNC0X" }); await h2.app.worker.tick(); const s = h2.app.crm.reconcileView(); assert.equal(s.provider, "none"); assert.ok(s.pending >= 1); assert.equal(s.delivered, 0); assert.equal((await h2.app.crm.health()).mode, "not_configured"); }

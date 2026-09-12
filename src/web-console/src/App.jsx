@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { api, getToken, setToken } from "./api.js";
+import { api, apiBlob, getToken, setToken } from "./api.js";
 import { Desk } from "./desk/Desk.jsx";
 import "./styles.css";
 
@@ -8,6 +8,23 @@ const fmt = (i) => (i ? new Date(i).toLocaleString() : "—");
 const short = (id, n = 12) => (id ? `${String(id).slice(0, n)}…` : "—");
 const TONE = { QUALIFIED: "ok", NOT_QUALIFIED: "x", DUPLICATE: "x", REVIEW_REQUIRED: "w", REUPLOAD_REQUIRED: "w", received: "m", processing: "m", delayed: "w", active: "ok", paused: "w", draft: "m", closed: "m", archived: "m", published: "ok", approved: "ok", executed: "w", frozen: "m", executing: "w", voided: "x", delivered: "ok", sent: "ok", read: "ok", pending: "w", retryable_failure: "w", permanent_failure: "x", unknown_outcome: "x", reconciled: "ok", dead: "x", failed: "x", processed: "ok", selected: "m", notified: "w", verified: "ok", accepted: "ok", collected: "ok", expired: "x", replaced: "x", ineligible: "x", declined: "x", disputed: "w", unreachable: "w", open: "w", assigned: "w", decided: "ok", excluded: "x", scheduled: "m", drawn: "ok", critical: "x", warning: "w", info: "m", real: "ok", simulated: "w", configured: "ok", not_configured: "w", unconfigured: "x" };
 function Chip({ s }) { const t = TONE[s] || "m"; const c = { ok: ["#0d9488", "rgba(13,148,136,.12)"], w: ["#b45309", "rgba(180,83,9,.12)"], x: ["#b42318", "rgba(180,35,24,.12)"], m: ["#666", "rgba(100,116,139,.12)"] }[t]; return <span className="chip" style={{ color: c[0], background: c[1] }}>{String(s ?? "—")}</span>; }
+/** Image behind the staff session: <img> cannot send the bearer header. */
+function AuthImg({ src, alt, style }) {
+  const [s, set] = useState({ url: null, error: null, loading: true });
+  useEffect(() => {
+    let live = true, made = null;
+    set({ url: null, error: null, loading: true });
+    apiBlob(src).then((r) => {
+      if (!live) { if (r.url) URL.revokeObjectURL(r.url); return; }
+      if (!r.ok) return set({ url: null, error: r.status === 401 ? "not authorised to view this image" : `image unavailable (HTTP ${r.status || "network"})`, loading: false });
+      made = r.url; set({ url: r.url, error: null, loading: false });
+    });
+    return () => { live = false; if (made) URL.revokeObjectURL(made); };
+  }, [src]);
+  if (s.loading) return <div className="sub">loading image…</div>;
+  if (s.error) return <div className="sub" style={{ color: "#b42318" }}>{s.error}</div>;
+  return <img src={s.url} alt={alt} style={style} />;
+}
 function useApi(path, deps = []) {
   const [state, set] = useState({ loading: true, data: null, error: null });
   const load = useCallback(() => { set((s) => ({ ...s, loading: true })); api(path).then((r) => set({ loading: false, data: r.ok ? r.data : null, error: r.ok ? null : (r.data?.error?.message || `HTTP ${r.status}`) })); }, [path, ...deps]);
@@ -217,7 +234,7 @@ function ReceiptDetail({ id, me, onBack }) {
   return <div className="promo-page"><Btn ghost small onClick={onBack}>← Receipts</Btn><a.Msg />
     <div className="split2">
       <Card title={`Receipt ${x.reference}`} right={<Chip s={x.status} />}>
-        {d.data.media ? <div className="imgbox"><img src={d.data.media.original.url} alt="receipt (original)" /><div className="sub">Original · signed link expires {fmt(d.data.media.original.expiresAt)} · {d.data.media.width}×{d.data.media.height} {d.data.media.mime}</div><img src={d.data.media.normalised.url} alt="receipt (normalised for OCR)" style={{ marginTop: 8, filter: "grayscale(1)" }} /><div className="sub">Normalised image used for OCR</div></div> : <Empty>Image viewing requires the reviewer or auditor role.</Empty>}
+        {d.data.media ? <div className="imgbox"><AuthImg src={d.data.media.original.url} alt="receipt (original)" /><div className="sub">Original · signed link expires {fmt(d.data.media.original.expiresAt)} · {d.data.media.width}×{d.data.media.height} {d.data.media.mime}</div><AuthImg src={d.data.media.normalised.url} alt="receipt (normalised for OCR)" style={{ marginTop: 8, filter: "grayscale(1)" }} /><div className="sub">Normalised image used for OCR</div></div> : <Empty>Image viewing requires the reviewer or auditor role.</Empty>}
       </Card>
       <div>
         <Card title="Evidence"><div className="row"><Field label="Participant">{x.participant?.first_name} {x.participant?.surname} · {x.participant?.phone}</Field><Field label="Selected outlet">{x.outlet ? `${x.outlet.retailer} — ${x.outlet.branch}, ${x.outlet.town}` : "—"}</Field><Field label="Period">{x.period_code || "—"}</Field><Field label="Rules version"><span className="mono">{short(d.data.rules_version, 12)}</span></Field><Field label="Intake">{fmt(x.intake_at)}</Field><Field label="Extractor">{v ? `${v.extractor_provider} ${v.extractor_version} (${v.latency_ms} ms)` : "—"}</Field></div>
@@ -287,7 +304,16 @@ function Draws({ me }) {
 }
 function DrawDetail({ id, me, onClose }) {
   const [d] = useApi(`/api/draws/${id}`); if (d.loading) return <Loading />; const x = d.data?.draw; if (!x) return null;
-  return <Card title={`Draw ${x.period} — ${x.status}`} right={<div className="row"><Btn ghost small onClick={() => window.open(`/api/draws/${id}/bundle?token=`)}>Bundle (auditor API)</Btn><Btn ghost small onClick={onClose}>Close</Btn></div>}>
+  return <Card title={`Draw ${x.period} — ${x.status}`} right={<div className="row">{(me.roles.includes("auditor") || me.roles.includes("draw_approver")) && <Btn ghost small onClick={async () => {
+      // The bundle route needs the bearer header; window.open sends none, and
+      // the old "?token=" was always empty. Fetch it and save it properly.
+      const r = await api(`/api/draws/${id}/bundle`);
+      if (!r.ok) return alert(`Bundle unavailable (HTTP ${r.status})`);
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(r.data, null, 2)], { type: "application/json" }));
+      a.download = `draw-${id}-bundle.json`; a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    }}>Download bundle</Btn>}<Btn ghost small onClick={onClose}>Close</Btn></div>}>
     <div className="row"><Field label="Snapshot hash"><span className="mono">{x.snapshot_hash}</span></Field><Field label="Output hash"><span className="mono">{x.output_hash || "—"}</span></Field><Field label="Candidates">{d.data.candidates}</Field><Field label="Integrity">{x.integrity?.ok ? <Chip s="verified" /> : <Chip s="critical" />} {x.integrity?.problems?.join("; ")}</Field><Field label="Barrier at freeze"><span className="sub mono">{JSON.stringify(x.barrier?.blockers || [])}</span></Field></div>
     {x.output && <Table cols={["Rank", "Entry", "Participant", "Prize"]} rows={x.output.winners} render={(w) => <tr key={w.entryId}><td>{w.position}</td><td className="mono">{short(w.entryId, 14)}</td><td className="mono">{short(w.participantId, 14)}</td><td>{w.prize_code}</td></tr>} />}
     <Table cols={["Attempt", "Actor", "Outcome", "At"]} rows={d.data.attempts} render={(t, i) => <tr key={i}><td>{i + 1}</td><td className="sub">{short(t.actor_id, 10)}</td><td>{t.outcome}</td><td className="sub">{fmt(t.created_at)}</td></tr>} />

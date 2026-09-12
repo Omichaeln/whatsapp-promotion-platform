@@ -121,16 +121,54 @@ function normalizeJson(v) {
 }
 
 /** Execute fn in an immediate transaction (nested-safe via savepoint). */
+let txCounter = 0;
+
+/**
+ * Run fn() in a transaction, nesting safely.
+ *
+ * The previous implementation did `savepoint tx` / `rollback to tx` and, on the
+ * error path, never RELEASEd. SQLite's ROLLBACK TO does not pop the savepoint,
+ * so the implicit transaction opened by the outermost SAVEPOINT stayed open for
+ * the life of the process. Every ordinary handled rejection — a second reviewer
+ * opening the same task, a withdrawn participant re-registering, a
+ * separation-of-duties refusal — left the single application connection inside
+ * a transaction that was never committed. Later writes then looked successful,
+ * were invisible to any other connection, locked that connection out entirely,
+ * and were discarded on the next restart or redeploy: silent, unbounded data
+ * loss with no symptom until the process stopped.
+ *
+ * At the outermost level this now uses BEGIN IMMEDIATE, which also takes the
+ * write lock up front so two processes serialise instead of colliding on a
+ * stale snapshot. Nested calls use uniquely named savepoints that are always
+ * popped. Whoever opened the transaction (including the raw begin/commit in
+ * migrate) is detected with db.isTransaction, so nesting is never guessed.
+ */
 export function tx(db, fn) {
-  db.exec("savepoint tx");
+  const nested = db.isTransaction;
+  const name = `tx_${++txCounter}`;
+  if (nested) db.exec(`savepoint ${name}`);
+  else db.exec("begin immediate");
+  let out;
   try {
-    const r = fn();
-    db.exec("release tx");
-    return r;
+    out = fn();
   } catch (e) {
-    db.exec("rollback to tx");
+    try {
+      if (nested) { db.exec(`rollback to ${name}`); db.exec(`release ${name}`); }
+      else db.exec("rollback");
+    } catch (unwind) {
+      // Never let the unwind hide why the work actually failed.
+      e.unwindError = unwind.message;
+    }
     throw e;
   }
+  try {
+    if (nested) db.exec(`release ${name}`);
+    else db.exec("commit");
+  } catch (e) {
+    try { if (nested) { db.exec(`rollback to ${name}`); db.exec(`release ${name}`); } else db.exec("rollback"); } catch { /* already unwound */ }
+    throw e;
+  }
+  return out;
 }
 
 export function rowsOf(stmt, ...params) {

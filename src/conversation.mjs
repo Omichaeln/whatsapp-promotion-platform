@@ -82,7 +82,10 @@ export function createConversationService({ db, domain, receiptPipeline, winners
     const isImage = type === "message.image" || type === "message.document";
     const { intent, number } = isImage ? { intent: "IMAGE" } : parseIntent(text);
     const save = (st, c = ctx, extra = {}) => domain.setSession(cid, pUid, { state: st, context: c, participantId: participant?.id || null, expectedVersion: version, ...extra });
-    const reply = (st, msgs, extra = {}) => ({ replies: [].concat(msgs), state: st, campaignId: cid, ...extra });
+    // Set when the inbound message body itself is personal data that must not
+    // be retained in channel_events (currently the national ID at registration).
+    let redactInbound = false;
+    const reply = (st, msgs, extra = {}) => ({ replies: [].concat(msgs), state: st, campaignId: cid, redactInbound, ...extra });
     const home = (prefix = null) => { save("HOME", { lastReceiptId: ctx.lastReceiptId }); return reply("HOME", prefix ? [prefix, menu(campaign)] : [menu(campaign)]); };
 
     // support handoff: automation suspended until an operator releases the conversation
@@ -158,7 +161,11 @@ export function createConversationService({ db, domain, receiptPipeline, winners
       switch (state) {
         case "REG_FIRST": if (val.length < 2 || /\d/.test(val)) return reply(state, [copy(cid, "ask_retry_short")]); reg.firstName = val.slice(0, 60); return reg.update && reg.returnTo ? confirmAfter(reg) : ask("REG_SURNAME");
         case "REG_SURNAME": if (val.length < 2) return reply(state, [copy(cid, "ask_retry_short")]); reg.surname = val.slice(0, 60); return reg.returnTo ? confirmAfter(reg) : ask(regFlags().identityStage === "registration" ? "REG_IDENTITY" : "REG_LOCATION");
-        case "REG_IDENTITY": if (!/^[A-Za-z0-9-]{5,20}$/.test(val)) return reply(state, [copy(cid, "ask_identity_retry")]); reg.identity = val.toUpperCase(); reg.identityMasked = maskId(reg.identity); return reg.returnTo ? confirmAfter(reg) : ask("REG_LOCATION");
+        // The raw national ID must not survive in channel_events: it is stored
+        // encrypted on the participant and masked everywhere else, but the
+        // inbound message that carried it was kept in cleartext for ever and
+        // served to support and campaign_manager through the transcript views.
+        case "REG_IDENTITY": if (!/^[A-Za-z0-9-]{5,20}$/.test(val)) return reply(state, [copy(cid, "ask_identity_retry")]); reg.identity = val.toUpperCase(); reg.identityMasked = maskId(reg.identity); redactInbound = true; return reg.returnTo ? confirmAfter(reg) : ask("REG_LOCATION");
         case "REG_LOCATION": if (val.length < 2) return reply(state, [copy(cid, "ask_retry_short")]); reg.location = val.slice(0, 80); return confirmAfter(reg);
         case "REG_CONFIRM": {
           if (intent === "YES") return ask("REG_TERMS");

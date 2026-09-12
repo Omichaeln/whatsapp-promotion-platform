@@ -43,7 +43,7 @@ export async function createServer({ config, log = console, transport: transport
   if (environment !== cfg.environment) log.warn?.(`[server] database environment is "${environment}" but ENVIRONMENT=${cfg.environment}; the database value governs`);
 
   // ---- domain wiring ----------------------------------------------------------
-  const domain = createDomain(db, cfg.identityKey || "dev-only-key", nowIso, { checkpointKey: cfg.auditCheckpointKey });
+  const domain = createDomain(db, cfg.identityKey || "dev-only-key", nowIso, { checkpointKey: cfg.auditCheckpointKey, retention: cfg.retention });
   const mediaStore = createMediaStore({ dir: cfg.mediaDir, db, retentionDays: cfg.retention.rawReceiptsDays });
   const outbox = createOutbox(db);
   const duplicates = createDuplicateDetector({ db });

@@ -9,7 +9,7 @@ import { defaultRules } from "./eligibility.mjs";
  * protection), conversation sessions (versioned), staff. Authorisation is
  * enforced in the HTTP layer; these services enforce invariants.
  */
-export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { checkpointKey = "" } = {}) {
+export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { checkpointKey = "", retention = { rawReceiptsDays: 90, factsDays: 180 } } = {}) {
   const audit = createAudit(db, { checkpointKey, now });
   const A = (args) => audit.record(args);
 
@@ -386,6 +386,33 @@ export function createDomain(db, identityKey = "dev-only-key", now = nowIso, { c
       return db.prepare(`select count(*) n from entries where participant_id=? and campaign_id=? and status='active'`).get(participantId, campaignId).n;
     },
     metric(name, value = 1, labels = null) { db.prepare(`insert into metrics_events (name, value, labels_json, created_at) values (?,?,?,?)`).run(name, value, labels ? JSON.stringify(labels) : null, now()); },
+    /**
+     * Retention sweep (D-22): drop extracted receipt text and stored inbound
+     * message bodies once they are older than the facts-retention window.
+     *
+     * This existed only as a documented commitment — docs/runbooks and the
+     * production checklist claim it runs — but nothing implemented or scheduled
+     * it, so OCR text and conversation payloads grew without bound. The raw
+     * IMAGES are handled separately by mediaStore.purgeExpired via the
+     * media.purge job.
+     */
+    retentionScrub({ factsDays = retention.factsDays } = {}) {
+      const cutoff = new Date(Date.now() - Number(factsDays) * 86400_000).toISOString();
+      const facts = db.prepare(`update validation_results set ocr_text=null, raw_result_json=null
+        where created_at < ? and (ocr_text is not null or raw_result_json is not null)`).run(cutoff).changes;
+      const events = db.prepare(`select id, payload_json from channel_events where received_at < ? and payload_json like '%"text":"%' limit 2000`).all(cutoff);
+      let scrubbed = 0;
+      const upd = db.prepare(`update channel_events set payload_json=? where id=?`);
+      for (const e of events) {
+        let p; try { p = JSON.parse(e.payload_json); } catch { continue; }
+        if (!p || (p.textRedacted && !p.inlineMediaB64)) continue;
+        if (!p.text && !p.inlineMediaB64) continue;
+        upd.run(JSON.stringify({ ...p, text: p.text ? "[redacted: retention]" : p.text, textRedacted: true, inlineMediaB64: null, inlineMediaRedacted: true }), e.id);
+        scrubbed += 1;
+      }
+      if (facts || scrubbed) A({ actorType: "system", actorId: "retention", action: "retention.scrubbed", targetType: "settings", targetId: "retention", payload: { factsDays: Number(factsDays), validationRows: facts, channelEvents: scrubbed, cutoff } });
+      return { validationRows: facts, channelEvents: scrubbed, cutoff };
+    },
     alert({ kind, severity = "warning", message, detail = null, runbook = null }) {
       const open = db.prepare(`select id from alerts where kind=? and acknowledged_at is null and created_at > ?`).get(kind, new Date(Date.now() - 3600_000).toISOString());
       if (open) return open.id; // de-duplicate within an hour
