@@ -14,6 +14,3 @@
 create unique index if not exists ux_audit_events_prev_hash_v2
   on audit_events (prev_hash)
   where json_valid(payload_json) and json_extract(payload_json, '$.v') >= 2;
-
--- Reading the chain head is the hot path of every audited action.
-create index if not exists ix_audit_events_id_desc on audit_events (id desc);
