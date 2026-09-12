@@ -75,7 +75,13 @@ describe("draws, winners and publication", () => {
     fs.writeFileSync(file, JSON.stringify(bundle));
     const run = (f) => { try { return { code: 0, out: execFileSync("node", ["--no-warnings", path.join(ROOT, "scripts", "verify-draw-bundle.mjs"), f, "--checkpoint-key", "test-checkpoint-key"], { encoding: "utf8" }) }; } catch (e) { return { code: e.status, out: e.stdout }; } };
     const ok = run(file); assert.equal(ok.code, 0, ok.out); assert.equal(JSON.parse(ok.out).verified, true);
-    for (const mutate of [(b) => { b.output.winners[0].entryId = b.output.alternates[0].entryId; }, (b) => { b.seed_hex = "00".repeat(32); }, (b) => { b.snapshot.candidates.pop(); }, (b) => { b.draw.approver_id = b.draw.operator_id; }, (b) => { b.audit_events[0].payload_json += " "; }, (b) => { b.audit_checkpoint.signature = "0".repeat(64); }]) {
+    for (const mutate of [(b) => { b.output.winners[0].entryId = b.output.alternates[0].entryId; }, (b) => { b.seed_hex = "00".repeat(32); }, (b) => { b.snapshot.candidates.pop(); }, (b) => { b.draw.approver_id = b.draw.operator_id; }, (b) => { b.audit_events[0].payload_json += " "; }, (b) => { b.audit_checkpoint.signature = "0".repeat(64); },
+      // Forge the approver. The draw row is a mutable column, so a tamperer
+      // rewrites it AND the matching audit column to stay self-consistent;
+      // only the signed body still names the real approver.
+      (b) => { for (const e of b.audit_events) if (e.action === "draw.approved") e.actor_id = b.draw.operator_id; },
+      (b) => { b.draw.approver_id = b.draw.operator_id; for (const e of b.audit_events) if (e.action === "draw.approved") e.actor_id = b.draw.operator_id; },
+      (b) => { for (const e of b.audit_events) e.created_at = "1999-01-01T00:00:00.000Z"; }]) {
       const t = JSON.parse(JSON.stringify(bundle)); mutate(t); fs.writeFileSync(file, JSON.stringify(t)); const r = run(file); assert.equal(r.code, 1, "tampered bundle must fail"); assert.equal(JSON.parse(r.out).verified, false);
     }
   });

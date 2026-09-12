@@ -222,7 +222,7 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
   function bundle(drawId, actorId) {
     const d = get.get(drawId); if (!d) throw Object.assign(new Error("draw not found"), { code: "NOT_FOUND" });
     const checkpoint = domain.auditService.checkpoint(actorId);
-    const events = db.prepare(`select id, actor_id, action, reason, prev_hash, entry_hash, payload_json, created_at from audit_events where target_type='draw' and target_id=? order by id`).all(drawId);
+    const events = db.prepare(`select id, actor_type, actor_id, action, target_type, target_id, reason, request_id, scope, correlation_id, prev_hash, entry_hash, payload_json, created_at from audit_events where target_type='draw' and target_id=? order by id`).all(drawId);
     domain.audit({ actorType: "admin", actorId, action: "draw.bundle_exported", targetType: "draw", targetId: drawId });
     return {
       bundle_version: VERIFIER_VERSION, exported_at: now(), exported_by: actorId,

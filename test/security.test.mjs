@@ -1,7 +1,18 @@
 // Authorisation, adversarial API use, privacy and audit (T-29, T-30, T-31, T-36, T-15 concurrency).
 import { describe, it, before, after, assert, buildApp } from "./helpers.mjs";
+import { createRouter } from "../src/http.mjs";
 
 describe("security, RBAC, privacy, audit", () => {
+  it("the router refuses a route that does not declare its roles (deny by default)", () => {
+    const r = createRouter({ auth: { authenticate: () => null, hasRole: () => false }, log: { error() {}, info() {} } });
+    assert.throws(() => r.add("GET", "/api/oops", { tag: "x" }, () => ({})), /must declare roles/,
+      "a route with no roles option must not be registered as public");
+    assert.throws(() => r.add("GET", "/api/empty", { roles: [] }, () => ({})), /empty roles list/);
+    r.add("GET", "/api/fine", { roles: "public" }, () => ({}));
+    r.add("GET", "/api/alsofine", { roles: ["auditor"] }, () => ({}));
+    assert.equal(r.routes.filter((x) => x.pathPattern.startsWith("/api/")).length, 2, "only the well-formed routes registered");
+  });
+
   let h, admin, tokens = {};
   before(async () => {
     h = await buildApp({ extractor: "simulator" });

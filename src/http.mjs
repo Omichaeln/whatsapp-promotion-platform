@@ -39,7 +39,15 @@ export function createRouter({ auth, log = console }) {
   function add(method, pathPattern, meta, handler) {
     const keys = [];
     const re = new RegExp("^" + pathPattern.replace(/\/:([a-zA-Z_]+)/g, (_, k) => { keys.push(k); return "/([^/]+)"; }) + "/?$");
-    routes.push({ method, pathPattern, re, keys, meta: { roles: "public", ...meta }, handler });
+    // Authorization is deny-by-default: a route must state its roles. The
+    // previous default was "public", so a new route that simply forgot the
+    // option was served unauthenticated — a fail-open default in the one place
+    // that must fail closed.
+    if (meta.roles === undefined) throw new Error(`route ${method} ${pathPattern} must declare roles (use "public" deliberately)`);
+    if (meta.roles !== "public" && meta.roles !== "any" && !(Array.isArray(meta.roles) && meta.roles.length)) {
+      throw new Error(`route ${method} ${pathPattern} has an empty roles list; use "any" for every signed-in user`);
+    }
+    routes.push({ method, pathPattern, re, keys, meta: { ...meta }, handler });
   }
   async function dispatch(req, res) {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);

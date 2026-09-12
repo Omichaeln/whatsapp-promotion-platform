@@ -61,11 +61,39 @@ if (["approved", "published"].includes(d.status)) {
   ok("approver differs from operator", d.approver_id && d.approver_id !== d.operator_id, `${d.operator_id} / ${d.approver_id}`);
   ok("approval after execution", Date.parse(d.approved_at) >= Date.parse(d.executed_at));
 }
-// audit chain continuity among the draw's events (each event hash recomputes from prev + payload)
-let chainOk = true;
-for (const e of b.audit_events || []) if (sha((e.prev_hash || "") + String(e.payload_json)) !== e.entry_hash) chainOk = false;
-ok("draw audit events recompute", chainOk, (b.audit_events || []).length);
-ok("audit trail has freeze+execute(+approve)", ["draw.frozen", "draw.executed"].every((a) => (b.audit_events || []).some((e) => e.action === a)) && (d.status === "executed" || (b.audit_events || []).some((e) => e.action === "draw.approved") || d.status === "frozen"));
+// Audit chain continuity among the draw's events: each event hash recomputes
+// from prev + the signed body, and — for version 2 bodies — the columns a
+// reader would display must still match what was signed. Without the second
+// check, "who approved this draw" is a mutable column outside the hash.
+const events = b.audit_events || [];
+const COLS = [["actorType", "actor_type"], ["actorId", "actor_id"], ["action", "action"], ["targetType", "target_type"],
+  ["targetId", "target_id"], ["reason", "reason"], ["requestId", "request_id"], ["scope", "scope"],
+  ["correlationId", "correlation_id"], ["when", "created_at"]];
+let chainOk = true, attributionOk = true, unattributed = 0;
+for (const e of events) {
+  if (sha((e.prev_hash || "") + String(e.payload_json)) !== e.entry_hash) chainOk = false;
+  let body = null; try { body = JSON.parse(e.payload_json); } catch { chainOk = false; }
+  if (body && Number(body.v) >= 2) {
+    for (const [f, c] of COLS) {
+      if (!(c in e)) continue;                     // column not exported in this bundle
+      const a = body[f] === undefined ? null : body[f], bb = e[c] === undefined ? null : e[c];
+      if (canon(a) !== canon(bb)) attributionOk = false;
+    }
+  } else unattributed += 1;
+}
+ok("draw audit events recompute", chainOk, events.length);
+ok("audit event attribution matches the signed body", attributionOk, unattributed ? `${unattributed} legacy event(s) carry no signed attribution` : "all events signed with attribution");
+ok("audit trail has freeze+execute(+approve)", ["draw.frozen", "draw.executed"].every((a) => events.some((e) => e.action === a)) && (d.status === "executed" || events.some((e) => e.action === "draw.approved") || d.status === "frozen"));
+if (["approved", "published"].includes(d.status)) {
+  // Separation of duties proven from the signed audit body, not from the draw row.
+  const approvals = events.filter((e) => e.action === "draw.approved").map((e) => { try { return JSON.parse(e.payload_json); } catch { return null; } }).filter(Boolean);
+  const signedApprover = approvals.length ? (approvals[approvals.length - 1].actorId ?? null) : null;
+  ok("approval is attributable in the signed chain", !!signedApprover || unattributed > 0, signedApprover || "no signed approval event");
+  if (signedApprover) {
+    ok("signed approver matches the draw record", signedApprover === d.approver_id, `${signedApprover} / ${d.approver_id}`);
+    ok("signed approver differs from the operator", signedApprover !== d.operator_id, `${d.operator_id} / ${signedApprover}`);
+  }
+}
 if (b.audit_checkpoint) {
   const expected = crypto.createHmac("sha256", checkpointKey || "unsigned").update(`${b.audit_checkpoint.uptoId}|${b.audit_checkpoint.headHash}`).digest("hex");
   ok("audit checkpoint signature", expected === b.audit_checkpoint.signature, checkpointKey ? "keyed" : "unsigned key (set --checkpoint-key)");
