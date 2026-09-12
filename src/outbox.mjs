@@ -37,8 +37,22 @@ export function createOutbox(db, now = nowIso) {
     (id, provider, wa_phone_uid, kind, payload_json, idempotency_key, status, created_at, purpose, campaign_id, correlation_id, template_name)
     values (?,?,?,?,?,?,?,?,?,?,?,?)`);
   const byKey = db.prepare(`select id from outbound_messages where idempotency_key=?`);
-  const next = db.prepare(`select * from outbound_messages where (next_attempt_at is null or next_attempt_at <= ?) and ((status in ('pending','retryable_failure') and (lease_until is null or lease_until < ?)) or (status='sending' and lease_until < ?)) order by created_at limit 1`);
-  const lease = db.prepare(`update outbound_messages set status='sending', lease_until=?, attempts=attempts+1 where id=? and (status in ('pending','retryable_failure') or (status='sending' and lease_until < ?))`);
+  // A 'sending' row whose lease has expired is NOT re-dispatchable. It used to be
+  // (`or (status='sending' and lease_until < ?)` in both statements): the row is
+  // only moved off 'sending' after `await dispatch(...)` returns, so a process
+  // killed between the provider accepting the message and that update left the
+  // row leased, and 60s later the next worker sent the identical body again —
+  // a winner received "You are a WINNER. Claim ref ABC123." twice, and with no
+  // attempt cap on that path it could repeat. Shutdown now drains the in-flight
+  // tick (worker.stop -> server.close), so the ordinary redeploy no longer
+  // abandons a row at all; whatever SIGKILL still leaves is reclaimed by
+  // reclaimStalled() into unknown_outcome — the state this module already
+  // defines for "the provider may have accepted it" — for an operator to check
+  // against the provider log and Retry.
+  const next = db.prepare(`select * from outbound_messages where (next_attempt_at is null or next_attempt_at <= ?) and status in ('pending','retryable_failure') and (lease_until is null or lease_until < ?) order by created_at limit 1`);
+  const lease = db.prepare(`update outbound_messages set status='sending', lease_until=?, attempts=attempts+1 where id=? and status in ('pending','retryable_failure')`);
+  const stalled = db.prepare(`select id from outbound_messages where status='sending' and lease_until is not null and lease_until < ? order by created_at limit ?`);
+  const reclaim = db.prepare(`update outbound_messages set status='unknown_outcome', lease_until=null, error_code=coalesce(error_code,'DISPATCH_INTERRUPTED'), last_error=? where id=? and status='sending'`);
 
   return {
     enqueueWhatsApp({ waPhoneUid, kind = "text", payload, idempotencyKey, provider = "whatsapp", purpose = "reply", campaignId = null, correlationId = null, templateName = null }) {
@@ -63,9 +77,9 @@ export function createOutbox(db, now = nowIso) {
      * `policy(row)` may return { blocked: true, code, message, retryable }.
      */
     async processPendingWhatsApp(dispatch, { policy = null, leaseSeconds = 60 } = {}) {
-      const row = next.get(now(), now(), now());
+      const row = next.get(now(), now());
       if (!row) return null;
-      const leased = lease.run(new Date(Date.now() + leaseSeconds * 1000).toISOString(), row.id, now());
+      const leased = lease.run(new Date(Date.now() + leaseSeconds * 1000).toISOString(), row.id);
       if (leased.changes === 0) return { id: row.id, skipped: true };
       const payload = JSON.parse(row.payload_json);
       if (policy) {
@@ -88,6 +102,19 @@ export function createOutbox(db, now = nowIso) {
           .run(status, String(e.message).slice(0, 300), e.code || null, status === "retryable_failure" ? backoff(attempts) : null, row.id);
         return { id: row.id, error: e.message, status };
       }
+    },
+    /**
+     * Reclaim rows abandoned mid-dispatch (the process stopped between the lease
+     * and the result) into unknown_outcome, where the runbook says to check the
+     * provider's message log before pressing Retry. They are deliberately NOT
+     * re-dispatched: the provider may already have accepted the message.
+     * Called from the worker's housekeeping pass, which also alerts on the
+     * resulting unknown_outcome rows (outbound.failures).
+     */
+    reclaimStalled({ limit = 50 } = {}) {
+      const rows = stalled.all(now(), limit);
+      for (const r of rows) reclaim.run("process stopped after the message was handed to the provider: outcome unknown, check the provider log before Retry", r.id);
+      return rows.length;
     },
     /** Provider delivery callback (sent/delivered/read/failed) by provider message id. */
     markDelivery(providerMessageId, status, { errorCode = null, at = null } = {}) {
@@ -114,7 +141,14 @@ export function createOutbox(db, now = nowIso) {
     },
     /** Operator retry of a failed / unknown row (audited by caller). */
     retry(outId) {
-      const r = db.prepare(`update outbound_messages set status='pending', next_attempt_at=null, lease_until=null, attempts=0 where id=? and status in ('retryable_failure','permanent_failure','unknown_outcome')`).run(outId);
+      // Never requeue a message whose recipient has been erased. Anonymisation
+      // deletes everything that never left (sent_at is null) and rewrites the
+      // survivors to wa_phone_uid='deleted:<pid>' with the body replaced by
+      // '[erased]'; a row that WAS sent and then got a provider 'failed' webhook
+      // keeps sent_at, so it survived as permanent_failure and Retry dispatched
+      // an empty envelope to a dead address for a participant who had exercised
+      // their right to erasure.
+      const r = db.prepare(`update outbound_messages set status='pending', next_attempt_at=null, lease_until=null, attempts=0 where id=? and status in ('retryable_failure','permanent_failure','unknown_outcome') and wa_phone_uid not like 'deleted:%'`).run(outId);
       return r.changes > 0;
     },
     get: (outId) => db.prepare(`select * from outbound_messages where id=?`).get(outId),

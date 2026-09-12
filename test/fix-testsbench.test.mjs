@@ -13,7 +13,7 @@ import { describe, it, before, after, assert, buildApp } from "./helpers.mjs";
 import { fixturePass, gateExitCode } from "../bench/run.mjs";
 import { integrityFindings, loadReceipt, slipNo, RACE_SLIP } from "../bench/load.mjs";
 import { createAudit } from "../src/audit.mjs";
-import { openDb, migrate } from "../src/db.mjs";
+import { openDb, migrate, normalizePhone } from "../src/db.mjs";
 import { shortRef } from "../src/copy.mjs";
 import { totp } from "../src/mfa.mjs";
 
@@ -427,5 +427,48 @@ describe("remote-smoke evidence rows (scripts/remote-smoke.mjs)", () => {
       assert.ok(!new RegExp(`Qualified entries:\\s*3\\b`).test(text),
         "an unanchored \\b3\\b would have scored PASS for a deployment reporting three entries when there is one");
     } finally { await h.close(); }
+  });
+
+  it("the two participant phones are DIFFERENT numbers, and every reference the menu-7 row accepts is one of P1's own last three uploads", () => {
+    // The menu-7 row failed on every single invocation of the script — 74
+    // passed, 1 FAILED, exit 1, so no clean evidence run was possible — and the
+    // test above could not see it, because it builds its own participant
+    // instead of reading the journey the script actually drives.
+    //
+    // The cause was the phones, not the matcher: `26377` (5 chars) plus the
+    // 7-digit run is already 12 characters, so `.slice(0, 12)` dropped the
+    // trailing 1/2 and P1 === P2. ONE participant then played both parts, and
+    // P2's four uploads (s1c, one, noise, amb) landed on top of P1's two. The
+    // status copy prints only the three MOST RECENT receipts, so neither
+    // s1.ref nor s1b.ref could ever appear, and the adjacent
+    // "cross-phone re-use blocked" row was really a same-phone re-submission.
+    //
+    // Both halves are pinned here: the derivation must yield two distinct,
+    // dialable numbers, and the references the row accepts must all belong to
+    // P1 uploads that are still among the three the copy prints.
+    const decl = src.match(/const run = (.+?);\s*const P1 = (.+?), P2 = (.+?);/);
+    assert.ok(decl, "the script must still derive the two participant phones from the run id on one line");
+    const [P1, P2] = new Function(`const run = ${decl[1]}; return [${decl[2]}, ${decl[3]}];`)();
+    assert.notEqual(P1, P2, `the smoke run's two participants share the phone ${P1}: P2's uploads push P1's off the status copy`);
+    for (const phone of [P1, P2]) assert.equal(normalizePhone(phone), phone, `${phone} is not a number the channel will accept as-is`);
+    assert.notEqual(normalizePhone(P1), normalizePhone(P2), "the two phones must resolve to two participants, not one");
+
+    const menuSevenAt = src.indexOf('const mine = await sim(admin, P1, "7")');
+    assert.ok(menuSevenAt > 0, "the menu-7 status read must still be driven from P1");
+    const uploads = [...src.slice(0, menuSevenAt).matchAll(/const (\w+) = await submitReceipt\(admin, P1,/g)].map((m) => m[1]);
+    assert.ok(uploads.length >= 1, "P1 submits at least one receipt before its status is read");
+    assert.ok(uploads.length <= 3, `P1 uploads ${uploads.length} receipts before menu 7; the copy lists only the three most recent, so the earliest can no longer be asserted`);
+    const refs = src.slice(menuSevenAt).match(/myRefs = \[([^\]]+)\]/);
+    assert.ok(refs, "the row must still assert a reference from this run");
+    const accepted = refs[1].split(",").map((t) => t.trim().replace(/\.ref$/, ""));
+    for (const name of accepted) assert.ok(uploads.includes(name), `myRefs accepts ${name}.ref, which is not one of P1's own uploads (${uploads.join(", ")})`);
+    // Subset, not equality. Requiring myRefs to name EVERY pre-menu-7 upload
+    // would reject the strictly safer edit of pinning only the newest reference,
+    // which is the one that cannot fall off the three the copy prints. What has
+    // to hold is that each accepted name is one of P1's own uploads (above) and
+    // that at least one of them is among the last three.
+    assert.ok(accepted.length > 0, "the row must accept at least one reference");
+    const newest = uploads.slice(-3);
+    assert.ok(accepted.some((n) => newest.includes(n)), `none of ${accepted.join(", ")} is among P1's three most recent uploads (${newest.join(", ")}), so the copy can never contain it`);
   });
 });

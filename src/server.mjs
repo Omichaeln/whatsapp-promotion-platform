@@ -41,11 +41,19 @@ import { registerDeskRoutes } from "./routes/desk.mjs";
  * soft brake while still bounding expensive work with a higher hard ceiling.
  */
 export function createAttemptThrottle({ windowMs = 60_000, maxKeys = 10_000, now = Date.now } = {}) {
+  // key -> { times: [attempt timestamps inside the window], touched }.
+  // `touched` is EVERY attempt, including the ones suppressed at the hard
+  // ceiling; `times` stops growing there. Eviction sorts on `touched`, never on
+  // the last recorded timestamp: a key pinned at its ceiling stops refreshing
+  // `times`, so sorting on that made the key under active attack the FIRST
+  // evicted — 3k logins with fresh emails flushed a victim's 25-guess lockout
+  // and handed the attacker a fresh scrypt budget (and the account holder's
+  // brake) every ~2k junk requests.
   const attempts = new Map();
   const lowWater = Math.max(1, Math.floor(maxKeys * 0.8));
   const sweep = (t) => {
     if (attempts.size <= maxKeys) return;
-    for (const [k, v] of attempts) if (t - (v[v.length - 1] || 0) >= windowMs) attempts.delete(k);
+    for (const [k, v] of attempts) if (t - v.touched >= windowMs) attempts.delete(k);
     // Expiry alone cannot bound a flood of fresh keys (inside one window nothing
     // is expirable), so evict the least-recently-touched ones: a key under
     // active attack has the newest touch and survives, which is the one that
@@ -53,7 +61,7 @@ export function createAttemptThrottle({ windowMs = 60_000, maxKeys = 10_000, now
     // cap — trimming one key per insertion would put this scan on every request,
     // which is the quadratic path the previous bound had.
     if (attempts.size > lowWater) {
-      const byAge = [...attempts].sort((a, b) => (a[1][a[1].length - 1] || 0) - (b[1][b[1].length - 1] || 0));
+      const byAge = [...attempts].sort((a, b) => a[1].touched - b[1].touched);
       for (let i = 0, drop = byAge.length - lowWater; i < drop; i++) attempts.delete(byAge[i][0]);
     }
   };
@@ -62,10 +70,10 @@ export function createAttemptThrottle({ windowMs = 60_000, maxKeys = 10_000, now
     hit(key, soft, hard = soft) {
       const t = now();
       sweep(t);
-      const arr = (attempts.get(key) || []).filter((x) => t - x < windowMs);
+      const arr = (attempts.get(key)?.times || []).filter((x) => t - x < windowMs);
       const n = arr.length;                       // attempts already inside the window
       if (n < hard) arr.push(t);                  // stop accumulating at the ceiling: one key's array is bounded too
-      attempts.set(key, arr);
+      attempts.set(key, { times: arr, touched: t });
       const after = (limit) => (n >= limit ? Math.max(1, Math.ceil((arr[0] + windowMs - t) / 1000)) : 0);
       return { soft: after(soft), hard: after(hard) };
     },
@@ -182,13 +190,29 @@ export async function createServer({ config, log = console, transport: transport
   // correct credential is now still verified between the two thresholds and
   // clears both brakes; the account ceiling stays well above the per-source one
   // so a single flooding source cannot spend the account's whole budget.
+  //
+  // WHAT AN OPERATOR SHOULD PRICE THE ATTACK AT. The effective ceiling depends
+  // on TRUSTED_PROXY_HOPS. At the default 0 (the documented Railway shape) every
+  // caller arrives from the proxy's address, so `source` collapses to one key per
+  // account and the ceiling that binds is source.hard = 20 verifications per
+  // minute per account. Only once at least one hop is trusted does the per-source
+  // key separate callers and the account-wide ceiling (60/min) become the
+  // binding one. Both are guesses-per-minute, not a lockout: the moment the
+  // flood stops, the holder's correct password is verified and clears the brake.
   const LOGIN_LIMITS = { source: { soft: RATE_MAX, hard: 20 }, account: { soft: RATE_MAX * 2, hard: 60 } };
   const loginKeys = (req, email) => [`login:${clientIp(req)}|${acct(email)}`, `login:acct:${acct(email)}`];
   const loginGate = (req, email) => {
     const keys = loginKeys(req, email);
     const src = throttle.hit(keys[0], LOGIN_LIMITS.source.soft, LOGIN_LIMITS.source.hard);
+    // Short-circuit exactly as the pre-throttle `hit(ip) || hit(acct)` did. A
+    // request this source is already over its ceiling for is refused before
+    // auth.login and costs the server nothing, so it must not also spend the
+    // shared account budget: counting it let ONE host at ~1 req/s drive the
+    // account ceiling (61 guesses) and lock the real holder out from a
+    // different address — a cross-source lockout of a named account.
+    if (src.hard) return { keys, hard: src.hard, soft: src.soft };
     const ac = throttle.hit(keys[1], LOGIN_LIMITS.account.soft, LOGIN_LIMITS.account.hard);
-    return { keys, hard: src.hard || ac.hard, soft: src.soft || ac.soft };
+    return { keys, hard: ac.hard, soft: src.soft || ac.soft };
   };
 
   async function metricsPayload() {
@@ -208,14 +232,24 @@ export async function createServer({ config, log = console, transport: transport
   // enforces — is no longer published as if it were.
   router.add("POST", "/api/login", { roles: "public", tag: "auth", rateLimited: true, body: { type: "object", description: "email and password are expected; a missing, unknown or wrong value answers 401 INVALID_CREDENTIALS, never 400", properties: { email: { type: "string" }, password: { type: "string" }, remember: { type: "boolean" } } } }, async ({ req, body }) => {
     const b = await body();
-    const gate = loginGate(req, b.email);
+    // Non-string credentials are INVALID CREDENTIALS, not a server fault. A
+    // missing or numeric password reached crypto.scryptSync via scryptVerify
+    // (db.mjs), which throws on a non-string secret, so {"email":"..."} with no
+    // password answered 500 INTERNAL — contradicting this route's published
+    // contract ("a missing, unknown or wrong value answers 401
+    // INVALID_CREDENTIALS, never 400") and handing an unauthenticated caller a
+    // stack-triggering shape. Refusing it here leaks nothing the description
+    // does not already state, and an empty password buys no scrypt at all.
+    const email = typeof b?.email === "string" ? b.email : "";
+    const password = typeof b?.password === "string" ? b.password : "";
+    const gate = loginGate(req, email);
     // The hard ceiling stays ahead of auth.login: scrypt verification blocks the
     // event loop for ~40ms, so a guessing flood must not buy unbounded CPU.
     if (gate.hard) throw E.tooMany(gate.hard);
     // Between the two thresholds the credential is still checked, so the brake
     // throttles guessing without becoming a lockout an outsider can hold on a
     // named account for 5 requests a minute. A correct password clears it.
-    const s = auth.login({ email: b.email, password: b.password, remember: !!b.remember });
+    const s = password ? auth.login({ email, password, remember: !!b.remember }) : null;
     if (s?.pendingMfa) { forget(...gate.keys); return { pendingMfa: true, userId: s.userId, message: s.message }; }
     if (s) { forget(...gate.keys); domain.audit({ actorType: "admin", actorId: s.user.id, action: "staff.login", targetType: "admin_user", targetId: s.user.id }); return { token: s.token, user: { id: s.user.id, name: s.user.name, email: s.user.email, roles: JSON.parse(s.user.roles), mustChangePassword: !!s.user.must_change_password } }; }
     if (gate.soft) throw E.tooMany(gate.soft);
@@ -326,6 +360,10 @@ export async function createServer({ config, log = console, transport: transport
   return {
     server, transport, db, domain, outbox, pipeline, conversation, drawService, crm, auth, intake, worker, winners, extractor, mediaStore, cfg, environment, router,
     listen() { return new Promise((r) => server.listen(cfg.port, cfg.host, () => { (log?.log || console.log)(`[server] listening on ${cfg.host}:${cfg.port} env=${environment} transport=${cfg.whatsappTransport} extractor=${extractor.name}`); r(server); })); },
-    async close() { worker.stop(); await extractor.close?.(); return new Promise((r) => server.close(r)); },
+    // The in-flight worker tick is DRAINED before anything else: bootstrap.mjs
+    // calls process.exit(0) the moment this resolves, and abandoning a tick
+    // mid-dispatch left an outbound row leased with the message already accepted
+    // by the provider — which the next container used to re-send.
+    async close() { await worker.stop(); await extractor.close?.(); return new Promise((r) => server.close(r)); },
   };
 }

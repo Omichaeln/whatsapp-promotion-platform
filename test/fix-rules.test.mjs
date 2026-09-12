@@ -269,13 +269,8 @@ describe("rules package — a partial rule patch on a live campaign", { timeout:
       const phone = "263771990103";
       await g.register(phone, { first: "Patch", last: "Rules", identity: "TESTPATCH1" });
       // the documented way to make a prospective change: patch one nested value.
-      // NOTE what this does and does NOT prove: defaultRules now deep-merges, so
-      // the stored rule set keeps its sibling thresholds and the receipt below is
-      // judged against them. It does not prove newVersionFrom preserves a
-      // CUSTOMISED sibling — services.mjs:148 still shallow-spreads patch.rules
-      // over the stored rules before defaultRules sees them, so these seeded
-      // values survive only because they equal the defaults. Tighten this to a
-      // non-default pack_grams once that merge is deep (owner: services package).
+      // The CUSTOMISED-sibling case (which this one cannot prove, because the
+      // seeded values equal the platform defaults) is the test below.
       const vid = g.domain.newVersionFrom(g.campaign.id, { rules: { primary_rule: { min_packs: 2 } } }, "test");
       g.domain.activateVersion(g.campaign.id, vid, "test");
       const rules = g.domain.versionRules(g.campaign.id);
@@ -283,6 +278,29 @@ describe("rules package — a partial rule patch on a live campaign", { timeout:
       assert.equal(rules.primary_rule.min_total_grams, 4000);
       const r = await g.submit(phone, await g.simImage(receiptText({ no: "770011", body: SUGAR_2KG_X2 })));
       assert.equal(r.receipt.status, "QUALIFIED", `a clean 2 x 2kg receipt must still qualify: ${JSON.stringify(r.receipt)}`);
+    } finally { await g.close(); }
+  });
+});
+
+describe("crosscut — a prospective patch over a CUSTOMISED rule set (round2-version-merge)", () => {
+  it("editing one nested threshold does not revert its customised siblings to the platform defaults", async () => {
+    const g = await buildApp({ extractor: "simulator" });
+    try {
+      // A campaign configured for 1kg packs: none of these three values is the
+      // platform default (2 / 2000 / 4000).
+      const custom = { products: PRODUCTS, primary_rule: { min_packs: 2, pack_grams: 1000, min_total_grams: 2000 }, allow_pack_combinations: false, date_order: "DMY" };
+      const v0 = g.domain.createVersion(g.campaign.id, { content: g.domain.versionContent(g.campaign.id), rules: custom }, "test");
+      g.domain.activateVersion(g.campaign.id, v0, "test");
+      assert.equal(g.domain.versionRules(g.campaign.id).primary_rule.pack_grams, 1000, "the campaign is live on 1kg packs");
+      // a manager edits ONLY min_packs through the console
+      const v1 = g.domain.newVersionFrom(g.campaign.id, { rules: { primary_rule: { min_packs: 2 } } }, "test");
+      g.domain.activateVersion(g.campaign.id, v1, "test");
+      const rules = g.domain.versionRules(g.campaign.id);
+      assert.equal(rules.primary_rule.pack_grams, 1000, "a shallow spread put the patch's primary_rule over the live one WHOLE, and defaultRules then refilled pack_grams from the platform default: every 1kg receipt stopped qualifying");
+      assert.equal(rules.primary_rule.min_total_grams, 2000);
+      // ...and the receipt the campaign was configured for still earns its entry
+      const r = evaluateEligibility(parseReceiptText(receiptText({ no: "770022", body: "GOLDCANE BROWN SUGAR 1KG\n  2 x 1.60               3.20", footer: "TOTAL                    3.20" }), { outlets: OUTLETS }), rules, ctx());
+      assert.equal(r.disposition, DISPOSITION.QUALIFIED, JSON.stringify(r.rules.filter((x) => x.outcome !== "pass")));
     } finally { await g.close(); }
   });
 });

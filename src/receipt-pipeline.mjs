@@ -312,9 +312,15 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
     domain.audit({ actorType: isReview ? "admin" : "system", actorId: decidedBy, action: `receipt.${disposition.toLowerCase()}`, targetType: "receipt", targetId: receiptId, reason, correlationId, payload: { entryId, canonicalId, note, rules: v?.rules?.filter((rr) => rr.outcome !== "pass").map((rr) => `${rr.rule}:${rr.outcome}`) } });
     crm?.emit({ entityType: "submission", entityId: receiptId, entityVersion: decisionVersion, payload: { participantId: r.participant_id, campaignCode: domain.getCampaign(r.campaign_id)?.code, reference: shortRef(receiptId), outletCode: domain.getOutlet(r.selected_outlet_id)?.outlet_code, status: disposition, reason, intakeAt: r.intake_at }, correlationId });
 
-    // participant outcome message (single, idempotent per decision)
+    // Participant outcome message: one per DECISION, keyed on the same monotonic
+    // counter as the CRM event above and for the same reason. Keyed on attemptNo
+    // it collided — reviewer decisions write no validation_results row, so a
+    // second reviewer decision at an unchanged attempt count produced the key
+    // the first one already used and the outbox dropped the message: a
+    // participant whose receipt was re-reviewed and CREDITED was only ever told
+    // "does not qualify" while silently holding a draw entry.
     const phone = domain.getParticipant(r.participant_id)?.wa_phone_uid;
-    if (phone) outbox.enqueueWhatsApp({ waPhoneUid: phone, kind: "text", purpose: "receipt_outcome", campaignId: r.campaign_id, correlationId, payload: outcomeCopy(r, disposition, reason, isReview, rules), idempotencyKey: `receipt:${receiptId}:outcome:${attemptNo}:${isReview ? "review" : "auto"}` });
+    if (phone) outbox.enqueueWhatsApp({ waPhoneUid: phone, kind: "text", purpose: "receipt_outcome", campaignId: r.campaign_id, correlationId, payload: outcomeCopy(r, disposition, reason, isReview, rules), idempotencyKey: `receipt:${receiptId}:outcome:v${decisionVersion}` });
     return { receiptId, decision: disposition, reason, entryId, canonicalId, receipt: getReceipt.get(receiptId) };
   }
 

@@ -32,7 +32,10 @@ export function registerDeskRoutes(r, S) {
     return Math.min(max, Math.max(1, Math.floor(n)));
   };
   r.add("GET", "/api/config", { roles: "public", tag: "public" }, () => { const brand = JSON.parse(fs.readFileSync(path.join(ROOT, "config", "brand.json"), "utf8")); return { ...brand, name: brand.name || "WhatsApp Promotion Platform", locked: !cfg.adminPassword, features: { ai: ai.hasKey, promotion: true }, transport: cfg.whatsappTransport, environment: domain.environment(), sample_data: !!domain.getSetting("sample_data", null) }; });
-  r.add("GET", "/api/qr", { roles: PA, allowTokenQuery: true, tag: "desk" }, ({ res }) => { const raw = typeof transport.currentQr === "function" ? transport.currentQr() : null; if (!raw) throw E.notFound("no QR pending"); const svg = transport.qrSvg?.(); res.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "no-store" }); res.end(svg); });
+  // This route answers an SVG, not JSON: `produces` makes the published contract
+  // say so (a client generated from the document expected JSON and failed), and
+  // nosniff stops a browser re-interpreting the image as something else.
+  r.add("GET", "/api/qr", { roles: PA, allowTokenQuery: true, tag: "desk", produces: "image/svg+xml" }, ({ res }) => { const raw = typeof transport.currentQr === "function" ? transport.currentQr() : null; if (!raw) throw E.notFound("no QR pending"); const svg = transport.qrSvg?.(); res.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "no-store", "x-content-type-options": "nosniff" }); res.end(svg); });
   r.add("GET", "/api/qr/raw", { roles: PA, tag: "desk" }, () => { const raw = transport.currentQr?.(); if (!raw) throw E.notFound("no QR pending"); return { qr: raw, ttl: 30 }; });
   r.add("GET", "/api/status", { roles: "any", tag: "desk" }, () => ({ ...(transport.health?.() || {}), provider: cfg.whatsappTransport }));
   r.add("GET", "/api/metrics", { roles: "any", tag: "desk" }, () => metricsPayload());

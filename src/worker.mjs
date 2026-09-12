@@ -10,13 +10,14 @@ const SERVICE_WINDOW_MS = 24 * 3600_000;
 // still receive (the answer to their own support request).
 const CONVERSATIONAL = new Set(["reply", "support"]);
 
-export function createWorker({ db, transport, outbox, crm, intake, domain, cfg, intervalMs = 1500, housekeepingMs = 60_000, stallAfterMs = null, log = console }) {
-  let timer = null, running = false, lastTick = null, ticks = 0, tickStartedAt = null;
+export function createWorker({ db, transport, outbox, crm, intake, domain, cfg, intervalMs = 1500, housekeepingMs = 60_000, stallAfterMs = null, shutdownGraceMs = 15_000, log = console }) {
+  let timer = null, running = false, lastTick = null, ticks = 0, tickStartedAt = null, inflight = null;
   // Wall clock, not tick count: ticks only advance when a tick actually runs, so
   // under load (10 OCR passes per tick) the old `ticks % 40` stretched the 60s
   // housekeeping interval to tens of minutes — the backlog alerts and the winner
   // expiry driver degraded in proportion to the backlog they exist to report.
   let lastHousekeepingAt = Date.now();
+  let lastAnalyzeDay = null;
   // A tick is a BATCH, not a single operation: up to 25 inbound events (each of
   // which may run OCR), 10 jobs, 25 provider sends and 10 CRM deliveries, plus
   // a bounded reconcile once a minute. At the default 1.5s interval the old
@@ -144,6 +145,31 @@ export function createWorker({ db, transport, outbox, crm, intake, domain, cfg, 
       // queue selectors: terminate them so they dead-letter, alert and can be
       // replayed instead of disappearing.
       intake.sweepStranded?.();
+      // ...and the outbound equivalent: a row left leased in 'sending' by a
+      // process that was killed mid-dispatch is no longer re-sent (that
+      // duplicated winner notifications), so something has to move it out of a
+      // state no selector picks up. unknown_outcome is the state the outbox
+      // defines for "the provider may already have accepted it" and is counted
+      // by the outbound.failures alert below.
+      outbox.reclaimStalled?.();
+      // Refresh planner statistics once a day. migrate() runs PRAGMA optimize at
+      // boot, but on a brand-new EMPTY database that writes no usable statistics,
+      // so a long-lived process that started before the tables filled kept the
+      // no-statistics plan for its whole life (the duplicate-image lookup planned
+      // as a full campaign scan: 11.9ms/query instead of 0.01ms) until someone
+      // restarted it. Daily id keeps it to one pass per day.
+      const day = new Date().toISOString().slice(0, 10);
+      if (lastAnalyzeDay !== day) {
+        lastAnalyzeDay = day;
+        try { db.exec("PRAGMA analysis_limit=400; PRAGMA optimize;"); }
+        catch (e) { log.error?.("[worker] statistics refresh", e.message); }
+      }
+      // A receipt left in REVIEW_REQUIRED with no OPEN review task is invisible
+      // to reviewers and still counts as an unresolved submission against its
+      // period's freeze barrier, so the draw can never be frozen: nobody is
+      // told today, by anything.
+      const orphanReview = db.prepare(`select count(*) n from receipts r where r.status='REVIEW_REQUIRED' and not exists (select 1 from review_tasks t where t.receipt_id=r.id and t.state!='decided')`).get().n;
+      if (orphanReview > 0) domain.alert({ kind: "review.orphaned", dedupeKey: "review.orphaned", severity: "warning", message: `${orphanReview} receipt(s) awaiting review with no open review task: invisible to reviewers and blocking the period's freeze barrier`, runbook: "docs/runbooks/review-operations.md" });
       const st = intake.stats();
       if (st.oldestEvent && Date.now() - Date.parse(st.oldestEvent) > 5 * 60_000) domain.alert({ kind: "inbound.backlog", severity: "warning", message: `inbound backlog: oldest event ${st.oldestEvent}`, runbook: "docs/runbooks/queue-replay.md" });
       const rv = db.prepare(`select count(*) n, min(created_at) oldest from review_tasks where state!='decided'`).get();
@@ -182,9 +208,34 @@ export function createWorker({ db, transport, outbox, crm, intake, domain, cfg, 
       try { domain.alert({ kind: "worker.housekeeping_failed", severity: "critical", message: `housekeeping pass failed: ${e.message}`, runbook: "docs/runbooks/queue-replay.md" }); } catch { /* alerting itself is down */ }
     }
   }
+  /** Run a tick and keep hold of it, so stop() can wait for it to finish. */
+  function scheduled() {
+    const p = tick().finally(() => { if (inflight === p) inflight = null; });
+    inflight = p;
+    return p;
+  }
   return {
-    start() { if (!timer) timer = setInterval(tick, intervalMs); },
-    stop() { if (timer) { clearInterval(timer); timer = null; } },
+    start() { if (!timer) timer = setInterval(scheduled, intervalMs); },
+    /**
+     * Stop accepting new ticks and DRAIN the one in flight. stop() used to only
+     * clearInterval(), so `await app.close(); process.exit(0)` on SIGTERM — every
+     * Railway redeploy — abandoned a tick in the middle of a provider POST: the
+     * outbound row stayed leased in 'sending' with the message already accepted
+     * by Meta, and the next container re-sent it (a winner notified twice).
+     * Bounded, because a wedged tick must not stop a deploy from finishing: past
+     * the grace period we give up waiting and let outbox.reclaimStalled() (or the
+     * next process's housekeeping) classify whatever was left behind.
+     */
+    async stop() {
+      if (timer) { clearInterval(timer); timer = null; }
+      if (!inflight) return { drained: true };
+      let t;
+      const grace = new Promise((r) => { t = setTimeout(() => r("timeout"), shutdownGraceMs); t.unref?.(); });
+      const outcome = await Promise.race([inflight.then(() => "drained"), grace]);
+      clearTimeout(t);
+      if (outcome !== "drained") log.error?.(`[worker] shutdown grace of ${shutdownGraceMs}ms expired with a tick still running`);
+      return { drained: outcome === "drained" };
+    },
     tick, housekeeping,
     // `running: !!timer` only says the interval object exists, which stays true
     // while a wedged tick blocks every queue: report the stall itself so a
