@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { api, apiBlob, getToken, setToken } from "./api.js";
 import { Desk } from "./desk/Desk.jsx";
+import { PromoConsole } from "./promo/PromoConsole.jsx";
 import "./styles.css";
 
 /* ===================== helpers ===================== */
@@ -616,12 +617,20 @@ function Simulator() {
 const TABS = [["overview", "Overview", null], ["campaigns", "Campaigns", null], ["receipts", "Receipts", null], ["entries", "Entries", null], ["draws", "Draws", null], ["winners", "Winners", null], ["participants", "Participants", null], ["support", "Support", null], ["outlets", "Outlets", null], ["products", "Products", null], ["integrations", "Integrations", null], ["access", "Access", null], ["audit", "Audit", null], ["readiness", "Readiness", null], ["simulator", "Test a customer", null], ["desk", "Desk (legacy)", null]];
 const VIEWS = { overview: Overview, campaigns: Campaigns, receipts: Receipts, entries: Entries, draws: Draws, winners: Winners, participants: Participants, support: Support, outlets: Outlets, products: Products, integrations: Integrations, access: Access, audit: AuditView, readiness: Readiness, simulator: Simulator };
 export function App() {
-  const [me, setMe] = useState(null); const [tab, setTab] = useState(() => { try { return localStorage.getItem("wpp_tab") || "overview"; } catch { return "overview"; } }); const [cfg, setCfg] = useState(null);
+  const [me, setMe] = useState(null); const [forceFull, setForceFull] = useState(false); const [tab, setTab] = useState(() => { try { return localStorage.getItem("wpp_tab") || "overview"; } catch { return "overview"; } }); const [cfg, setCfg] = useState(null);
   const authed = () => api("/api/whoami").then((r) => { if (r.ok) setMe(r.data); else setToken(""); });
   useEffect(() => { api("/api/config", { auth: false }).then((r) => r.ok && setCfg(r.data)); if (getToken()) authed(); }, []);
   useEffect(() => { try { localStorage.setItem("wpp_tab", tab); } catch { /* */ } }, [tab]);
   if (!me) return <Login onAuthed={authed} />;
   if (me.mustChangePassword) return <ChangePassword onDone={() => setMe(null)} />;
+  // Which console a person gets is decided by the roles they hold, not by a
+  // preference they could lose. The promotion team sees the simplified desk;
+  // anyone who ALSO holds a technical role (a platform engineer helping them,
+  // say) can switch, because taking the technical surface away from someone who
+  // needs it would be worse than showing a client-facing one they can ignore.
+  const promo = me.roles?.some((r) => r === "promotion_admin" || r === "promotion_assistant");
+  const technical = me.roles?.some((r) => ["platform_admin", "auditor", "draw_officer", "draw_approver", "winner_ops"].includes(r));
+  if (promo && !forceFull) return <PromoConsole me={me} onSwitchToFull={technical ? () => setForceFull(true) : null} />;
   const View = VIEWS[tab] || Overview;
   return <div className="promo">
     {cfg?.sample_data && <div className="banner">TEST ONLY — sample promotion data is loaded in environment "{me.environment}". Nothing here is client sign-off. Transport: {cfg.transport}.</div>}

@@ -23,7 +23,7 @@ Per the build brief, the system is **not** described as ready for integrated cli
 | Simulator extractor | `src/extract/simulator.mjs` | TEST ONLY; refused outside `local` | used by the fast test suites only |
 | CRM | `src/crm.mjs` (canonical events, versioned outbox, read-back, reconcile) + `scripts/crm-receiver.mjs` | **not_configured** (`CRM_PROVIDER=none`); webhook adapter **verified against the local contract receiver only** | `test/crm-reliability.test.mjs` T-26/T-27; D-19 |
 | Hosting (Railway) | `Procfile` → `src/bootstrap.mjs`, volume at `/app/data`, `SEED_POPULATED` journeys | **not deployed from this environment** (Railway API, dashboard and app URL unreachable from the sandbox); the Railway start command was rehearsed locally under `ENVIRONMENT=staging` and the 95-check live test passed | `docs/release/railway-deploy.md`, `evidence/remote-smoke-staging-rehearsal.txt` |
-| Database | `node:sqlite` WAL, migrations 001–012 (additive apart from the dead-metadata delete in 011 and two index drops in 012 — no application data is removed) | verified locally, migration rehearsal on populated v1 data | `evidence/migration-rehearsal.json`, `evidence/restore-rehearsal.json` |
+| Database | `node:sqlite` WAL, migrations 001–013 (additive apart from the dead-metadata delete in 011 and two index drops in 012 — no application data is removed) | verified locally, migration rehearsal on populated v1 data | `evidence/migration-rehearsal.json`, `evidence/restore-rehearsal.json` |
 
 ## Access for testers (local / any deployment of this branch)
 

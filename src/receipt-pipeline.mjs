@@ -313,6 +313,16 @@ export function createReceiptPipeline({ db, mediaStore, extractor, duplicates, o
       db.prepare(`delete from receipt_items where receipt_id=?`).run(receiptId);
       for (const li of (x.lineItems || [])) insertItem.run(id("itm"), receiptId, String(li.description || "").slice(0, 200), li.productMatch?.code || null, li.quantity ?? null, li.packGrams ? li.packGrams / 1000 : null, li.amountMinor != null ? li.amountMinor / 100 : null, JSON.stringify({ raw: li.rawText, packGrams: li.packGrams, voided: !!li.voided }));
       db.prepare(`update receipts set fingerprint=?, extracted_outlet_text=?, outlet_match_json=? where id=?`).run(key, x.merchant?.rawText || null, JSON.stringify(x.merchant?.candidates || []), receiptId);
+      // The quantity the rules actually counted, recorded on the receipt so the
+      // promotion console can filter on it. Taken from the verdict rather than
+      // re-derived from the line items: the verdict knows which pack size the
+      // rule treats as qualifying, and a second derivation would drift from the
+      // decision the participant was given. Left null when the verdict has no
+      // number, so "we could not read it" stays distinct from "they bought none".
+      if (v && (v.primaryPacks != null || v.totalGrams != null)) {
+        db.prepare(`update receipts set qualifying_packs=?, qualifying_grams=? where id=?`)
+          .run(v.primaryPacks ?? null, v.totalGrams != null ? Math.round(v.totalGrams) : null, receiptId);
+      }
     }
     db.prepare(`update receipts set status=?, reason_code=?, decided_by=?, decided_at=?, canonical_receipt_id=coalesce(?, canonical_receipt_id), row_version=row_version+1 where id=?`).run(disposition, reason, decidedBy, now(), canonicalId, receiptId);
     // The CRM versions a submission by the receipt's DECISION counter, not by

@@ -1,6 +1,8 @@
 # WhatsApp Promotion Platform
 
-A WhatsApp-first consumer promotion platform: registration and consent, controlled outlet selection, receipt upload with **real OCR** and deterministic qualification, canonical-receipt duplicate prevention, an immutable entry ledger, crash-safe and independently verifiable draws, winner/claim lifecycle, privacy-safe publication, CRM outbox with read-back, and a role-based staff console.
+A WhatsApp-first consumer promotion platform: registration and consent, controlled outlet selection, receipt upload with **real OCR** and deterministic qualification, canonical-receipt duplicate prevention, an immutable entry ledger, crash-safe and independently verifiable draws, winner/claim lifecycle, privacy-safe publication, CRM outbox with read-back, and two role-based consoles: a technical one for the platform team and a
+simplified **promotion desk** for the client's own promotion administrator and
+assistants (`docs/promotion-console.md`).
 
 Readiness (10 September 2026 build): **locally testable** end to end; **integrated client testing** needs the client's WhatsApp Cloud API assets (and optionally a vision-LLM key and CRM sandbox); **production** additionally needs the approved client decisions. Details: `docs/TEST_READINESS.md`.
 

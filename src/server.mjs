@@ -25,6 +25,7 @@ import { createWorker } from "./worker.mjs";
 import { createRouter, readBody, readJson, send, E, HttpError, openapi } from "./http.mjs";
 import { registerAdminRoutes } from "./routes/admin.mjs";
 import { registerDeskRoutes } from "./routes/desk.mjs";
+import { registerPromoRoutes } from "./routes/promo.mjs";
 
 /**
  * Bounded sliding-window attempt counter for the credential endpoints.
@@ -300,6 +301,7 @@ export async function createServer({ config, log = console, transport: transport
     const ph = domain.getParticipantByPhone(params.phone)?.wa_phone_uid || (params.phone.replace(/[^\d]/g, "")); const inbound = db.prepare(`select id, event_kind, payload_json, received_at from channel_events where wa_phone_uid=? order by received_at desc limit 60`).all(ph).map((e) => ({ dir: "in", kind: e.event_kind, text: JSON.parse(e.payload_json).text, at: e.received_at })); const outbound = db.prepare(`select purpose, status, payload_json, created_at from outbound_messages where wa_phone_uid=? order by created_at desc limit 60`).all(ph).map((o) => ({ dir: "out", purpose: o.purpose, status: o.status, text: JSON.parse(o.payload_json).body || "[template]", at: o.created_at })); return { phone: domain.maskPhone(ph), transcript: [...inbound, ...outbound].sort((a, b) => a.at.localeCompare(b.at)) }; });
   registerAdminRoutes(router, S);
   registerDeskRoutes(router, S);
+  registerPromoRoutes(router, S);
 
   const CONSOLE_DIST = path.join(ROOT, "src", "web-console-dist");
   const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2" };

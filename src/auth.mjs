@@ -11,6 +11,13 @@ import { generateSecret, verifyTotp, otpauthUri } from "./mfa.mjs";
 export const ROLES = {
   CAMPAIGN_MANAGER: "campaign_manager", REVIEWER: "reviewer", DRAW_OFFICER: "draw_officer", DRAW_APPROVER: "draw_approver",
   WINNER_OPS: "winner_ops", SUPPORT: "support", AUDITOR: "auditor", PLATFORM_ADMIN: "platform_admin",
+  // The client's own promotion team. These two decide which console a person
+  // sees — the simplified promotion surface rather than the technical one — as
+  // well as what they may do. PROMO_ADMIN runs the promotion day to day
+  // (entries, submissions, participant queries, and disqualifying an entry with
+  // a reason). PROMO_ASSISTANT does the same work minus anything that changes an
+  // entry's standing: an assistant answers queries and reads, never decides.
+  PROMO_ADMIN: "promotion_admin", PROMO_ASSISTANT: "promotion_assistant",
 };
 export const ALL_ROLES = Object.values(ROLES);
 /** Roles implied by platform_admin (technical administration only). */
