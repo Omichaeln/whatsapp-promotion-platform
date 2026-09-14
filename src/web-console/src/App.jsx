@@ -590,7 +590,7 @@ function Support({ me }) {
           <Btn ghost disabled={a.busy || !text.trim()} onClick={() => act("send", { text: text.trim() }).then(() => setText(""))}>Send</Btn>
         </div>}
         {!canAct && <div className="sub">Claim, reply and release require the support role.</div>}
-        <div className="phone" style={{ marginTop: 10, minHeight: 120 }}>{(c.transcript || []).map((t, i) => <div key={i} className={`bubble ${t.dir}`}><span className="sub">{fmt(t.at)} · {t.dir === "out" ? `${t.purpose} · ${t.status}` : t.kind}</span><div>{t.text}</div></div>)}{!(c.transcript || []).length && <div className="sub">No messages for this number.</div>}</div>
+        <div className="phone" style={{ marginTop: 10, minHeight: 120 }}>{(c.transcript || []).map((t, i) => <div key={i} className={`bubble ${t.dir}`}><span className="sub">{fmt(t.at)} · {t.dir === "out" ? `${t.purpose} · ${t.status}` : t.kind}</span><div>{t.text}</div>{t.dir === "out" && deliveryNote(t) ? <div className="sub" style={{ color: "#b42318", marginTop: 4 }}>{deliveryNote(t)}</div> : null}</div>)}{!(c.transcript || []).length && <div className="sub">No messages for this number.</div>}</div>
       </>}
       {!c && <Empty>Enter the participant's WhatsApp number to open the conversation.</Empty>}
     </Card>
@@ -598,18 +598,36 @@ function Support({ me }) {
 }
 
 /* ===================== simulator ===================== */
+/** How a non-delivered outbound row reads to an operator, and what to do about it. */
+const DELIVERY_NOTE = {
+  RECIPIENT_NOT_ALLOWED: "not delivered — this number is not on the outbound allowlist (Integrations → outbound.allowed_recipients). The conversation still ran; nothing was sent.",
+  OUTBOUND_PAUSED: "not delivered — outbound is paused for this campaign.",
+  CONSENT_WITHDRAWN: "not delivered — this participant has opted out.",
+  TEMPLATE_REQUIRED: "not delivered — more than 24h since their last message, so a free-form text is refused.",
+  DISPATCH_INTERRUPTED: "unknown — the service restarted mid-send; check the provider before retrying.",
+};
+const delivered = (st) => st === "sent" || st === "delivered" || st === "read";
+const deliveryNote = (m) => (delivered(m.status) ? null
+  : DELIVERY_NOTE[m.error_code] || `${String(m.status || "not sent").replace(/_/g, " ")}${m.error ? ` — ${m.error}` : ""}`);
+
 function Simulator() {
   const [phone, setPhone] = useState("263770000099"); const [text, setText] = useState("hi"); const [log, setLog] = useState([]); const [busy, setBusy] = useState(false); const [transcript, setTranscript] = useState([]);
   const push = (l) => setLog((p) => [...p, l].slice(-60));
-  const send = async (body) => { setBusy(true); try { const r = await api("/api/simulator/inbound", { method: "POST", body: { phone, ...body }, timeout: 120000 }); if (!r.ok) push({ dir: "err", text: r.data?.error?.message || `HTTP ${r.status}` }); else { push({ dir: "in", text: body.text || "[image]" }); for (const m of r.data.replies || []) push({ dir: "out", text: m.text }); if (r.data.result?.receiptId) push({ dir: "sys", text: `receipt ${r.data.result.receiptId} submitted → the result message arrives from the worker (refresh transcript)` }); } } finally { setBusy(false); } };
+  // Both panels belong to ONE phone number. Changing the number used to leave
+  // the previous number's conversation and ledger on screen, so the simulator
+  // showed one person's data under another's number until something overwrote
+  // it. Clearing on change is the only honest behaviour.
+  const clear = () => { setLog([]); setTranscript([]); };
+  const changePhone = (v) => { if (v !== phone) clear(); setPhone(v); };
+  const send = async (body) => { setBusy(true); try { const r = await api("/api/simulator/inbound", { method: "POST", body: { phone, ...body }, timeout: 120000 }); if (!r.ok) push({ dir: "err", text: r.data?.error?.message || `HTTP ${r.status}` }); else { push({ dir: "in", text: body.text || "[image]" }); for (const m of r.data.replies || []) push({ dir: "out", text: m.text, note: deliveryNote(m) }); if (r.data.result?.receiptId) push({ dir: "sys", text: `receipt ${r.data.result.receiptId} submitted → the result message arrives from the worker (refresh transcript)` }); } } finally { setBusy(false); } };
   const refresh = async () => { const r = await api(`/api/simulator/transcript/${phone}`); setTranscript(r.data?.transcript || []); };
   const onFile = async (e) => { const f = e.target.files?.[0]; if (!f) return; const b64 = await new Promise((res) => { const rd = new FileReader(); rd.onload = () => res(String(rd.result).split(",")[1]); rd.readAsDataURL(f); }); await send({ image_b64: b64, mime: f.type }); e.target.value = ""; };
   return <div className="promo-page"><div className="split2">
     <Card title="Conversation simulator — TEST ONLY (same intake, state machine, real OCR pipeline and outbox as WhatsApp; not WhatsApp evidence)">
-      <div className="row"><Field label="Phone (test)"><Input value={phone} onChange={(e) => setPhone(e.target.value)} /></Field><Field label="Message"><Input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send({ text }).then(() => setText(""))} /></Field><Btn disabled={busy} onClick={() => send({ text }).then(() => setText(""))}>Send</Btn><label className="btn ghost">Upload receipt image<input type="file" accept="image/*" hidden onChange={onFile} /></label><Btn ghost onClick={refresh}>Refresh transcript</Btn></div>
-      <div className="phone" style={{ marginTop: 10, minHeight: 200 }}>{log.map((l, i) => <div key={i} className={`bubble ${l.dir}`}>{l.text.split("\n").map((x, j) => <div key={j}>{x || " "}</div>)}</div>)}{!log.length && <div className="sub">Say "hi" to start. Quick keys: 1 register · 2 enter · 3 how it works · 6 winners · 7 my entries. Fixture images: fixtures/receipts/*.jpg</div>}</div>
+      <div className="row"><Field label="Phone (test)"><Input value={phone} onChange={(e) => changePhone(e.target.value)} /></Field><Field label="Message"><Input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send({ text }).then(() => setText(""))} /></Field><Btn disabled={busy} onClick={() => send({ text }).then(() => setText(""))}>Send</Btn><label className="btn ghost">Upload receipt image<input type="file" accept="image/*" hidden onChange={onFile} /></label><Btn ghost onClick={refresh}>Refresh transcript</Btn><Btn ghost onClick={clear}>Clear</Btn></div>
+      <div className="phone" style={{ marginTop: 10, minHeight: 200 }}>{log.map((l, i) => <div key={i} className={`bubble ${l.dir}`}>{l.text.split("\n").map((x, j) => <div key={j}>{x || " "}</div>)}{l.note ? <div className="sub" style={{ color: "#b42318", marginTop: 4 }}>{l.note}</div> : null}</div>)}{!log.length && <div className="sub">Say "hi" to start. Quick keys: 1 register · 2 enter · 3 how it works · 6 winners · 7 my entries. Fixture images: fixtures/receipts/*.jpg</div>}</div>
     </Card>
-    <Card title="Server transcript (inbound events + outbound ledger, with delivery states)">{transcript.length ? transcript.map((t, i) => <div key={i} className={`bubble ${t.dir}`}><span className="sub">{fmt(t.at)} · {t.dir === "out" ? `${t.purpose} · ${t.status}` : t.kind}</span><div>{t.text}</div></div>) : <Empty>Refresh to load.</Empty>}</Card>
+    <Card title="Server transcript (inbound events + outbound ledger, with delivery states)">{transcript.length ? transcript.map((t, i) => <div key={i} className={`bubble ${t.dir}`}><span className="sub">{fmt(t.at)} · {t.dir === "out" ? `${t.purpose} · ${t.status}` : t.kind}</span><div>{t.text}</div>{t.dir === "out" && deliveryNote(t) ? <div className="sub" style={{ color: "#b42318", marginTop: 4 }}>{deliveryNote(t)}</div> : null}</div>) : <Empty>Refresh to load.</Empty>}</Card>
   </div></div>;
 }
 

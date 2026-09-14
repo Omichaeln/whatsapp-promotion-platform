@@ -288,7 +288,12 @@ export async function createServer({ config, log = console, transport: transport
     const ev = { provider: "simulator", providerMessageId: b.provider_message_id || `sim_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, phoneUid: b.phone, type: b.image_b64 ? "message.image" : b.type || "message.text", text: b.text || "", inlineMediaB64: b.image_b64 || null, mime: b.mime || null, timestamp: new Date().toISOString() };
     const r = intake.receive(ev);
     if (b.wait !== false) { await intake.drain({ max: 50 }); await worker.tick(); }
-    const replies = r.id ? db.prepare(`select payload_json, status from outbound_messages where idempotency_key like ? order by created_at`).all(`conv:${r.id}:%`).map((m) => ({ text: JSON.parse(m.payload_json).body, status: m.status })) : [];
+    // The reply's DELIVERY outcome travels with its text. Returning the text alone
+    // let the simulator show a conversation that reads as delivered while every
+    // message sat in the ledger as a permanent failure: the operator saw the bot
+    // answer and had no way to know nothing had left the building.
+    const replies = r.id ? db.prepare(`select payload_json, status, error_code, last_error from outbound_messages where idempotency_key like ? order by created_at`).all(`conv:${r.id}:%`)
+      .map((m) => ({ text: JSON.parse(m.payload_json).body, status: m.status, error_code: m.error_code || null, error: m.last_error || null })) : [];
     const outcome = r.id ? db.prepare(`select result_json from channel_events where id=?`).get(r.id) : null;
     domain.metric("simulator.inbound", 1, { user: user.id });
     return { ...r, replies, result: outcome?.result_json ? JSON.parse(outcome.result_json) : null };
@@ -298,7 +303,11 @@ export async function createServer({ config, log = console, transport: transport
     // refuses in production, but this route did not: on a production database
     // it dumped any phone number's registration turn, national ID included.
     if (isProduction) throw E.forbidden("simulator is disabled in production");
-    const ph = domain.getParticipantByPhone(params.phone)?.wa_phone_uid || (params.phone.replace(/[^\d]/g, "")); const inbound = db.prepare(`select id, event_kind, payload_json, received_at from channel_events where wa_phone_uid=? order by received_at desc limit 60`).all(ph).map((e) => ({ dir: "in", kind: e.event_kind, text: JSON.parse(e.payload_json).text, at: e.received_at })); const outbound = db.prepare(`select purpose, status, payload_json, created_at from outbound_messages where wa_phone_uid=? order by created_at desc limit 60`).all(ph).map((o) => ({ dir: "out", purpose: o.purpose, status: o.status, text: JSON.parse(o.payload_json).body || "[template]", at: o.created_at })); return { phone: domain.maskPhone(ph), transcript: [...inbound, ...outbound].sort((a, b) => a.at.localeCompare(b.at)) }; });
+    const ph = domain.getParticipantByPhone(params.phone)?.wa_phone_uid || (params.phone.replace(/[^\d]/g, "")); const inbound = db.prepare(`select id, event_kind, payload_json, received_at from channel_events where wa_phone_uid=? order by received_at desc limit 60`).all(ph).map((e) => ({ dir: "in", kind: e.event_kind, text: JSON.parse(e.payload_json).text, at: e.received_at })); const outbound = db.prepare(`select purpose, status, error_code, last_error, payload_json, created_at from outbound_messages where wa_phone_uid=? order by created_at desc limit 60`).all(ph)
+      // Without the reason, "permanent_failure" is a dead end: the commonest
+      // cause is simply that this test number is not on the outbound allowlist,
+      // which takes one setting to fix and is invisible from the status alone.
+      .map((o) => ({ dir: "out", purpose: o.purpose, status: o.status, error_code: o.error_code || null, error: o.last_error || null, text: JSON.parse(o.payload_json).body || "[template]", at: o.created_at })); return { phone: domain.maskPhone(ph), transcript: [...inbound, ...outbound].sort((a, b) => a.at.localeCompare(b.at)) }; });
   registerAdminRoutes(router, S);
   registerDeskRoutes(router, S);
   registerPromoRoutes(router, S);
