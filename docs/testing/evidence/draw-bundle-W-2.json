@@ -1,1 +1,292 @@
-{"bundle_version":"draw-verifier/2","exported_at":"2026-09-10T19:34:34.823Z","exported_by":"adm_4970a6ee195afb50e490c76b","draw":{"id":"drw_9268216f2fc3d6907570a89f","campaign_id":"cmp_75f61bb70646ad7dd718dadf","period":"W-2","draw_label":"W-2","status":"published","algorithm":"hmac-sha256-sortition-v2","snapshot_hash":"fb7091fc9c2b0d15b017c3fdf5d093124a8f8da396f0fea18fd42bf9963594d8","output_hash":"a0e8aca15451269f3e8f79ce9cf3ad22d6a6e734028bc5fc439c233da25b25c2","operator_id":"adm_16918f5281d003a7664a525b","approver_id":"adm_ee5fa5f563318be424809651","executed_at":"2026-09-10T19:31:11.648Z","approved_at":"2026-09-10T19:31:11.650Z","published_at":"2026-09-10T19:31:11.650Z","rules_version":"2233dc3be48a913df6fb96dec21b06be17827338bf3993d65f227c5718d5a758","supersedes":null,"superseded_by":null},"snapshot":{"drawId":"drw_9268216f2fc3d6907570a89f","campaignId":"cmp_75f61bb70646ad7dd718dadf","periodCode":"W-2","rulesVersion":"2233dc3be48a913df6fb96dec21b06be17827338bf3993d65f227c5718d5a758","plan":{"tiers":[{"code":"P1","label":"TEST prize: USD 200 voucher","count":2},{"code":"P2","label":"TEST prize: USD 50 voucher","count":3}],"totalWinners":5,"alternatesPerWinner":1,"totalAlternates":5,"onePrizePerParticipant":true,"winnerExclusion":"none"},"candidates":[{"entryId":"ent_44315cd809728dcf5859ebe8","participantId":"ptc_866ee1d4c31a3b7af754c417","weightUnits":1},{"entryId":"ent_4a3b2dbbb1b251f023b75737","participantId":"ptc_8eddd3256bbc4c7008ac637a","weightUnits":1},{"entryId":"ent_4babcadc7c03682282ab3d9b","participantId":"ptc_93b125e9db98235c6d043b64","weightUnits":1},{"entryId":"ent_621f1779a7334849f2490464","participantId":"ptc_7cae27c03fcc917a9078ef01","weightUnits":1},{"entryId":"ent_b06b40af28dedce567890192","participantId":"ptc_8eddd3256bbc4c7008ac637a","weightUnits":1},{"entryId":"ent_beb33a9d97ce08f1b839596a","participantId":"ptc_f8981e0c8c62370049ac0c77","weightUnits":1},{"entryId":"ent_d52200b9743393fc5ddd2e5a","participantId":"ptc_c3b0008dc1cc8b0876fb71f4","weightUnits":1},{"entryId":"ent_fd25b3fdced3da83ec66ae7c","participantId":"ptc_c8755c6db40f0787768239a7","weightUnits":1}],"exclusions":[]},"seed_hex":"84f5bc53ade7c9164d01984043dc7e75bfa10af8eb3665ee9271b2db1bae6d45","output":{"algorithm":"hmac-sha256-sortition-v2","sequence":["ent_4babcadc7c03682282ab3d9b","ent_44315cd809728dcf5859ebe8","ent_b06b40af28dedce567890192","ent_4a3b2dbbb1b251f023b75737","ent_621f1779a7334849f2490464","ent_beb33a9d97ce08f1b839596a","ent_fd25b3fdced3da83ec66ae7c","ent_d52200b9743393fc5ddd2e5a"],"winners":[{"position":1,"entryId":"ent_4babcadc7c03682282ab3d9b","participantId":"ptc_93b125e9db98235c6d043b64","prize_code":"P1"},{"position":2,"entryId":"ent_44315cd809728dcf5859ebe8","participantId":"ptc_866ee1d4c31a3b7af754c417","prize_code":"P1"},{"position":3,"entryId":"ent_b06b40af28dedce567890192","participantId":"ptc_8eddd3256bbc4c7008ac637a","prize_code":"P2"},{"position":4,"entryId":"ent_621f1779a7334849f2490464","participantId":"ptc_7cae27c03fcc917a9078ef01","prize_code":"P2"},{"position":5,"entryId":"ent_beb33a9d97ce08f1b839596a","participantId":"ptc_f8981e0c8c62370049ac0c77","prize_code":"P2"}],"alternates":[{"position":1,"entryId":"ent_fd25b3fdced3da83ec66ae7c","participantId":"ptc_c8755c6db40f0787768239a7"},{"position":2,"entryId":"ent_d52200b9743393fc5ddd2e5a","participantId":"ptc_c3b0008dc1cc8b0876fb71f4"}],"plan":{"tiers":[{"code":"P1","label":"TEST prize: USD 200 voucher","count":2},{"code":"P2","label":"TEST prize: USD 50 voucher","count":3}],"totalWinners":5,"alternatesPerWinner":1,"totalAlternates":5,"onePrizePerParticipant":true,"winnerExclusion":"none"}},"attempts":[{"actor_id":"adm_16918f5281d003a7664a525b","outcome":"completed","detail":null,"created_at":"2026-09-10T19:31:11.648Z"}],"audit_events":[{"id":113,"actor_id":"adm_16918f5281d003a7664a525b","action":"draw.frozen","reason":null,"prev_hash":"bf6ea1c5b3161e4874fe91e48afb6a664b94bde85cc0eda651449a3726ae5c31","entry_hash":"22008376adbe12ab01fe4e27ec0a7359de74a38648030969d6a7d3fdc7906fd2","payload_json":"{\"action\":\"draw.frozen\",\"payload\":{\"candidates\":8,\"exclusions\":0,\"override\":null,\"periodCode\":\"W-2\",\"snapshotHash\":\"fb7091fc9c2b0d15b017c3fdf5d093124a8f8da396f0fea18fd42bf9963594d8\"},\"targetId\":\"drw_9268216f2fc3d6907570a89f\",\"targetType\":\"draw\",\"when\":\"2026-09-10T19:31:11.647Z\"}","created_at":"2026-09-10T19:31:11.647Z"},{"id":114,"actor_id":"adm_16918f5281d003a7664a525b","action":"draw.executed","reason":null,"prev_hash":"22008376adbe12ab01fe4e27ec0a7359de74a38648030969d6a7d3fdc7906fd2","entry_hash":"1e52cc804d90254b4d9a24008e0bc369a134ea71db79edc6293f8574b14b1f79","payload_json":"{\"action\":\"draw.executed\",\"payload\":{\"alternates\":2,\"outputHash\":\"a0e8aca15451269f3e8f79ce9cf3ad22d6a6e734028bc5fc439c233da25b25c2\",\"winners\":5},\"targetId\":\"drw_9268216f2fc3d6907570a89f\",\"targetType\":\"draw\",\"when\":\"2026-09-10T19:31:11.648Z\"}","created_at":"2026-09-10T19:31:11.648Z"},{"id":115,"actor_id":"adm_ee5fa5f563318be424809651","action":"draw.approved","reason":null,"prev_hash":"1e52cc804d90254b4d9a24008e0bc369a134ea71db79edc6293f8574b14b1f79","entry_hash":"91b88ccd020593868ee396eeb36ace38e3d84be36588b8fd529162daaeddb1ed","payload_json":"{\"action\":\"draw.approved\",\"payload\":{\"note\":\"seed approval\",\"outputHash\":\"a0e8aca15451269f3e8f79ce9cf3ad22d6a6e734028bc5fc439c233da25b25c2\"},\"targetId\":\"drw_9268216f2fc3d6907570a89f\",\"targetType\":\"draw\",\"when\":\"2026-09-10T19:31:11.650Z\"}","created_at":"2026-09-10T19:31:11.650Z"},{"id":117,"actor_id":"adm_9d5d7f5364233cf30f976259","action":"draw.published","reason":null,"prev_hash":"d118fec83ac58e66be8ddc8a53c226bd857484596ed98059f201939d886b8ebd","entry_hash":"18d36721b03f2e20023cea732cac7fc06cfd31c05f1c25e65ccc22db3071859e","payload_json":"{\"action\":\"draw.published\",\"payload\":null,\"targetId\":\"drw_9268216f2fc3d6907570a89f\",\"targetType\":\"draw\",\"when\":\"2026-09-10T19:31:11.651Z\"}","created_at":"2026-09-10T19:31:11.651Z"}],"audit_checkpoint":{"id":"ckp_fcb374b7e7c4805d21237892","uptoId":135,"headHash":"dc70ba86f0e79afece8c86d73d082cec25622cb3017f560017d141ab633d53b8","signature":"f775c41b2ed7f8327e0e3e380b73211e6d8a8c6eba28d0d57b03a458e73c14bc","signed":false}}
+{
+  "bundle_version": "draw-verifier/2",
+  "exported_at": "2026-09-16T10:55:14.118Z",
+  "exported_by": "adm_f6b5109d72e77a8389de9978",
+  "draw": {
+    "id": "drw_49708b974d87b034268b9f45",
+    "campaign_id": "cmp_af46d0134b8c4aaeea0510ac",
+    "period": "W-2",
+    "draw_label": "W-2",
+    "status": "published",
+    "algorithm": "hmac-sha256-sortition-v2",
+    "snapshot_hash": "0d51323520f102878e14467d76b88a0b921832480d59fb987d6502530f64fcc9",
+    "output_hash": "2e8d4f9ed4a95406be76591ffc621ac117026dfba4321beaa43f3ea74b16f2a9",
+    "seed_commitment": "3f74f0d1dfa3232c2096a7d620c4ab409e8beb9e8d0f0751b5fefff348dc0ff3",
+    "operator_id": "adm_b4f302c487a46b1c91e3f203",
+    "frozen_by": "adm_b4f302c487a46b1c91e3f203",
+    "approver_id": "adm_f6b5109d72e77a8389de9978",
+    "executed_at": "2026-09-16T10:55:14.094Z",
+    "approved_at": "2026-09-16T10:55:14.095Z",
+    "published_at": "2026-09-16T10:55:14.096Z",
+    "rules_version": "80030cad4d3ae2cb61a68954c25069be6f670085f46d98e07a9c3b1ae901803b",
+    "supersedes": null,
+    "superseded_by": null,
+    "barrier": {
+      "checkedAt": "2026-09-16T10:55:14.091Z",
+      "blockers": [],
+      "overridden": null
+    }
+  },
+  "snapshot": {
+    "drawId": "drw_49708b974d87b034268b9f45",
+    "campaignId": "cmp_af46d0134b8c4aaeea0510ac",
+    "periodCode": "W-2",
+    "rulesVersion": "80030cad4d3ae2cb61a68954c25069be6f670085f46d98e07a9c3b1ae901803b",
+    "activeVersionAtFreeze": "80030cad4d3ae2cb61a68954c25069be6f670085f46d98e07a9c3b1ae901803b",
+    "candidateRulesVersions": [
+      {
+        "versionId": "cv_21ea4a332bfd7ec284f7cc9f",
+        "configHash": "80030cad4d3ae2cb61a68954c25069be6f670085f46d98e07a9c3b1ae901803b",
+        "entries": 8
+      }
+    ],
+    "plan": {
+      "tiers": [
+        {
+          "code": "P1",
+          "label": "TEST prize: USD 200 voucher",
+          "count": 2
+        },
+        {
+          "code": "P2",
+          "label": "TEST prize: USD 50 voucher",
+          "count": 3
+        }
+      ],
+      "totalWinners": 5,
+      "alternatesPerWinner": 1,
+      "totalAlternates": 5,
+      "onePrizePerParticipant": true,
+      "winnerExclusion": "none"
+    },
+    "candidates": [
+      {
+        "entryId": "ent_13eed95167e704fa110963db",
+        "participantId": "ptc_61cafc028c51ced8a2f548be",
+        "weightUnits": 1
+      },
+      {
+        "entryId": "ent_3eb27856e588b58b549b0492",
+        "participantId": "ptc_3d3cc85e379b2a5df4634ff6",
+        "weightUnits": 1
+      },
+      {
+        "entryId": "ent_463814a055d9b58ffa7425b8",
+        "participantId": "ptc_9e14acfb704592d98fcc7644",
+        "weightUnits": 1
+      },
+      {
+        "entryId": "ent_4f318557920cf3f438ec8207",
+        "participantId": "ptc_f5c32c40935701ac952395ce",
+        "weightUnits": 1
+      },
+      {
+        "entryId": "ent_59124c628755ad29dd3fe337",
+        "participantId": "ptc_3d3cc85e379b2a5df4634ff6",
+        "weightUnits": 1
+      },
+      {
+        "entryId": "ent_7b357895e92b35d6fbddcb08",
+        "participantId": "ptc_815dfbbcc6cfc3cddb8e2c8c",
+        "weightUnits": 1
+      },
+      {
+        "entryId": "ent_8b8cbc34f16bdd917650db56",
+        "participantId": "ptc_79784e613cd041c8662d5f3e",
+        "weightUnits": 1
+      },
+      {
+        "entryId": "ent_c9413607a2e7841324416e12",
+        "participantId": "ptc_2fd108d86c0920d28d03310b",
+        "weightUnits": 1
+      }
+    ],
+    "exclusions": []
+  },
+  "seed_hex": "4cc1d6c6fc1daf3a278d67afb0c316828bbc41de1c112c22cd908b1ddc04a203",
+  "output": {
+    "algorithm": "hmac-sha256-sortition-v2",
+    "sequence": [
+      "ent_59124c628755ad29dd3fe337",
+      "ent_8b8cbc34f16bdd917650db56",
+      "ent_3eb27856e588b58b549b0492",
+      "ent_463814a055d9b58ffa7425b8",
+      "ent_c9413607a2e7841324416e12",
+      "ent_13eed95167e704fa110963db",
+      "ent_4f318557920cf3f438ec8207",
+      "ent_7b357895e92b35d6fbddcb08"
+    ],
+    "winners": [
+      {
+        "position": 1,
+        "entryId": "ent_59124c628755ad29dd3fe337",
+        "participantId": "ptc_3d3cc85e379b2a5df4634ff6",
+        "prize_code": "P1"
+      },
+      {
+        "position": 2,
+        "entryId": "ent_8b8cbc34f16bdd917650db56",
+        "participantId": "ptc_79784e613cd041c8662d5f3e",
+        "prize_code": "P1"
+      },
+      {
+        "position": 3,
+        "entryId": "ent_463814a055d9b58ffa7425b8",
+        "participantId": "ptc_9e14acfb704592d98fcc7644",
+        "prize_code": "P2"
+      },
+      {
+        "position": 4,
+        "entryId": "ent_c9413607a2e7841324416e12",
+        "participantId": "ptc_2fd108d86c0920d28d03310b",
+        "prize_code": "P2"
+      },
+      {
+        "position": 5,
+        "entryId": "ent_13eed95167e704fa110963db",
+        "participantId": "ptc_61cafc028c51ced8a2f548be",
+        "prize_code": "P2"
+      }
+    ],
+    "alternates": [
+      {
+        "position": 1,
+        "entryId": "ent_4f318557920cf3f438ec8207",
+        "participantId": "ptc_f5c32c40935701ac952395ce"
+      },
+      {
+        "position": 2,
+        "entryId": "ent_7b357895e92b35d6fbddcb08",
+        "participantId": "ptc_815dfbbcc6cfc3cddb8e2c8c"
+      }
+    ],
+    "plan": {
+      "tiers": [
+        {
+          "code": "P1",
+          "label": "TEST prize: USD 200 voucher",
+          "count": 2
+        },
+        {
+          "code": "P2",
+          "label": "TEST prize: USD 50 voucher",
+          "count": 3
+        }
+      ],
+      "totalWinners": 5,
+      "alternatesPerWinner": 1,
+      "totalAlternates": 5,
+      "onePrizePerParticipant": true,
+      "winnerExclusion": "none"
+    }
+  },
+  "attempts": [
+    {
+      "actor_id": "adm_b4f302c487a46b1c91e3f203",
+      "outcome": "completed",
+      "detail": null,
+      "created_at": "2026-09-16T10:55:14.093Z"
+    }
+  ],
+  "period_draws": [
+    {
+      "id": "drw_49708b974d87b034268b9f45",
+      "draw_label": "W-2",
+      "status": "published",
+      "snapshot_hash": "0d51323520f102878e14467d76b88a0b921832480d59fb987d6502530f64fcc9",
+      "output_hash": "2e8d4f9ed4a95406be76591ffc621ac117026dfba4321beaa43f3ea74b16f2a9",
+      "operator_id": "adm_b4f302c487a46b1c91e3f203",
+      "approver_id": "adm_f6b5109d72e77a8389de9978",
+      "voided_by": null,
+      "void_reason": null,
+      "voided_at": null,
+      "supersedes": null,
+      "superseded_by": null,
+      "created_at": "2026-09-16T10:55:14.091Z"
+    }
+  ],
+  "audit_events": [
+    {
+      "id": 196,
+      "actor_type": "admin",
+      "actor_id": "adm_b4f302c487a46b1c91e3f203",
+      "action": "draw.frozen",
+      "target_type": "draw",
+      "target_id": "drw_49708b974d87b034268b9f45",
+      "reason": null,
+      "request_id": null,
+      "scope": null,
+      "correlation_id": null,
+      "prev_hash": "478d09a1120b5dd7133f790842e659ab583b2a41b504a50dbc8146de8a2834cb",
+      "entry_hash": "775c54ab2738dc33092beb7bdc41751e5172d1d2c91fd08e4980f5a716dcf29d",
+      "payload_json": "{\"action\":\"draw.frozen\",\"actorId\":\"adm_b4f302c487a46b1c91e3f203\",\"actorType\":\"admin\",\"correlationId\":null,\"payload\":{\"candidates\":8,\"exclusions\":0,\"override\":null,\"periodCode\":\"W-2\",\"seedCommitment\":\"3f74f0d1dfa3232c2096a7d620c4ab409e8beb9e8d0f0751b5fefff348dc0ff3\",\"snapshotHash\":\"0d51323520f102878e14467d76b88a0b921832480d59fb987d6502530f64fcc9\",\"supersedes\":null},\"reason\":null,\"requestId\":null,\"scope\":null,\"targetId\":\"drw_49708b974d87b034268b9f45\",\"targetType\":\"draw\",\"v\":2,\"when\":\"2026-09-16T10:55:14.092Z\"}",
+      "created_at": "2026-09-16T10:55:14.092Z"
+    },
+    {
+      "id": 197,
+      "actor_type": "admin",
+      "actor_id": "adm_b4f302c487a46b1c91e3f203",
+      "action": "draw.executed",
+      "target_type": "draw",
+      "target_id": "drw_49708b974d87b034268b9f45",
+      "reason": null,
+      "request_id": null,
+      "scope": null,
+      "correlation_id": null,
+      "prev_hash": "775c54ab2738dc33092beb7bdc41751e5172d1d2c91fd08e4980f5a716dcf29d",
+      "entry_hash": "5cf96c21b8c08df7fe2a41cffa87600c5d4aa7301e2829794e5bbdd15135f84f",
+      "payload_json": "{\"action\":\"draw.executed\",\"actorId\":\"adm_b4f302c487a46b1c91e3f203\",\"actorType\":\"admin\",\"correlationId\":null,\"payload\":{\"alternates\":2,\"outputHash\":\"2e8d4f9ed4a95406be76591ffc621ac117026dfba4321beaa43f3ea74b16f2a9\",\"winners\":5},\"reason\":null,\"requestId\":null,\"scope\":null,\"targetId\":\"drw_49708b974d87b034268b9f45\",\"targetType\":\"draw\",\"v\":2,\"when\":\"2026-09-16T10:55:14.094Z\"}",
+      "created_at": "2026-09-16T10:55:14.094Z"
+    },
+    {
+      "id": 198,
+      "actor_type": "admin",
+      "actor_id": "adm_f6b5109d72e77a8389de9978",
+      "action": "draw.approved",
+      "target_type": "draw",
+      "target_id": "drw_49708b974d87b034268b9f45",
+      "reason": null,
+      "request_id": null,
+      "scope": null,
+      "correlation_id": null,
+      "prev_hash": "5cf96c21b8c08df7fe2a41cffa87600c5d4aa7301e2829794e5bbdd15135f84f",
+      "entry_hash": "4d06884c85eefa7d3e5f30c821549b3521ed5b06fb4f8ade82ad7464b1b9a42f",
+      "payload_json": "{\"action\":\"draw.approved\",\"actorId\":\"adm_f6b5109d72e77a8389de9978\",\"actorType\":\"admin\",\"correlationId\":null,\"payload\":{\"note\":\"seed approval\",\"outputHash\":\"2e8d4f9ed4a95406be76591ffc621ac117026dfba4321beaa43f3ea74b16f2a9\"},\"reason\":null,\"requestId\":null,\"scope\":null,\"targetId\":\"drw_49708b974d87b034268b9f45\",\"targetType\":\"draw\",\"v\":2,\"when\":\"2026-09-16T10:55:14.095Z\"}",
+      "created_at": "2026-09-16T10:55:14.095Z"
+    },
+    {
+      "id": 200,
+      "actor_type": "admin",
+      "actor_id": "adm_085738e8d8d5319db86d62dd",
+      "action": "draw.published",
+      "target_type": "draw",
+      "target_id": "drw_49708b974d87b034268b9f45",
+      "reason": null,
+      "request_id": null,
+      "scope": null,
+      "correlation_id": null,
+      "prev_hash": "c29225848edecb58377868b7c500e7c33b2b442dd4da212e20b66f91fd244a9c",
+      "entry_hash": "e8a09140ff11391f6001dc52f8f87d3483531530446b2aaae75dc0a76c6aa818",
+      "payload_json": "{\"action\":\"draw.published\",\"actorId\":\"adm_085738e8d8d5319db86d62dd\",\"actorType\":\"admin\",\"correlationId\":null,\"payload\":null,\"reason\":null,\"requestId\":null,\"scope\":null,\"targetId\":\"drw_49708b974d87b034268b9f45\",\"targetType\":\"draw\",\"v\":2,\"when\":\"2026-09-16T10:55:14.097Z\"}",
+      "created_at": "2026-09-16T10:55:14.097Z"
+    }
+  ],
+  "audit_checkpoint": {
+    "id": "ckp_340f4adfbf1a08b90e9eff95",
+    "uptoId": 218,
+    "headHash": "7219c606614b4fce9dad40a88af1cf1917bccccb6c4d7cb5a81c3c3c36d5cfc1",
+    "signature": "94f2b78f3012a2f0ba0336f70a15f3c494ced6cd85982fa888aa70547ca75b8c",
+    "signed": true
+  },
+  "audit_anchor": {
+    "manifest_event_id": 218,
+    "chain_tail": [
+      {
+        "id": 218,
+        "prev_hash": "c550d3d957e5080e81517961e0ad36b59ddfc0bcfb174f88c14e4841bb66eb43",
+        "entry_hash": "7219c606614b4fce9dad40a88af1cf1917bccccb6c4d7cb5a81c3c3c36d5cfc1",
+        "payload_json": "{\"action\":\"draw.bundle_exported\",\"actorId\":\"adm_f6b5109d72e77a8389de9978\",\"actorType\":\"admin\",\"correlationId\":null,\"payload\":{\"events\":[{\"entryHash\":\"775c54ab2738dc33092beb7bdc41751e5172d1d2c91fd08e4980f5a716dcf29d\",\"id\":196},{\"entryHash\":\"5cf96c21b8c08df7fe2a41cffa87600c5d4aa7301e2829794e5bbdd15135f84f\",\"id\":197},{\"entryHash\":\"4d06884c85eefa7d3e5f30c821549b3521ed5b06fb4f8ade82ad7464b1b9a42f\",\"id\":198},{\"entryHash\":\"e8a09140ff11391f6001dc52f8f87d3483531530446b2aaae75dc0a76c6aa818\",\"id\":200}],\"outputHash\":\"2e8d4f9ed4a95406be76591ffc621ac117026dfba4321beaa43f3ea74b16f2a9\",\"snapshotHash\":\"0d51323520f102878e14467d76b88a0b921832480d59fb987d6502530f64fcc9\"},\"reason\":null,\"requestId\":null,\"scope\":null,\"targetId\":\"drw_49708b974d87b034268b9f45\",\"targetType\":\"draw\",\"v\":2,\"when\":\"2026-09-16T10:55:14.117Z\"}"
+      }
+    ]
+  }
+}
