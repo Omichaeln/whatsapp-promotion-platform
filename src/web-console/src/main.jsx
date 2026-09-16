@@ -13,8 +13,8 @@ class ErrorBoundary extends Component {
   render() {
     if (this.state.err) {
       return (
-        <div style={{ padding: "28px", maxWidth: 560, margin: "48px auto", background: "#fff", border: "1px solid #b42318", borderRadius: 12, color: "#111" }}>
-          <div style={{ fontSize: 15, fontWeight: 600, color: "#b42318" }}>The console hit an error</div>
+        <div style={{ padding: "28px", maxWidth: 560, margin: "48px auto", background: "#fff", border: "1px solid #D7282F", borderRadius: 12, color: "#111" }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: "#D7282F" }}>The console hit an error</div>
           <div style={{ fontSize: 12.5, color: "#444", marginTop: 10, lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
             {String(this.state.err?.message || this.state.err)}
             {this.state.err?.stack ? `\n\n${this.state.err.stack}` : ""}
@@ -38,7 +38,7 @@ function renderFatal(msg) {
   fatalEl = document.createElement("div");
   fatalEl.style.cssText = "position:fixed;inset:0;background:#fff;z-index:9999;padding:36px;font:13px/1.6 sans-serif;color:#111;display:flex;flex-direction:column;gap:14px";
   const h = document.createElement("b");
-  h.style.color = "#b42318";
+  h.style.color = "#D7282F";
   h.textContent = "The console hit an error";
   const p = document.createElement("div");
   p.style.whiteSpace = "pre-wrap";

@@ -54,7 +54,7 @@ export default function VoiceInput({ onTranscript, onNotice, disabled, size = 15
 
   const stop = () => { if (state === "recording") recRef.current?.stop(); };
 
-  const tone = state === "recording" ? "#b42318" : state === "working" ? "var(--text-tertiary)" : "var(--text-tertiary)";
+  const tone = state === "recording" ? "var(--danger)" : state === "working" ? "var(--text-tertiary)" : "var(--text-tertiary)";
   return (
     <button
       onClick={state === "recording" ? stop : start}

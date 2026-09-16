@@ -1,0 +1,13 @@
+Montserrat is used here as a stand-in for Gotham, the Huletts brand typeface,
+which is licensed from Hoefler&Co and cannot be redistributed with this
+software. Montserrat is the closest freely licensable geometric sans and is
+self-hosted so the console has no runtime dependency on a font CDN.
+
+Montserrat is Copyright 2011 The Montserrat Project Authors
+(https://github.com/JulietaUla/Montserrat), licensed under the SIL Open Font
+License, Version 1.1: https://openfontlicense.org
+
+If Huletts supplies a licensed Gotham web kit, drop gotham-black.woff2 and
+gotham-book.woff2 into this directory and add the two @font-face rules; both
+font stacks in src/web-console/src/styles.css already name Gotham first, so the
+console will pick it up with no other change.

@@ -8,7 +8,7 @@ import "./styles.css";
 const fmt = (i) => (i ? new Date(i).toLocaleString() : "—");
 const short = (id, n = 12) => (id ? `${String(id).slice(0, n)}…` : "—");
 const TONE = { QUALIFIED: "ok", NOT_QUALIFIED: "x", DUPLICATE: "x", REVIEW_REQUIRED: "w", REUPLOAD_REQUIRED: "w", received: "m", processing: "m", delayed: "w", active: "ok", paused: "w", draft: "m", closed: "m", archived: "m", published: "ok", approved: "ok", executed: "w", frozen: "m", executing: "w", voided: "x", delivered: "ok", sent: "ok", read: "ok", pending: "w", retryable_failure: "w", permanent_failure: "x", unknown_outcome: "x", reconciled: "ok", dead: "x", failed: "x", processed: "ok", selected: "m", notified: "w", verified: "ok", accepted: "ok", collected: "ok", expired: "x", replaced: "x", ineligible: "x", declined: "x", disputed: "w", unreachable: "w", open: "w", assigned: "w", decided: "ok", excluded: "x", scheduled: "m", drawn: "ok", critical: "x", warning: "w", info: "m", real: "ok", simulated: "w", configured: "ok", not_configured: "w", unconfigured: "x" };
-function Chip({ s }) { const t = TONE[s] || "m"; const c = { ok: ["#0d9488", "rgba(13,148,136,.12)"], w: ["#b45309", "rgba(180,83,9,.12)"], x: ["#b42318", "rgba(180,35,24,.12)"], m: ["#666", "rgba(100,116,139,.12)"] }[t]; return <span className="chip" style={{ color: c[0], background: c[1] }}>{String(s ?? "—")}</span>; }
+function Chip({ s }) { const t = TONE[s] || "m"; const c = { ok: ["#0d9488", "rgba(13,148,136,.12)"], w: ["var(--warn)", "color-mix(in srgb, var(--warn) 12%, transparent)"], x: ["var(--danger)", "color-mix(in srgb, var(--danger) 12%, transparent)"], m: ["#666", "rgba(100,116,139,.12)"] }[t]; return <span className="chip" style={{ color: c[0], background: c[1] }}>{String(s ?? "—")}</span>; }
 /** Image behind the staff session: <img> cannot send the bearer header. */
 function AuthImg({ src, alt, style }) {
   const [s, set] = useState({ url: null, error: null, loading: true });
@@ -23,7 +23,7 @@ function AuthImg({ src, alt, style }) {
     return () => { live = false; if (made) URL.revokeObjectURL(made); };
   }, [src]);
   if (s.loading) return <div className="sub">loading image…</div>;
-  if (s.error) return <div className="sub" style={{ color: "#b42318" }}>{s.error}</div>;
+  if (s.error) return <div className="sub" style={{ color: "var(--danger)" }}>{s.error}</div>;
   return <img src={s.url} alt={alt} style={style} />;
 }
 function useApi(path, deps = []) {
@@ -52,12 +52,36 @@ const Table = ({ cols, rows, render, empty = "Nothing here yet." }) => <div clas
 const Pager = ({ next, onMore }) => (next != null ? <div style={{ marginTop: 8 }}><Btn ghost small onClick={onMore}>Load more</Btn></div> : null);
 
 /* ===================== login ===================== */
+/**
+ * The Huletts mark.
+ *
+ * Three rules from the brand guidelines are enforced here rather than left to
+ * each caller: all three elements (H icon, Est. 1892, wordmark) always travel
+ * together in a lock-up; the mark is never restyled, stretched or recoloured,
+ * so it ships as artwork rather than as CSS; and on red, blue or black it must
+ * be the all-white reverse, which is why `reverse` is a prop and not a filter.
+ * Clear space is the height of the H icon, applied as padding by .brand-mark.
+ */
+// Clear space is "the height of the H icon" on every side. That ratio differs
+// between the two lock-ups, so it is measured from the artwork rather than
+// guessed: the icon is 78% of the horizontal lock-up's height and 42% of the
+// vertical one's. Expressed as padding, the rule holds at any size.
+const CLEAR_SPACE = { horizontal: 0.78, vertical: 0.42 };
+function Brand({ lockup = "horizontal", reverse = false, height = 36, className = "" }) {
+  const file = `/brand/huletts-${lockup}${reverse ? "-reverse" : ""}.svg`;
+  const pad = Math.round(height * (CLEAR_SPACE[lockup] ?? 0.78) * 0.5);
+  return <img className={`brand-mark ${className}`} src={file} style={{ height, padding: pad }} alt="Huletts" />;
+}
+
 function Login({ onAuthed }) {
   const [email, setEmail] = useState(""); const [pw, setPw] = useState(""); const [mfa, setMfa] = useState(null); const [code, setCode] = useState(""); const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const submit = async () => { setErr(""); setBusy(true); try { const r = await api("/api/login", { method: "POST", body: { email, password: pw }, auth: false }); if (r.data?.pendingMfa) { setMfa(r.data); return; } if (r.ok && r.data?.token) { setToken(r.data.token); onAuthed(); } else if (r.status === 429) setErr(`Too many attempts — try again in ${r.data?.error?.retryAfter || 30}s.`); else setErr(r.data?.error?.message || "Sign-in failed."); } finally { setBusy(false); } };
   const submitCode = async () => { setErr(""); setBusy(true); try { const r = await api("/api/login/mfa", { method: "POST", body: { userId: mfa.userId, code: code.trim() }, auth: false }); if (r.ok && r.data?.token) { setToken(r.data.token); onAuthed(); } else setErr(r.data?.error?.message || "That code wasn't accepted."); } finally { setBusy(false); } };
   return (
-    <div className="gate"><div className="gate-card frame">
+    <div className="gate">
+      <img className="gate-wave" src="/brand/huletts-wave.svg" alt="" aria-hidden="true" />
+      <div className="gate-card frame">
+      <Brand lockup="vertical" height={86} className="gate-logo" />
       <div className="overline">Promotion Operations Console</div>
       {mfa ? <>
         <div className="note">Enter the 6-digit code from your authenticator app.</div>
@@ -69,7 +93,9 @@ function Login({ onAuthed }) {
         <Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} placeholder="Password" autoComplete="current-password" style={{ marginTop: 6 }} />
         <Err e={err} /><div style={{ marginTop: 14 }}><Btn onClick={submit} disabled={!email || !pw || busy}>Sign in</Btn></div>
       </>}
-    </div></div>
+      </div>
+      <p className="gate-tagline">A little Huletts sweetness goes a long way</p>
+    </div>
   );
 }
 function ChangePassword({ onDone }) {
@@ -590,7 +616,7 @@ function Support({ me }) {
           <Btn ghost disabled={a.busy || !text.trim()} onClick={() => act("send", { text: text.trim() }).then(() => setText(""))}>Send</Btn>
         </div>}
         {!canAct && <div className="sub">Claim, reply and release require the support role.</div>}
-        <div className="phone" style={{ marginTop: 10, minHeight: 120 }}>{(c.transcript || []).map((t, i) => <div key={i} className={`bubble ${t.dir}`}><span className="sub">{fmt(t.at)} · {t.dir === "out" ? `${t.purpose} · ${t.status}` : t.kind}</span><div>{t.text}</div>{t.dir === "out" && deliveryNote(t) ? <div className="sub" style={{ color: "#b42318", marginTop: 4 }}>{deliveryNote(t)}</div> : null}</div>)}{!(c.transcript || []).length && <div className="sub">No messages for this number.</div>}</div>
+        <div className="phone" style={{ marginTop: 10, minHeight: 120 }}>{(c.transcript || []).map((t, i) => <div key={i} className={`bubble ${t.dir}`}><span className="sub">{fmt(t.at)} · {t.dir === "out" ? `${t.purpose} · ${t.status}` : t.kind}</span><div>{t.text}</div>{t.dir === "out" && deliveryNote(t) ? <div className="sub" style={{ color: "var(--danger)", marginTop: 4 }}>{deliveryNote(t)}</div> : null}</div>)}{!(c.transcript || []).length && <div className="sub">No messages for this number.</div>}</div>
       </>}
       {!c && <Empty>Enter the participant's WhatsApp number to open the conversation.</Empty>}
     </Card>
@@ -625,9 +651,9 @@ function Simulator() {
   return <div className="promo-page"><div className="split2">
     <Card title="Conversation simulator — TEST ONLY (same intake, state machine, real OCR pipeline and outbox as WhatsApp; not WhatsApp evidence)">
       <div className="row"><Field label="Phone (test)"><Input value={phone} onChange={(e) => changePhone(e.target.value)} /></Field><Field label="Message"><Input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send({ text }).then(() => setText(""))} /></Field><Btn disabled={busy} onClick={() => send({ text }).then(() => setText(""))}>Send</Btn><label className="btn ghost">Upload receipt image<input type="file" accept="image/*" hidden onChange={onFile} /></label><Btn ghost onClick={refresh}>Refresh transcript</Btn><Btn ghost onClick={clear}>Clear</Btn></div>
-      <div className="phone" style={{ marginTop: 10, minHeight: 200 }}>{log.map((l, i) => <div key={i} className={`bubble ${l.dir}`}>{l.text.split("\n").map((x, j) => <div key={j}>{x || " "}</div>)}{l.note ? <div className="sub" style={{ color: "#b42318", marginTop: 4 }}>{l.note}</div> : null}</div>)}{!log.length && <div className="sub">Say "hi" to start. Quick keys: 1 register · 2 enter · 3 how it works · 6 winners · 7 my entries. Fixture images: fixtures/receipts/*.jpg</div>}</div>
+      <div className="phone" style={{ marginTop: 10, minHeight: 200 }}>{log.map((l, i) => <div key={i} className={`bubble ${l.dir}`}>{l.text.split("\n").map((x, j) => <div key={j}>{x || " "}</div>)}{l.note ? <div className="sub" style={{ color: "var(--danger)", marginTop: 4 }}>{l.note}</div> : null}</div>)}{!log.length && <div className="sub">Say "hi" to start. Quick keys: 1 register · 2 enter · 3 how it works · 6 winners · 7 my entries. Fixture images: fixtures/receipts/*.jpg</div>}</div>
     </Card>
-    <Card title="Server transcript (inbound events + outbound ledger, with delivery states)">{transcript.length ? transcript.map((t, i) => <div key={i} className={`bubble ${t.dir}`}><span className="sub">{fmt(t.at)} · {t.dir === "out" ? `${t.purpose} · ${t.status}` : t.kind}</span><div>{t.text}</div>{t.dir === "out" && deliveryNote(t) ? <div className="sub" style={{ color: "#b42318", marginTop: 4 }}>{deliveryNote(t)}</div> : null}</div>) : <Empty>Refresh to load.</Empty>}</Card>
+    <Card title="Server transcript (inbound events + outbound ledger, with delivery states)">{transcript.length ? transcript.map((t, i) => <div key={i} className={`bubble ${t.dir}`}><span className="sub">{fmt(t.at)} · {t.dir === "out" ? `${t.purpose} · ${t.status}` : t.kind}</span><div>{t.text}</div>{t.dir === "out" && deliveryNote(t) ? <div className="sub" style={{ color: "var(--danger)", marginTop: 4 }}>{deliveryNote(t)}</div> : null}</div>) : <Empty>Refresh to load.</Empty>}</Card>
   </div></div>;
 }
 
@@ -652,6 +678,7 @@ export function App() {
   const View = VIEWS[tab] || Overview;
   return <div className="promo">
     {cfg?.sample_data && <div className="banner">TEST ONLY — sample promotion data is loaded in environment "{me.environment}". Nothing here is client sign-off. Transport: {cfg.transport}.</div>}
+    <div className="promo-head"><Brand lockup="horizontal" height={34} /><span className="promo-head-sep" /><span className="promo-head-title">Promotion Operations</span></div>
     <div className="promo-tabs">{TABS.map(([k, l]) => <button key={k} className={tab === k ? "active" : ""} onClick={() => setTab(k)}>{l}</button>)}<span style={{ flex: 1 }} /><span className="sub">{me.email} · {me.roles.join(", ")}</span><button onClick={() => { api("/api/logout", { method: "POST" }); setToken(""); setMe(null); }}>Sign out</button></div>
     {tab === "desk" ? <Desk /> : <View me={me} />}
   </div>;

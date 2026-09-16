@@ -6,14 +6,14 @@ import VoiceInput from "./components/VoiceInput.jsx";
 const GROUPS = {
   Team:      { dot: "#0d9488", tint: "rgba(13,148,136,0.06)" },
   Reports:   { dot: "#2563eb", tint: "rgba(37,99,235,0.06)" },
-  Customers: { dot: "#b42318", tint: "rgba(180,35,24,0.055)" },
+  Customers: { dot: "var(--danger)", tint: "color-mix(in srgb, var(--danger) 6%, transparent)" },
   Direct:    { dot: "#7c3aed", tint: "rgba(124,58,237,0.065)" },
 };
 const GROUP_ORDER = ["Team", "Reports", "Customers", "Direct"];
 const groupTone = (name) => GROUPS[name] || GROUPS.Direct;
 
 const PRIORITY_CHIP = {
-  high:   { fg: "#b42318", bg: "rgba(180,35,24,0.10)" },
+  high:   { fg: "var(--danger)", bg: "color-mix(in srgb, var(--danger) 10%, transparent)" },
   normal: { fg: "#475569", bg: "rgba(100,116,139,0.10)" },
   low:    { fg: "#94a3b8", bg: "rgba(100,116,139,0.06)" },
 };
@@ -157,7 +157,7 @@ function UsageLine() {
   if (!snap) return null;
   const monthUsd = Number(snap.month_usd || 0);
   const capUsd = Number(snap.cap_usd || 0);
-  const tone = snap.pct >= 100 ? "#b42318" : snap.pct >= 75 ? "#d97706" : "var(--text-tertiary)";
+  const tone = snap.pct >= 100 ? "var(--danger)" : snap.pct >= 75 ? "var(--warn)" : "var(--text-tertiary)";
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "2px 2px 0" }}>
       <span style={{ fontSize: 9.5, fontWeight: 500, letterSpacing: 1.2, textTransform: "uppercase", color: "var(--text-tertiary)" }}>Model spend this month</span>
@@ -184,7 +184,7 @@ function ConnectionControl({ link, me, onUnlink }) {
       {link === "live" && !confirm && <button className="link-btn" onClick={() => setConfirm(true)}>Unlink</button>}
       {link === "live" && confirm && (
         <>
-          <button className="link-btn" style={{ color: "#b42318" }} onClick={() => { setConfirm(false); onUnlink(); }}>Confirm unlink</button>
+          <button className="link-btn" style={{ color: "var(--danger)" }} onClick={() => { setConfirm(false); onUnlink(); }}>Confirm unlink</button>
           <button className="link-btn" style={{ color: "var(--text-tertiary)" }} onClick={() => setConfirm(false)}>Keep</button>
         </>
       )}
@@ -657,12 +657,12 @@ export function Desk() {
         <div className="frame" style={{ display: "flex", flexWrap: "wrap", rowGap: 8, padding: "12px 10px", flex: "1 1 460px", minWidth: 0 }}>
           {["high", "normal", "low"].map(p => (
             <Metric key={p} value={open.filter(t => t.priority === p).length} label={`${p} priority`}
-              tone={p === "high" && open.some(t => t.priority === "high") ? "#b42318" : undefined}
+              tone={p === "high" && open.some(t => t.priority === "high") ? "var(--danger)" : undefined}
               active={priority === p} onClick={() => setPriority(priority === p ? null : p)} />
           ))}
           <Metric value={needReply} label="Need a reply" />
           <Metric value={open.length} label="Chats open" />
-          <Metric value={unprocessed} label="Waiting for a brief" tone={unprocessed ? "#b42318" : undefined} />
+          <Metric value={unprocessed} label="Waiting for a brief" tone={unprocessed ? "var(--danger)" : undefined} />
         </div>
         {ringData.length > 0 && (
           <div style={{ display: "flex", gap: 14, alignItems: "center", padding: "4px 8px 0 0" }}>
@@ -713,7 +713,7 @@ export function Desk() {
           {display.map(g => (
             <Fold key={g.name} count={g.total}
               title={<span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><span style={{ width: 7, height: 7, borderRadius: 999, background: groupTone(g.name).dot }} />{g.name}</span>}
-              tone={g.subs.some(s => s.threads.some(t => t.priority === "high")) ? "#b42318" : undefined}
+              tone={g.subs.some(s => s.threads.some(t => t.priority === "high")) ? "var(--danger)" : undefined}
               defaultOpen={display.length === 1}>
               {g.subs.map(s => {
                 const list = s.threads.map(t => (

@@ -431,7 +431,10 @@ export function PromoConsole({ me, onSwitchToFull }) {
 
   return <div className="pc">
     <header className="pc-top">
-      <div className="pc-brand">Promotion desk</div>
+      <div className="pc-brand">
+        <img className="brand-mark" src="/brand/huletts-horizontal.svg" alt="Huletts" style={{ height: 34, padding: 13 }} />
+        <span className="pc-brand-name">Promotion desk</span>
+      </div>
       <nav className="pc-nav">{SCREENS.map(([k, label]) => (
         <button key={k} className={screen === k ? "on" : ""} onClick={() => go(k)}>{label}</button>
       ))}</nav>
