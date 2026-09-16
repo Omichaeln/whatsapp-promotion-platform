@@ -1,6 +1,6 @@
 # Requirements traceability (FR-01 … FR-36)
 
-Build: branch `claude/funny-brown-r7wpo9`, statement revised 12 September 2026; the automated results in `docs/testing/evidence/test-results.txt` are a recorded run against this tree (331 tests in 82 suites, `exit=0`). Status legend: **verified** (automated test green in this build), **verified-local** (works locally against simulated provider), **partial**, **blocked** (needs client input/access). Test ids refer to `docs/testing/test-plan.md`; UAT rows to `docs/testing/client-uat.md`.
+Build: branch `claude/funny-brown-r7wpo9`, statement revised 12 September 2026; the automated results in `docs/testing/evidence/test-results.txt` are a recorded run against this tree (333 tests in 83 suites, `exit=0`). Status legend: **verified** (automated test green in this build), **verified-local** (works locally against simulated provider), **partial**, **blocked** (needs client input/access). Test ids refer to `docs/testing/test-plan.md`; UAT rows to `docs/testing/client-uat.md`.
 
 | FR | Client wording (abridged) | Implementation | Tests | UAT | Status | Remaining dependency |
 |---|---|---|---|---|---|---|

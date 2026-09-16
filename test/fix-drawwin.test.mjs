@@ -355,3 +355,113 @@ describe("drawwin audit fixes", () => {
     assert.equal(h.app.winners.get(wA.id).status, "notified");
   });
 });
+
+describe("drawwin audit fixes: the winner lifecycle's two silent gaps", () => {
+  // Its own app: both cases void a draw or drive winners to the end of the
+  // lifecycle, which would disturb the shared W-1 fixture above.
+  let v, officer, approver, ops, collectOutlet, draw;
+  before(async () => {
+    v = await buildApp({ extractor: "simulator" });
+    const u = (email) => v.app.auth.listUsers().find((x) => x.email === email);
+    officer = u("draw@example.test"); approver = u("approver@example.test"); ops = u("fulfilment@example.test");
+    v.db.prepare(`update campaigns set draw_config_json=? where id=?`)
+      .run(JSON.stringify({ prizes: [{ code: "P1", label: "Prize one", count: 3 }], alternates_per_winner: 0, one_prize_per_participant: true, winner_exclusion: "none" }), v.campaign.id);
+    const period = v.domain.listPeriods(v.campaign.id).find((x) => x.code === "W-1");
+    for (let i = 1; i <= 4; i++) {
+      const ph = `26377170000${i}`;
+      await v.register(ph, { first: `Void${"ABCD"[i - 1]}`, last: "Case", identity: `TESTVD${i}ZZ` });
+      assert.equal((await v.submit(ph, await v.simImage(v.simReceipt({ no: `VD-${i}` })))).receipt.status, "QUALIFIED");
+    }
+    const at = new Date(Date.parse(period.starts_at) + 3600_000).toISOString();
+    v.db.prepare(`update entries set period_code='W-1', draw_period='W-1', created_at=? where campaign_id=?`).run(at, v.campaign.id);
+    v.db.prepare(`update receipts set period_code='W-1', intake_at=? where campaign_id=?`).run(at, v.campaign.id);
+    draw = v.app.drawService.freeze({ campaignId: v.campaign.id, periodId: period.id, actorId: officer.id });
+    draw = v.app.drawService.execute(draw.id, officer.id);
+    draw = v.app.drawService.approve(draw.id, approver.id, { expectedOutputHash: draw.output_hash });
+    v.app.drawService.publish(draw.id, ops.id);
+    v.app.winners.materialise(draw.id, ops.id);
+    collectOutlet = v.domain.listCampaignOutlets(v.campaign.id).find((o) => o.collection_enabled && o.campaign_collection_enabled);
+  });
+  after(async () => { await v?.close(); });
+
+  const sent = (winnerId, purpose) => v.db.prepare(`select * from outbound_messages where purpose=? and idempotency_key like ? order by created_at`).all(purpose, `winner:${winnerId}:%`);
+
+  it("winners-2: accepting a winner tells them where to collect, without reissuing the claim reference", () => {
+    const w = v.app.winners.listByDraw(draw.id)[0];
+    v.app.winners.notify(w.id, ops.id);
+    v.app.winners.transition(w.id, { status: "verified", actorId: ops.id });
+    assert.equal(sent(w.id, "winner_collect").length, 0, "nothing is sent before the collection point is agreed");
+
+    const tokenAfterNotify = v.db.prepare(`select claim_token_hash from winners where id=?`).get(w.id).claim_token_hash;
+    v.app.winners.transition(w.id, { status: "accepted", actorId: ops.id, collectionOutletId: collectOutlet.id });
+
+    // The defect: DEFAULT_COPY has carried winner_collect since the first build
+    // and no code path enqueued it, so a winner was recorded as ready to
+    // collect and never told where.
+    const msgs = sent(w.id, "winner_collect");
+    assert.equal(msgs.length, 1, "an accepted winner must be told where to collect");
+    const p = v.db.prepare(`select wa_phone_uid from participants where id=?`).get(w.participant_id);
+    assert.equal(msgs[0].wa_phone_uid, p.wa_phone_uid, "addressed to the winner");
+    const text = JSON.parse(msgs[0].payload_json).body;
+    assert.match(String(text), /ready for collection/);
+    assert.ok(String(text).includes(collectOutlet.name || collectOutlet.outlet_code), `the message must name the collection point, got: ${text}`);
+
+    // renderCopy() replaces an unknown placeholder with the empty string, so a
+    // {claim_ref} left in this template would have shipped "quote claim
+    // reference ." to the winner. The reference is held only as a hash and is
+    // deliberately NOT rotated here: reissuing would invalidate the one the
+    // winner already holds and answer their next reply with claim_not_found.
+    assert.doesNotMatch(String(text), /\{\w+\}/, "no placeholder may survive into a sent message");
+    assert.doesNotMatch(String(text), /reference\s*[.,]/, "no message may ask for a reference it failed to render");
+    assert.equal(v.db.prepare(`select claim_token_hash from winners where id=?`).get(w.id).claim_token_hash, tokenAfterNotify,
+      "the claim reference the winner already holds must keep working");
+
+    // Accepted -> disputed -> verified -> accepted is a real path; the second
+    // acceptance must be told again, not de-duplicated away by the outbox.
+    v.app.winners.transition(w.id, { status: "disputed", actorId: ops.id, reason: "identity query" });
+    v.app.winners.transition(w.id, { status: "verified", actorId: ops.id });
+    v.app.winners.transition(w.id, { status: "accepted", actorId: ops.id, collectionOutletId: collectOutlet.id });
+    assert.equal(sent(w.id, "winner_collect").length, 2, "a second acceptance must send a second message");
+  });
+
+  it("winners-6: voiding a draw takes its winners out through the lifecycle, not behind it", () => {
+    const [wCollect, wLive] = v.app.winners.listByDraw(draw.id).filter((w) => w.status !== "accepted");
+    // One winner has already been handed their prize; it cannot be un-given.
+    v.app.winners.notify(wCollect.id, ops.id);
+    v.app.winners.transition(wCollect.id, { status: "verified", actorId: ops.id });
+    v.app.winners.transition(wCollect.id, { status: "accepted", actorId: ops.id, collectionOutletId: collectOutlet.id });
+    v.app.winners.transition(wCollect.id, { status: "collected", actorId: ops.id, collectionOutletId: collectOutlet.id, fulfilmentRef: "SLIP-V" });
+    // The other is live and published: verified, publicly listed, still to collect.
+    v.app.winners.notify(wLive.id, ops.id);
+    v.app.winners.transition(wLive.id, { status: "verified", actorId: ops.id });
+    v.app.winners.publish(wLive.id, ops.id);
+
+    const before = v.app.winners.get(wLive.id);
+    const crmBefore = v.db.prepare(`select count(*) as c from crm_events where entity_id=?`).get(wLive.id).c;
+    const auditBefore = v.db.prepare(`select count(*) as c from audit_events where target_id=?`).get(wLive.id).c;
+    const claimsBefore = v.app.winners.claims(wLive.id).length;
+
+    v.app.drawService.voidDraw(draw.id, officer.id, "period cancelled", approver.id);
+
+    const after = v.app.winners.get(wLive.id);
+    assert.equal(after.status, "replaced");
+    assert.equal(after.publication_state, "withdrawn", "a published winner of a voided draw must be withdrawn");
+    // Every one of these was missing: the old implementation was a single
+    // UPDATE across the winners table that moved the rows behind the
+    // lifecycle's back, so the CRM went on showing live winners for a draw
+    // that had been voided, with no claim, audit or version to reconcile.
+    assert.ok(after.row_version > before.row_version, "row_version must move, or a concurrent fulfilment compares against a stale version");
+    assert.equal(v.app.winners.claims(wLive.id).length, claimsBefore + 1, "the claim history must record the withdrawal");
+    assert.equal(v.app.winners.claims(wLive.id).at(-1).state, "replaced");
+    assert.ok(v.db.prepare(`select count(*) as c from audit_events where target_id=? and action='winner.replaced'`).get(wLive.id).c >= 1, "the withdrawal must be audited per winner");
+    assert.ok(v.db.prepare(`select count(*) as c from audit_events where target_id=?`).get(wLive.id).c > auditBefore);
+    assert.ok(v.db.prepare(`select count(*) as c from crm_events where entity_id=?`).get(wLive.id).c > crmBefore, "the CRM must learn the winner is no longer live");
+    assert.ok(JSON.parse(after.history_json || "[]").some((x) => x.to === "replaced" && x.note === "draw voided"), "the winner's own history must say why");
+
+    // A prize already handed over is left alone, and no alternate is promoted:
+    // the whole draw is void, so there is no vacancy to fill.
+    assert.equal(v.app.winners.get(wCollect.id).status, "collected");
+    assert.equal(v.app.winners.listByDraw(draw.id).filter((w) => w.status === "selected").length, 0, "voiding a draw must not promote alternates into it");
+    assert.equal(v.db.prepare(`select count(*) as c from alerts where kind='winners.void_incomplete'`).get().c, 0, "every withdrawable winner was withdrawn");
+  });
+});

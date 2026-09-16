@@ -81,6 +81,10 @@ export const outputHashOf = (output) => sha256(canonicalJson(output));
 export const snapshotHashOf = (snapshot) => sha256(canonicalJson(snapshot));
 
 export function createDrawService(db, { domain, randomBytes = 32, now = nowIso } = {}) {
+  // Late-bound: the winner service is built after this one (both need the same
+  // db handle and the winner service takes the outbox and CRM, which are wired
+  // later). attachWinners is called once at construction in server.mjs.
+  let winnerService = null;
   const get = db.prepare(`select d.*, coalesce(cp.code, d.draw_period) as period_code, cp.label as period_label from draws d left join campaign_periods cp on cp.id = d.period_id where d.id = ?`);
   const cands = db.prepare(`select * from draw_candidates where draw_id = ? order by position`);
   /** Who froze the candidate pool. Recorded at freeze; execute() preserves it while overwriting operator_id. */
@@ -286,7 +290,12 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
     // A frozen draw has produced no result yet, so abandoning one stays single-actor.
     if (["executed", "approved", "published"].includes(d.status)) assertSecondApprover(actorId, approvedBy, `voiding a ${d.status} draw`);
     db.prepare(`update draws set status='voided', voided_at=?, voided_by=?, void_reason=? where id=?`).run(now(), actorId, `${reason} (approved by ${approvedBy || "n/a"})`, drawId);
-    db.prepare(`update winners set status='replaced', publication_state='withdrawn' where draw_id=? and status not in ('collected')`).run(drawId);
+    // This used to be one UPDATE across the winners table, which moved the rows
+    // behind the lifecycle's back: no row_version bump, no claims row, no
+    // per-winner audit event and no CRM emit, so the CRM went on showing live
+    // winners for a voided draw. The winner service owns those transitions.
+    if (!winnerService) throw new Error("draw service has no winner service attached; voiding a draw would leave its winners live");
+    winnerService.voidForDraw(drawId, actorId, `draw voided: ${reason}`);
     domain.setPeriodStatus(d.period_id, "closed", actorId);
     domain.audit({ actorType: "admin", actorId, action: "draw.voided", targetType: "draw", targetId: drawId, reason, payload: { approvedBy } });
     return get.get(drawId);
@@ -349,5 +358,5 @@ export function createDrawService(db, { domain, randomBytes = 32, now = nowIso }
     };
   }
 
-  return { barrier, freeze, execute, approve, reject, publish, voidDraw, rerun, verifyStored, bundle, get: (i) => get.get(i), candidates: (i) => cands.all(i), computeOutput, list: (campaignId) => db.prepare(`select d.id, d.period_id, d.draw_period, coalesce(cp.code, d.draw_period) as period_code, d.status, d.snapshot_hash, d.output_hash, d.operator_id, d.approver_id, d.executed_at, d.approved_at, d.published_at, d.created_at, d.supersedes, d.superseded_by, d.void_reason from draws d left join campaign_periods cp on cp.id=d.period_id where d.campaign_id=? order by d.created_at desc`).all(campaignId) };
+  return { barrier, freeze, execute, approve, reject, publish, voidDraw, rerun, attachWinners: (w) => { winnerService = w; }, verifyStored, bundle, get: (i) => get.get(i), candidates: (i) => cands.all(i), computeOutput, list: (campaignId) => db.prepare(`select d.id, d.period_id, d.draw_period, coalesce(cp.code, d.draw_period) as period_code, d.status, d.snapshot_hash, d.output_hash, d.operator_id, d.approver_id, d.executed_at, d.approved_at, d.published_at, d.created_at, d.supersedes, d.superseded_by, d.void_reason from draws d left join campaign_periods cp on cp.id=d.period_id where d.campaign_id=? order by d.created_at desc`).all(campaignId) };
 }

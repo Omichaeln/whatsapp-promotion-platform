@@ -119,6 +119,14 @@ export function createWinnerService(db, { outbox, domain, crm = null, now = nowI
       if (["accepted", "collected"].includes(status) && (collectionOutletId || w.collection_outlet_id)) assertCollectionPoint(w, collectionOutletId || w.collection_outlet_id);
       if (status === "collected" && w.fulfilled_at) throw Object.assign(new Error("already fulfilled"), { code: "CONFLICT" });
       const out = transitionInTx(w, status, { actorId, note, reason, collectionOutletId, fulfilmentRef, evidence });
+      // 'accepted' is where the collection point is agreed, and it was the one
+      // transition that told the winner nothing: DEFAULT_COPY has carried a
+      // winner_collect message since the first build and no code path ever
+      // enqueued it, so a winner was recorded as ready to collect and never
+      // told where or when. Queued as text — if the 24h window has closed the
+      // outbox raises TEMPLATE_REQUIRED as an actionable hold, which is the
+      // same handling every other outbound message gets.
+      if (status === "accepted") enqueueCollect(out.winner, w);
       if (status === "replaced") return { ...out, replacement: promoteAlternate(w, actorId, reason || "replaced") };
       return out;
     });
@@ -314,6 +322,57 @@ export function createWinnerService(db, { outbox, domain, crm = null, now = nowI
       where 1=1 ${campaignId ? "and d.campaign_id=?" : ""} ${drawId ? "and w.draw_id=?" : ""} ${status ? "and w.status=?" : ""} order by draw_period desc, w.rank limit ?`).all(...[campaignId, drawId, status].filter(Boolean), limit)
       .map((w) => ({ ...w, wa_phone_uid: domain.maskPhone(w.wa_phone_uid), claim_token_hash: undefined, history: JSON.parse(w.history_json || "[]"), published_fields: JSON.parse(w.published_fields_json || "{}") }));
   }
-  return { materialise, notify, transition, promoteAlternate, verifyClaimToken, expireDue, publish, unpublish, listPublic, publishedPeriods, list: listWinners, get: (i) => getWinner.get(i), claims: (i) => db.prepare(`select * from claims where winner_id=? order by transitioned_at`).all(i), listByDraw: (i) => listByDraw.all(i) };
+  /**
+   * Tell an accepted winner where to collect. The claim reference is held only
+   * as a hash, so this message points at the reference already sent rather than
+   * reprinting one: reissuing would invalidate what the winner holds and answer
+   * their next reply with "claim_not_found" (see conversation.mjs claimTurn).
+   * Keyed per acceptance, so a winner who goes accepted -> disputed -> verified
+   * -> accepted is told again instead of being silently de-duplicated.
+   */
+  function enqueueCollect(after, before) {
+    const p = domain.getParticipant(after.participant_id);
+    if (!p || p.status !== "active") return;          // nothing to send to; not an error
+    const d = getDraw.get(after.draw_id);
+    const content = domain.versionContent(d.campaign_id);
+    const outlet = domain.getOutlet(after.collection_outlet_id);
+    const prize = JSON.parse(after.published_fields_json || "{}").prize || after.prize_code;
+    const n = db.prepare(`select count(*) as c from claims where winner_id=? and state='accepted'`).get(after.id).c;
+    outbox.enqueueWhatsApp({ waPhoneUid: p.wa_phone_uid, kind: "text", purpose: "winner_collect", campaignId: d.campaign_id,
+      payload: renderCopy(content, "winner_collect", { prize, outlet: outlet?.name || outlet?.outlet_code || "the agreed collection point" }),
+      idempotencyKey: `winner:${after.id}:collect:${n}` });
+    void before;
+  }
+  /**
+   * Take every winner of a voided draw out of the lifecycle.
+   *
+   * draw.voidDraw used to do this with one UPDATE straight across the winners
+   * table. That skipped everything the lifecycle exists for: no row_version
+   * bump (so the optimistic guard on a concurrent fulfilment compared against a
+   * version that had already moved), no claims row, no per-winner audit event,
+   * and no CRM emit — leaving the CRM showing live winners for a draw that had
+   * been voided, with nothing to reconcile against.
+   *
+   * Alternates are deliberately NOT promoted: the whole draw is void, so there
+   * is no vacancy to fill. That is why this drives transitionInTx directly
+   * rather than transition(), which promotes on 'replaced'.
+   *
+   * 'collected' is skipped because a prize already handed over cannot be
+   * un-given; 'replaced' is skipped because TRANSITIONS makes it terminal and
+   * the row is already out of the running.
+   */
+  function voidForDraw(drawId, actorId, reason) {
+    const rows = listByDraw.all(drawId).filter((w) => !["collected", "replaced"].includes(w.status));
+    const moved = [], skipped = [];
+    for (const w of rows) {
+      try { transitionInTx(w, "replaced", { actorId, reason, note: "draw voided" }); moved.push(w.id); }
+      catch (e) { skipped.push({ winnerId: w.id, status: w.status, error: e.message }); }
+    }
+    // A winner that could not be taken out is the case an operator must see:
+    // the draw is void but someone is still holding a live claim on it.
+    if (skipped.length) domain.alert({ kind: "winners.void_incomplete", severity: "critical", message: `${skipped.length} winner(s) of voided draw ${drawId} could not be withdrawn`, detail: { drawId, skipped }, runbook: "docs/runbooks/winners-claims.md" });
+    return { moved, skipped };
+  }
+  return { materialise, notify, transition, promoteAlternate, verifyClaimToken, voidForDraw, expireDue, publish, unpublish, listPublic, publishedPeriods, list: listWinners, get: (i) => getWinner.get(i), claims: (i) => db.prepare(`select * from claims where winner_id=? order by transitioned_at`).all(i), listByDraw: (i) => listByDraw.all(i) };
 }
 function hashToken(t) { return crypto.createHash("sha256").update(`claim:${t}`).digest("hex"); }

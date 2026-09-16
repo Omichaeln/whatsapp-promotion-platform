@@ -88,7 +88,12 @@ export const DEFAULT_COPY = {
   claim_not_found: "We could not match a prize claim for this number. If you believe this is an error, reply SUPPORT and our team will check for you.",
   unknown_input: "Sorry, I didn't understand that. {menu}",
   winner_contact: "Congratulations {first_name}! You have been selected as a winner in the {campaign} {period} draw for: {prize}. To claim your prize we need to verify your details. Please reply CLAIM to continue. Your claim reference is {claim_ref}. This offer is valid until {deadline}.",
-  winner_collect: "Your prize ({prize}) is ready for collection at {outlet}. Bring your ID and quote claim reference {claim_ref}.",
+  // The claim reference is stored only as a hash (winner-service.mjs), so it
+  // cannot be reprinted here. Rotating it to get a printable one would
+  // invalidate the reference the winner already holds and answer them with
+  // "claim_not_found" the next time they quote it, so this message points at
+  // the one already sent instead.
+  winner_collect: "Your prize ({prize}) is ready for collection at {outlet}. Bring your ID and the claim reference we sent you when you were selected.",
   reason_labels: {
     ok: "ok",
     not_a_valid_receipt: "the image does not look like a till receipt",

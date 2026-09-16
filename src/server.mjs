@@ -135,6 +135,9 @@ export async function createServer({ config, log = console, transport: transport
   const pipeline = createReceiptPipeline({ db, mediaStore, extractor, duplicates, outbox, domain, crm, log });
   const drawService = createDrawService(db, { domain, randomBytes: cfg.drawRandomBytes });
   const winners = createWinnerService(db, { outbox, domain, crm });
+  // Voiding a draw has to take its winners out through the winner lifecycle
+  // (row_version, claims, audit, CRM), not with a bare UPDATE.
+  drawService.attachWinners(winners);
   const desk = createDeskStore(db);
   const usage = createUsage(desk, cfg.ai?.monthlyBudgetUsd ?? 0);
   const ai = createAi({ cfg, store: desk, usage });

@@ -4,7 +4,7 @@ Every file here was produced by running the commands listed against the code in 
 
 | File | Produced by | What it shows |
 |---|---|---|
-| `test-results.txt` | `npm test` | TAP output of the whole suite (unit, integration, real OCR, contract, security, branding): 331 tests in 82 suites, final line `exit=0`. Current for this tree. Note when regenerating: `fix-docs.test.mjs` reads this file during the run, so write the output to a temporary file and move it into place afterwards — redirecting straight into it truncates it mid-run and fails the suite |
+| `test-results.txt` | `npm test` | TAP output of the whole suite (unit, integration, real OCR, contract, security, branding): 333 tests in 83 suites, final line `exit=0`. Current for this tree. Note when regenerating: `fix-docs.test.mjs` reads this file during the run, so write the output to a temporary file and move it into place afterwards — redirecting straight into it truncates it mid-run and fails the suite |
 | `receipt-benchmark.json` | `npm run bench` | per-fixture OCR outcome vs label, false accepts/rejects, review rate, latency percentiles, by-layout summary |
 | `load-benchmark.json` | `npm run load -- --receipts 30 --concurrency 5` | intake/processing throughput and latency with real OCR on one worker (engineering benchmark, not a capacity claim); the same six fixture images are shared across phones on purpose, so most outcomes are DUPLICATE / ownership-dispute REVIEW — the integrity check is `double_credits: 0` |
 | `migration-rehearsal.json` | rehearsal script (see `docs/release/migrations.md`) | migration 007 applied to a populated v1-shaped database with foreign keys ON; row counts identical, integrity ok |

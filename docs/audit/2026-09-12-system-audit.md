@@ -206,13 +206,22 @@ and it is worth knowing about before the next audit.
 | `pipeline-7` | minor | The participant outcome message is still keyed on attemptNo, so a reviewer's later decision is silently swallowed: a credited participant is only ever | Queued for the cross-cutting round: the fix spans files that were owned by different engineers, so no one package could make it. |
 | `schema-3` | minor | normalizePhone() returning null is stored as NULL in channel_events but conversation_sessions.wa_phone_uid is NOT NULL, dead-lettering the conversatio | Queued for the cross-cutting round: the fix spans files that were owned by different engineers, so no one package could make it. |
 | `tests-3` | minor | No test — and no code — stops one national ID registering from several phones; the identity fingerprint is written, indexed, and never read | Queued for the cross-cutting round: the fix spans files that were owned by different engineers, so no one package could make it. |
-| `winners-2` | minor | The participant half of the claim flow does not exist: "reply CLAIM" is unhandled and the collection message is never sent | Both halves live outside my files or need a design decision. (a) The CLAIM keyword must be added to parseWord()/the conversation states in src/conversation.mjs (not owned). (b) Enqueuing winner_collect on the 'accepted' branch of transitionInTx is in my file, but the copy interpolates {claim_ref} an |
-| `winners-6` | minor | Voiding a draw force-updates winner rows behind the lifecycle: no claim row, no per-winner audit, no CRM event, no row_version bump | The correct fix (per the reviewer's fix_note) is for voidDraw to drive each affected winner through winner-service's transitionInTx so the claims row, per-winner audit, row_version bump and CRM emit are produced by the lifecycle owner. drawService has no access to the winner service: both are constr |
+
+### Closed since this audit was written
+
+These two were left open because no single package could reach both sides of
+them. They are closed now; the rows are kept because a residual-risk table that
+quietly loses entries is not one anyone can audit against.
+
+| Finding | Severity | What was exposed | How it was closed |
+|---|---|---|---|
+| `winners-2` | minor | The participant half of the claim flow does not exist: "reply CLAIM" is unhandled and the collection message is never sent | **Closed.** (a) was fixed in the cross-cutting round: CLAIM, the bare reference and a run-together reference are all parsed, gated to the states a winner can be parked in, and answered by `claimTurn()`. (b) is now closed too: `transition()` enqueues `winner_collect` on the 'accepted' branch, keyed per acceptance so a winner who goes accepted → disputed → verified → accepted is told again. The `{claim_ref}` placeholder is removed rather than filled — the reference is held only as a hash, and reissuing one to print would invalidate what the winner already holds and answer their next reply with `claim_not_found`. Pinned by `winners-2` in `test/fix-drawwin.test.mjs` |
+| `winners-6` | minor | Voiding a draw force-updates winner rows behind the lifecycle: no claim row, no per-winner audit, no CRM event, no row_version bump | **Closed.** The winner service gained `voidForDraw`, which drives each affected winner through `transitionInTx`, and `drawService` gained `attachWinners` so `server.mjs` can bind the two after both are constructed (the construction-order problem that blocked this). Alternates are deliberately not promoted — the whole draw is void, so there is no vacancy — which is why it calls `transitionInTx` rather than `transition()`. Collected and already-replaced winners are skipped, and a winner that cannot be withdrawn raises a critical `winners.void_incomplete` alert rather than leaving a live claim on a voided draw unnoticed. Pinned by `winners-6` in `test/fix-drawwin.test.mjs` |
 
 ## Reproducing this
 
 The fixes are on this branch, in the commits titled "Audit fixes" and "Audit
-rounds two and three". The suite stands at 289 tests, all passing, with the
+rounds two and three". The suite stands at 333 tests, all passing, with the
 syntax gate clean.
 
 The findings, their evidence and the verification verdicts are machine-readable.
