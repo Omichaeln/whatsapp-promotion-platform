@@ -1,0 +1,42 @@
+-- 012: remove two indexes that no query plan ever chooses.
+--
+-- Finding schema-7 asked for the v2 entries(period_code) index (added by 011)
+-- AND for the dead v1 indexes it replaces to go. Only the first half was done,
+-- so this migration finishes it — but only for the indexes measured as dead.
+--
+-- Measured on a migrated database with 20k entries / 20k receipts and fresh
+-- statistics (EXPLAIN QUERY PLAN, before and after these two DROPs):
+--
+--   entries: campaign pool / active count        idx_entries_eligibility  (unchanged)
+--   entries: weekly barrier, per-receipt count   idx_entries_period_code  (unchanged)
+--   receipts: `where status=? order by created_at` idx_receipts_status    (unchanged)
+--   receipts: draw barrier `campaign_id=? and period_code=? and
+--             status in ('received','processing','delayed','REVIEW_REQUIRED')`
+--                                                idx_receipts_period      (unchanged)
+--
+--   idx_entries_draw       (campaign_id, draw_period, status): never chosen —
+--                          no query filters entries by draw_period any more
+--                          (v2 uses period_code), and where its campaign_id
+--                          prefix would help, the partial idx_entries_eligibility
+--                          or idx_entries_period_code is always cheaper.
+--   idx_receipts_processing(status) where status in ('received','processing'):
+--                          never chosen — a status-only lookup prefers
+--                          idx_receipts_status(status, created_at) because it
+--                          also satisfies the ORDER BY, and the only query that
+--                          uses that status set filters by campaign and period
+--                          first, which idx_receipts_period already serves.
+--                          WIDENING its predicate to the full queried set
+--                          ('received','processing','delayed','REVIEW_REQUIRED')
+--                          was the finding's other option; it was measured and
+--                          rejected, because it would only produce a second
+--                          index the planner still never picks.
+--
+-- idx_entries_eligibility is deliberately KEPT. The finding calls it unused, but
+-- it is in fact the index chosen for the campaign pool scan and the active-entry
+-- count; dropping it pushes both onto the wider idx_entries_period_code.
+--
+-- Both drops are pure write-amplification savings on the hot receipt/entry
+-- insert path and are reversible by re-creating the index.
+
+drop index if exists idx_entries_draw;
+drop index if exists idx_receipts_processing;

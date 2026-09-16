@@ -52,7 +52,7 @@ Legacy "WhatsApp Desk" code (`src/desk.mjs`, `src/ai.mjs`, `src/nlp.mjs`, `src/t
 | One award per canonical receipt | `entries` partial UNIQUE(canonical_receipt_id); `weight_units` models an approved multiplier without re-award |
 | Atomic decision | `pipeline.commit()` inside one SQLite transaction: validation row, receipt status, entry, canonical status, audit, outbox, CRM event |
 | Versions immutable | `campaign_versions.status=activated` cannot be edited; new versions are prospective; receipts pin `campaign_version_id` |
-| Draw execution once | `draws.status frozen→executing` reservation; output is a pure function of (snapshot, seed) so retries reproduce it; partial UNIQUE (campaign, period) where status≠voided |
+| Draw execution once | `draws.status frozen→executing` reservation; output is a pure function of (snapshot, seed) so retries reproduce it; `draws` UNIQUE(campaign_id, draw_period) on the derived label (`W-1`, `W-1#2` for a rerun — ADR-0007, there is no partial index and no constraint on `period_id`), so a concurrent second freeze of an undrawn period is rejected by the database, while a second **live** draw after a void is prevented only by the application's `DRAW_EXISTS` barrier in `src/draw.mjs` |
 | Approver ≠ operator | checked in `approve()` and by the verifier |
 | Audit ordering | single writer reading the chain head inside the caller's transaction; canonical JSON; HMAC checkpoints exported in bundles |
 | Optimistic concurrency | `row_version` on receipts, winners, sessions, participants; stale writes return 409 |
@@ -70,8 +70,9 @@ Legacy "WhatsApp Desk" code (`src/desk.mjs`, `src/ai.mjs`, `src/nlp.mjs`, `src/t
 
 ## Data flow for personal data
 
-Identity numbers: AES-256-GCM (`IDENTITY_KEY`) + mask + HMAC fingerprint; reveal requires `winner_ops`/`auditor` with a reason and is audited. Phones masked in lists/exports. Receipt images private on disk, served only through 30-minute HMAC-signed links to reviewers/auditors, purged after `RETENTION_RAW_RECEIPTS_DAYS`. Logs carry correlation ids and masked phone tails only. CRM mapping excludes identity numbers and raw receipts.
+Identity numbers: AES-256-GCM (`IDENTITY_KEY`) + mask + HMAC fingerprint; reveal requires `winner_ops`/`auditor` with a reason and is audited. Phones masked in lists/exports. Receipt images private on disk, served only through 30-minute HMAC-signed links to reviewers/auditors, purged after `RETENTION_RAW_RECEIPTS_DAYS`. Per-request logs are written only at `LOG_LEVEL=debug` (the router's info sink is null otherwise, `src/server.mjs`) and they carry the request path verbatim, so at `debug` the phone-bearing staff routes log full E.164 numbers — treat enabling it in production as a personal-data decision (`docs/release/production-checklist.md`). Correlation ids are always returned on `/api/*` responses. CRM mapping excludes identity numbers and raw receipts.
 
 ## ADR index
 
-See `docs/adr/`: 0001 transport, 0002 persistence and queue, 0003 receipt extraction, 0004 receipt identity and duplicates, 0005 draw auditability, 0006 identity protection, 0007 draws table rebuild (migration 008).
+See `docs/adr/`: 0001 transport, 0002 persistence and queue, 0003 receipt extraction, 0004 receipt identity and duplicates, 0005 draw auditability, 0006 identity protection, 0007 reruns and the v1 `draws` uniqueness constraint (the table rebuild it is filed under was **rejected**; no schema change was made).
+Migrations from 008 onward carry no ADR; each file's header states why it exists, and `docs/release/migrations.md` lists them with their rollback notes.

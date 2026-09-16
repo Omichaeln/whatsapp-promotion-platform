@@ -19,7 +19,7 @@ Set in the Railway service (never in the repository). Names are unchanged from t
 
 | Variable | Test deployment value | Notes |
 |---|---|---|
-| `ENVIRONMENT` | `staging` | defaults to `staging` on Railway when unset; `production` enables the activation gates and refuses the simulator, sample seeding and dev keys |
+| `ENVIRONMENT` | `staging` | defaults to `staging` on Railway when unset; `production` enables the activation gates and refuses the simulator transport and extractor, sample seeding and dev keys **at boot** — `validateConfig` requires `WHATSAPP_TRANSPORT=cloud-api`, `PUBLIC_BASE_URL` and `AUDIT_CHECKPOINT_KEY` there, and the server throws with the reason in the deploy log rather than starting on a misconfiguration |
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD` | your values (password ≥ 12 chars) | required outside `local`; the boot refuses to start without them and says why in the deploy log |
 | `IDENTITY_KEY` | long random secret | encrypts identity numbers; changing it later makes existing identities unreadable |
 | `AUDIT_CHECKPOINT_KEY` | long random secret | signs audit checkpoints and draw bundles |

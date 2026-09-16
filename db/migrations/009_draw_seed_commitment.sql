@@ -1,0 +1,15 @@
+-- 009: make the draw seed a real commitment.
+--
+-- freeze() generated seed_hex and stored it, with the comment "committed before
+-- any result exists" — but it was committed to nothing. The snapshot digest
+-- does not cover the seed, and the draw.frozen audit event did not record it,
+-- so anyone with database access could replace seed_hex between freeze and
+-- execute, re-roll the draw until it produced the winners they wanted, and the
+-- independent verifier still reported VERIFIED (reproduced before this change).
+--
+-- freeze() now records sha256(seed_hex) here AND inside the hash-chained
+-- draw.frozen audit payload, which is written before any result exists.
+-- execute() refuses to run if the seed no longer matches the commitment, and
+-- the exported bundle carries it so a third party can check the seed against a
+-- value fixed before the outcome was known.
+alter table draws add column seed_commitment text;

@@ -3,352 +3,2597 @@
 > node --no-warnings=ExperimentalWarning --test --test-concurrency=1 test/*.test.mjs
 
 TAP version 13
+# Subtest: audit chain integrity
+    # Subtest: covers WHO acted and WHY: rewriting actor or reason breaks verification
+    ok 1 - covers WHO acted and WHY: rewriting actor or reason breaks verification
+      ---
+      duration_ms: 17.488155
+      type: 'test'
+      ...
+    # Subtest: still detects payload tampering, deletion and reordering
+    ok 2 - still detects payload tampering, deletion and reordering
+      ---
+      duration_ms: 7.881634
+      type: 'test'
+      ...
+    # Subtest: a second writer cannot fork the chain (server + standalone worker)
+    ok 3 - a second writer cannot fork the chain (server + standalone worker)
+      ---
+      duration_ms: 82.746814
+      type: 'test'
+      ...
+    # Subtest: canonical encoding is stable, so a verifier recomputes the same bytes
+    ok 4 - canonical encoding is stable, so a verifier recomputes the same bytes
+      ---
+      duration_ms: 0.434792
+      type: 'test'
+      ...
+    # Subtest: the signed checkpoint detects a forged signature and a moved head
+    ok 5 - the signed checkpoint detects a forged signature and a moved head
+      ---
+      duration_ms: 2.206074
+      type: 'test'
+      ...
+    1..5
+ok 1 - audit chain integrity
+  ---
+  duration_ms: 700.565224
+  type: 'suite'
+  ...
+# Subtest: Huletts branding
+    # Subtest: both approved colourways of every lock-up are present and are real artwork
+    ok 1 - both approved colourways of every lock-up are present and are real artwork
+      ---
+      duration_ms: 1.466732
+      type: 'test'
+      ...
+    # Subtest: the primary palette is exactly the two specified values
+    ok 2 - the primary palette is exactly the two specified values
+      ---
+      duration_ms: 0.334173
+      type: 'test'
+      ...
+    # Subtest: no screen hand-types a near-miss of a brand colour
+    ok 3 - no screen hand-types a near-miss of a brand colour
+      ---
+      duration_ms: 2.361071
+      type: 'test'
+      ...
+    # Subtest: the mark is never restyled, stretched or faked in CSS
+    ok 4 - the mark is never restyled, stretched or faked in CSS
+      ---
+      duration_ms: 0.464688
+      type: 'test'
+      ...
+    # Subtest: every lock-up rendered by the console is complete
+    ok 5 - every lock-up rendered by the console is complete
+      ---
+      duration_ms: 0.846464
+      type: 'test'
+      ...
+    # Subtest: the console carries the brand in its title, icon and theme colour
+    ok 6 - the console carries the brand in its title, icon and theme colour
+      ---
+      duration_ms: 0.301375
+      type: 'test'
+      ...
+    # Subtest: the brand typeface is named first and the substitute is self-hosted
+    ok 7 - the brand typeface is named first and the substitute is self-hosted
+      ---
+      duration_ms: 0.478298
+      type: 'test'
+      ...
+    # Subtest: the participant's WhatsApp copy stays client-neutral
+    ok 8 - the participant's WhatsApp copy stays client-neutral
+      ---
+      duration_ms: 0.361823
+      type: 'test'
+      ...
+    # Subtest: the built bundle actually ships the brand assets
+    ok 9 - the built bundle actually ships the brand assets
+      ---
+      duration_ms: 0.354607
+      type: 'test'
+      ...
+    1..9
+ok 2 - Huletts branding
+  ---
+  duration_ms: 8.378006
+  type: 'suite'
+  ...
 # Subtest: CRM integration and reliability
     # Subtest: T-26: registration, entry and winner events reach the CRM with stable keys, no identity numbers, and are confirmed by read-back
     ok 1 - T-26: registration, entry and winner events reach the CRM with stable keys, no identity numbers, and are confirmed by read-back
       ---
-      duration_ms: 323.125821
+      duration_ms: 352.136109
       type: 'test'
       ...
     # Subtest: T-27: CRM down -> entries unaffected, events retry and survive; timeout-after-write -> unknown outcome reconciled without a duplicate; older version never regresses
     ok 2 - T-27: CRM down -> entries unaffected, events retry and survive; timeout-after-write -> unknown outcome reconciled without a duplicate; older version never regresses
       ---
-      duration_ms: 1975.882289
+      duration_ms: 1999.723678
+      type: 'test'
+      ...
+    # Subtest: a reviewer's decision reaches the CRM as its own version, and a genuine version collision is never silent
+    ok 3 - a reviewer's decision reaches the CRM as its own version, and a genuine version collision is never silent
+      ---
+      duration_ms: 282.559453
+      type: 'test'
+      ...
+    # Subtest: retention actually runs: the duplicate image copy, the raw identifier, expired images and old OCR text all go
+    ok 4 - retention actually runs: the duplicate image copy, the raw identifier, expired images and old OCR text all go
+      ---
+      duration_ms: 290.648197
       type: 'test'
       ...
     # Subtest: not_configured provider: events queue visibly and nothing is marked delivered
-    ok 3 - not_configured provider: events queue visibly and nothing is marked delivered
+    ok 5 - not_configured provider: events queue visibly and nothing is marked delivered
       ---
-      duration_ms: 495.965146
+      duration_ms: 552.638434
       type: 'test'
       ...
     # Subtest: T-13: a worker crash mid-extraction leaves a lease that expires; the job resumes and awards exactly once; replayed webhooks are deduped
-    ok 4 - T-13: a worker crash mid-extraction leaves a lease that expires; the job resumes and awards exactly once; replayed webhooks are deduped
+    ok 6 - T-13: a worker crash mid-extraction leaves a lease that expires; the job resumes and awards exactly once; replayed webhooks are deduped
       ---
-      duration_ms: 250.454821
+      duration_ms: 274.667379
       type: 'test'
       ...
     # Subtest: T-28: WhatsApp send failures — retryable backoff, permanent failure, unknown outcome never blindly retried; delivery callbacks update state; extractor outage delays rather than rejects
-    ok 5 - T-28: WhatsApp send failures — retryable backoff, permanent failure, unknown outcome never blindly retried; delivery callbacks update state; extractor outage delays rather than rejects
+    ok 7 - T-28: WhatsApp send failures — retryable backoff, permanent failure, unknown outcome never blindly retried; delivery callbacks update state; extractor outage delays rather than rejects
       ---
-      duration_ms: 241.967967
+      duration_ms: 289.695078
       type: 'test'
       ...
     # Subtest: T-28: forged Cloud API webhooks are rejected; valid ones are parsed into distinct message and status events
-    ok 6 - T-28: forged Cloud API webhooks are rejected; valid ones are parsed into distinct message and status events
+    ok 8 - T-28: forged Cloud API webhooks are rejected; valid ones are parsed into distinct message and status events
       ---
-      duration_ms: 89.459909
+      duration_ms: 96.704891
       type: 'test'
       ...
-    1..6
-ok 1 - CRM integration and reliability
+    1..8
+ok 3 - CRM integration and reliability
   ---
-  duration_ms: 3839.370586
+  duration_ms: 4693.029676
   type: 'suite'
   ...
 # Subtest: desk workflow (restored)
     # Subtest: files messages, triages them, writes threads + brief, marks processed
     ok 1 - files messages, triages them, writes threads + brief, marks processed
       ---
-      duration_ms: 39.36827
+      duration_ms: 45.559165
       type: 'test'
       ...
     # Subtest: usage metering records trailing costs
     ok 2 - usage metering records trailing costs
       ---
-      duration_ms: 39.343402
+      duration_ms: 44.685428
       type: 'test'
       ...
     1..2
-ok 2 - desk workflow (restored)
+ok 4 - desk workflow (restored)
   ---
-  duration_ms: 79.696367
+  duration_ms: 91.321555
   type: 'suite'
   ...
 # Subtest: draws, winners and publication
     # Subtest: pure selection: equal chance per entry, one prize per participant, deterministic for a seed, unbiased ordering
     ok 1 - pure selection: equal chance per entry, one prize per participant, deterministic for a seed, unbiased ordering
       ---
-      duration_ms: 3.805386
+      duration_ms: 3.816621
       type: 'test'
       ...
     # Subtest: T-19: freeze is blocked while the period is open or on-time submissions are unresolved; boundary is half-open
     ok 2 - T-19: freeze is blocked while the period is open or on-time submissions are unresolved; boundary is half-open
       ---
-      duration_ms: 216.80046
+      duration_ms: 241.332165
       type: 'test'
       ...
     # Subtest: T-20/T-21: freeze commits randomness before execution; execute is crash-safe and idempotent; approver must differ; approval verifies the hash
     ok 3 - T-20/T-21: freeze commits randomness before execution; execute is crash-safe and idempotent; approver must differ; approval verifies the hash
       ---
-      duration_ms: 4.957725
+      duration_ms: 6.862594
+      type: 'test'
+      ...
+    # Subtest: the draw seed is committed before any result exists: swapping it is refused and a forged commitment fails verification
+    ok 4 - the draw seed is committed before any result exists: swapping it is refused and a forged commitment fails verification
+      ---
+      duration_ms: 2102.018287
       type: 'test'
       ...
     # Subtest: T-22: the exported bundle verifies independently and fails when tampered
-    ok 4 - T-22: the exported bundle verifies independently and fails when tampered
+    ok 5 - T-22: the exported bundle verifies independently and fails when tampered
       ---
-      duration_ms: 371.753625
+      duration_ms: 619.127688
       type: 'test'
       ...
     # Subtest: T-23/T-24/T-25: publish materialises winners; notify is queued only after approval; claim lifecycle; alternates; publication is separate and safe
-    ok 5 - T-23/T-24/T-25: publish materialises winners; notify is queued only after approval; claim lifecycle; alternates; publication is separate and safe
+    ok 6 - T-23/T-24/T-25: publish materialises winners; notify is queued only after approval; claim lifecycle; alternates; publication is separate and safe
       ---
-      duration_ms: 36.971086
+      duration_ms: 68.475256
       type: 'test'
       ...
     # Subtest: void + rerun: an approved draw is never edited; a replacement is a new linked draw with a different approver
-    ok 6 - void + rerun: an approved draw is never edited; a replacement is a new linked draw with a different approver
+    ok 7 - void + rerun: an approved draw is never edited; a replacement is a new linked draw with a different approver
       ---
-      duration_ms: 1.538244
+      duration_ms: 10.892955
       type: 'test'
       ...
     # Subtest: disqualification of an entry in a frozen draw needs independent approval and preserves the award history
-    ok 7 - disqualification of an entry in a frozen draw needs independent approval and preserves the award history
+    ok 8 - disqualification of an entry in a frozen draw needs independent approval and preserves the award history
       ---
-      duration_ms: 1.213781
+      duration_ms: 2.169596
+      type: 'test'
+      ...
+    1..8
+ok 5 - draws, winners and publication
+  ---
+  duration_ms: 5574.54483
+  type: 'suite'
+  ...
+# Subtest: one till number, two purchases
+    # Subtest: a repeated receipt number with a different total is reviewed, not refused
+    ok 1 - a repeated receipt number with a different total is reviewed, not refused
+      ---
+      duration_ms: 584.750599
+      type: 'test'
+      ...
+    # Subtest: the reviewer path itself refuses to collapse two totals, not just the automatic path
+    ok 2 - the reviewer path itself refuses to collapse two totals, not just the automatic path
+      ---
+      duration_ms: 477.107503
+      type: 'test'
+      ...
+    # Subtest: the same slip photographed twice still resolves to one identity when only one total was read
+    ok 3 - the same slip photographed twice still resolves to one identity when only one total was read
+      ---
+      duration_ms: 480.972321
+      type: 'test'
+      ...
+    1..3
+ok 6 - one till number, two purchases
+  ---
+  duration_ms: 2084.881695
+  type: 'suite'
+  ...
+# Subtest: console-2 — a forbidden sub-tab must not take the console down
+    # Subtest: Activation renders the error instead of throwing on a 403
+    ok 1 - Activation renders the error instead of throwing on a 403
+      ---
+      duration_ms: 11.494446
+      type: 'test'
+      ...
+    1..1
+ok 7 - console-2 — a forbidden sub-tab must not take the console down
+  ---
+  duration_ms: 1409.959774
+  type: 'suite'
+  ...
+# Subtest: console-4 — Draws must follow the server's current-campaign rule
+    # Subtest: targets the newest active campaign, not the oldest one, and offers a selector
+    ok 1 - targets the newest active campaign, not the oldest one, and offers a selector
+      ---
+      duration_ms: 36.552576
+      type: 'test'
+      ...
+    1..1
+ok 8 - console-4 — Draws must follow the server's current-campaign rule
+  ---
+  duration_ms: 36.838311
+  type: 'suite'
+  ...
+# Subtest: console-3 — the outlet master form must not wipe what it cannot show
+    # Subtest: keeps aliases, collection flag and active window when only the text fields are edited
+    ok 1 - keeps aliases, collection flag and active window when only the text fields are edited
+      ---
+      duration_ms: 57.717864
+      type: 'test'
+      ...
+    1..1
+ok 9 - console-3 — the outlet master form must not wipe what it cannot show
+  ---
+  duration_ms: 58.219332
+  type: 'suite'
+  ...
+# Subtest: console-8 — operator actions that only existed as API routes
+    # Subtest: Readiness records go-live evidence (was: curl only)
+    ok 1 - Readiness records go-live evidence (was: curl only)
+      ---
+      duration_ms: 32.565409
+      type: 'test'
+      ...
+    # Subtest: a campaign outlet can be removed from the console
+    ok 2 - a campaign outlet can be removed from the console
+      ---
+      duration_ms: 21.051165
+      type: 'test'
+      ...
+    # Subtest: support can change a participant's phone number from the console
+    ok 3 - support can change a participant's phone number from the console
+      ---
+      duration_ms: 85.977647
+      type: 'test'
+      ...
+    1..3
+ok 10 - console-8 — operator actions that only existed as API routes
+  ---
+  duration_ms: 140.139547
+  type: 'suite'
+  ...
+# Subtest: console-1 — support handoff has a console surface
+    # Subtest: release from the console unblocks a participant pinned to the support queue
+    ok 1 - release from the console unblocks a participant pinned to the support queue
+      ---
+      duration_ms: 71.72029
+      type: 'test'
+      ...
+    1..1
+ok 11 - console-1 — support handoff has a console surface
+  ---
+  duration_ms: 71.952495
+  type: 'suite'
+  ...
+# Subtest: console-9 — winner claim steps
+    # Subtest: verification evidence is required, not an escapable prompt
+    ok 1 - verification evidence is required, not an escapable prompt
+      ---
+      duration_ms: 40.435253
+      type: 'test'
+      ...
+    # Subtest: the collection outlet is chosen from the real collection points
+    ok 2 - the collection outlet is chosen from the real collection points
+      ---
+      duration_ms: 38.236499
+      type: 'test'
+      ...
+    # Subtest: a campaign manager sees Publish, which the server grants them
+    ok 3 - a campaign manager sees Publish, which the server grants them
+      ---
+      duration_ms: 33.136031
+      type: 'test'
+      ...
+    1..3
+ok 12 - console-9 — winner claim steps
+  ---
+  duration_ms: 112.181403
+  type: 'suite'
+  ...
+# Subtest: console-7 — resend result is reachable by the role that holds it
+    # Subtest: support sees it on a qualified receipt
+    ok 1 - support sees it on a qualified receipt
+      ---
+      duration_ms: 9.604054
+      type: 'test'
+      ...
+    # Subtest: a reviewer does not
+    ok 2 - a reviewer does not
+      ---
+      duration_ms: 8.673881
+      type: 'test'
+      ...
+    1..2
+ok 13 - console-7 — resend result is reachable by the role that holds it
+  ---
+  duration_ms: 18.570454
+  type: 'suite'
+  ...
+# Subtest: console-6 — no integrity verdict from a response that never arrived
+    # Subtest: a 403 on the audit check reports the failure instead of 'chain broken' plus a green attribution
+    ok 1 - a 403 on the audit check reports the failure instead of 'chain broken' plus a green attribution
+      ---
+      duration_ms: 15.048169
+      type: 'test'
+      ...
+    # Subtest: an auditor still gets the real verdict
+    ok 2 - an auditor still gets the real verdict
+      ---
+      duration_ms: 13.782356
+      type: 'test'
+      ...
+    1..2
+ok 14 - console-6 — no integrity verdict from a response that never arrived
+  ---
+  duration_ms: 29.057402
+  type: 'suite'
+  ...
+# Subtest: console shell
+    # Subtest: exposes the support surface as a tab
+    ok 1 - exposes the support surface as a tab
+      ---
+      duration_ms: 0.230635
+      type: 'test'
+      ...
+    1..1
+ok 15 - console shell
+  ---
+  duration_ms: 0.350954
+  type: 'suite'
+  ...
+# Subtest: dual-control reinstatement has to be reachable from the console
+    # Subtest: the Reinstate control asks for an approver and sends it
+    ok 1 - the Reinstate control asks for an approver and sends it
+      ---
+      duration_ms: 35.560401
+      type: 'test'
+      ...
+    1..1
+ok 16 - dual-control reinstatement has to be reachable from the console
+  ---
+  duration_ms: 302.123959
+  type: 'suite'
+  ...
+# Subtest: console-9 (round 2) — claim evidence belongs to one winner
+    # Subtest: the ID-check note typed for one winner cannot arm the next winner's transition
+    ok 1 - the ID-check note typed for one winner cannot arm the next winner's transition
+      ---
+      duration_ms: 63.080217
+      type: 'test'
+      ...
+    # Subtest: the collection point chosen for one winner does not pre-arm the next
+    ok 2 - the collection point chosen for one winner does not pre-arm the next
+      ---
+      duration_ms: 63.660246
+      type: 'test'
+      ...
+    1..2
+ok 17 - console-9 (round 2) — claim evidence belongs to one winner
+  ---
+  duration_ms: 127.006919
+  type: 'suite'
+  ...
+# Subtest: console-9 (round 2) — the select must offer this campaign's collection points
+    # Subtest: an outlet the campaign has excluded is not offered even when the master flag is set
+    ok 1 - an outlet the campaign has excluded is not offered even when the master flag is set
+      ---
+      duration_ms: 26.397872
+      type: 'test'
+      ...
+    1..1
+ok 18 - console-9 (round 2) — the select must offer this campaign's collection points
+  ---
+  duration_ms: 26.593421
+  type: 'suite'
+  ...
+# Subtest: console-9 (round 2) — no claim step asks for structured input with prompt()
+    # Subtest: Disputed, Ineligible and Replace take a required inline reason
+    ok 1 - Disputed, Ineligible and Replace take a required inline reason
+      ---
+      duration_ms: 42.059623
+      type: 'test'
+      ...
+    # Subtest: Withdraw publication takes a required inline reason
+    ok 2 - Withdraw publication takes a required inline reason
+      ---
+      duration_ms: 39.912252
+      type: 'test'
+      ...
+    1..2
+ok 19 - console-9 (round 2) — no claim step asks for structured input with prompt()
+  ---
+  duration_ms: 82.277723
+  type: 'suite'
+  ...
+# Subtest: console-3 (round 2) — retailer_code is part of the row the upsert replaces
+    # Subtest: survives a correction typed into the five text fields
+    ok 1 - survives a correction typed into the five text fields
+      ---
+      duration_ms: 53.661884
+      type: 'test'
+      ...
+    # Subtest: a non-ISO active window is refused before it is posted
+    ok 2 - a non-ISO active window is refused before it is posted
+      ---
+      duration_ms: 27.365346
+      type: 'test'
+      ...
+    1..2
+ok 20 - console-3 (round 2) — retailer_code is part of the row the upsert replaces
+  ---
+  duration_ms: 81.318177
+  type: 'suite'
+  ...
+# Subtest: console-6 (round 2) — a refused table must not also claim to be empty
+    # Subtest: the audit events table shows the refusal in place of 'Nothing here yet.'
+    ok 1 - the audit events table shows the refusal in place of 'Nothing here yet.'
+      ---
+      duration_ms: 10.448174
+      type: 'test'
+      ...
+    # Subtest: the staff accounts table shows the refusal in place of 'Nothing here yet.'
+    ok 2 - the staff accounts table shows the refusal in place of 'Nothing here yet.'
+      ---
+      duration_ms: 10.011235
+      type: 'test'
+      ...
+    1..2
+ok 21 - console-6 (round 2) — a refused table must not also claim to be empty
+  ---
+  duration_ms: 20.67505
+  type: 'suite'
+  ...
+# Subtest: console-4 (round 2) — the draws selector must render its own value
+    # Subtest: offers a placeholder when no campaign is preselected
+    ok 1 - offers a placeholder when no campaign is preselected
+      ---
+      duration_ms: 10.168914
+      type: 'test'
+      ...
+    1..1
+ok 22 - console-4 (round 2) — the draws selector must render its own value
+  ---
+  duration_ms: 10.341023
+  type: 'suite'
+  ...
+# Subtest: console-8 (round 3) — removing one outlet removes only that outlet
+    # Subtest: issues a targeted DELETE and never replaces the whole membership
+    ok 1 - issues a targeted DELETE and never replaces the whole membership
+      ---
+      duration_ms: 21.462746
+      type: 'test'
+      ...
+    # Subtest: declining the confirmation removes nothing
+    ok 2 - declining the confirmation removes nothing
+      ---
+      duration_ms: 16.857543
+      type: 'test'
+      ...
+    1..2
+ok 23 - console-8 (round 3) — removing one outlet removes only that outlet
+  ---
+  duration_ms: 38.578836
+  type: 'suite'
+  ...
+# Subtest: nlp command parsing (legacy-2, legacy-9)
+    # Subtest: the recipient of a natural-language send is only ever the trailing "to <number>"
+    ok 1 - the recipient of a natural-language send is only ever the trailing "to <number>"
+      ---
+      duration_ms: 4.128493
+      type: 'test'
+      ...
+    # Subtest: "unlink" is not swallowed by the LINK intent
+    ok 2 - "unlink" is not swallowed by the LINK intent
+      ---
+      duration_ms: 1.756618
+      type: 'test'
+      ...
+    # Subtest: legacy-9: word boundaries do not throw away inflected keywords
+    ok 3 - legacy-9: word boundaries do not throw away inflected keywords
+      ---
+      duration_ms: 0.390785
+      type: 'test'
+      ...
+    1..3
+ok 24 - nlp command parsing (legacy-2, legacy-9)
+  ---
+  duration_ms: 7.668221
+  type: 'suite'
+  ...
+# Subtest: conversation fixes
+    # Subtest: conversation-2: option 8 of a numbered list is selectable and is not answered with Help
+    ok 1 - conversation-2: option 8 of a numbered list is selectable and is not answered with Help
+      ---
+      duration_ms: 57.279417
+      type: 'test'
+      ...
+    # Subtest: conversation-9: outlet search pages instead of silently dropping matches, and the word MORE works
+    ok 2 - conversation-9: outlet search pages instead of silently dropping matches, and the word MORE works
+      ---
+      duration_ms: 23.154228
+      type: 'test'
+      ...
+    # Subtest: conversation-3: a withdrawn participant is answered instead of throwing out of the turn
+    ok 3 - conversation-3: a withdrawn participant is answered instead of throwing out of the turn
+      ---
+      duration_ms: 53.524983
+      type: 'test'
+      ...
+    # Subtest: conversation-5 / requirements-8: an unclaimed support handoff is handed back; a claimed one is not
+    ok 4 - conversation-5 / requirements-8: an unclaimed support handoff is handed back; a claimed one is not
+      ---
+      duration_ms: 85.195509
+      type: 'test'
+      ...
+    # Subtest: conversation-5: a second and third requester are not swallowed by the hourly kind-dedup
+    ok 5 - conversation-5: a second and third requester are not swallowed by the hourly kind-dedup
+      ---
+      duration_ms: 70.972325
+      type: 'test'
+      ...
+    # Subtest: conversation-1: a receipt photo sent at HOME is submitted against the last outlet, never dropped
+    ok 6 - conversation-1: a receipt photo sent at HOME is submitted against the last outlet, never dropped
+      ---
+      duration_ms: 734.371756
+      type: 'test'
+      ...
+    # Subtest: conversation-4: a concurrent session write does not turn an accepted receipt into "send a photo"
+    ok 7 - conversation-4: a concurrent session write does not turn an accepted receipt into "send a photo"
+      ---
+      duration_ms: 259.559269
+      type: 'test'
+      ...
+    # Subtest: conversation-6: a self-service profile change is written to the audit chain
+    ok 8 - conversation-6: a self-service profile change is written to the audit chain
+      ---
+      duration_ms: 67.788376
+      type: 'test'
+      ...
+    # Subtest: privacy-7: STOP withdraws the participant instead of answering "Cancelled"
+    ok 9 - privacy-7: STOP withdraws the participant instead of answering "Cancelled"
+      ---
+      duration_ms: 32.75385
+      type: 'test'
+      ...
+    # Subtest: conversation-10: a town containing a newline cannot forge a winners line
+    ok 10 - conversation-10: a town containing a newline cannot forge a winners line
+      ---
+      duration_ms: 23.701797
+      type: 'test'
+      ...
+    # Subtest: conversation-8: correcting "1 name" at the confirmation returns to the confirmation
+    ok 11 - conversation-8: correcting "1 name" at the confirmation returns to the confirmation
+      ---
+      duration_ms: 20.936561
+      type: 'test'
+      ...
+    # Subtest: requirements-4: a notified winner who replies CLAIM (or the reference) is answered and the acknowledgement audited
+    ok 12 - requirements-4: a notified winner who replies CLAIM (or the reference) is answered and the acknowledgement audited
+      ---
+      duration_ms: 265.764374
+      type: 'test'
+      ...
+    # Subtest: conversation-5(claim): the bare word CLAIM is only consumed at HOME/SUPPORT, never mid-registration
+    ok 13 - conversation-5(claim): the bare word CLAIM is only consumed at HOME/SUPPORT, never mid-registration
+      ---
+      duration_ms: 19.933506
+      type: 'test'
+      ...
+    # Subtest: conversation-3(status): a suspended participant is not told they asked to be removed
+    ok 14 - conversation-3(status): a suspended participant is not told they asked to be removed
+      ---
+      duration_ms: 33.630761
+      type: 'test'
+      ...
+    # Subtest: requirements-5: identity_stage="winner" gives a 3-option confirmation whose "3" edits the town
+    ok 15 - requirements-5: identity_stage="winner" gives a 3-option confirmation whose "3" edits the town
+      ---
+      duration_ms: 16.58277
+      type: 'test'
+      ...
+    # Subtest: conversation-3(generic): a domain error is answered and the event settled; a CONFLICT still replays
+    ok 16 - conversation-3(generic): a domain error is answered and the event settled; a CONFLICT still replays
+      ---
+      duration_ms: 28.265893
+      type: 'test'
+      ...
+    # Subtest: parseIntent: CLAIM and STOP are recognised, numbers still ride along
+    ok 17 - parseIntent: CLAIM and STOP are recognised, numbers still ride along
+      ---
+      duration_ms: 0.361268
+      type: 'test'
+      ...
+    1..17
+ok 25 - conversation fixes
+  ---
+  duration_ms: 2390.798568
+  type: 'suite'
+  ...
+# Subtest: CRM outbox fixes: reconciliation honesty, starvation, credential failures, delivered_at
+    # Subtest: crm-5 / crosscut-10: a reconciliation run against an unreachable vendor is never reported as clean
+    ok 1 - crm-5 / crosscut-10: a reconciliation run against an unreachable vendor is never reported as clean
+      ---
+      duration_ms: 5.959081
+      type: 'test'
+      ...
+    # Subtest: crm-5: a genuinely clean run stays clean — no partial flag, no alert, no errors
+    ok 2 - crm-5: a genuinely clean run stays clean — no partial flag, no alert, no errors
+      ---
+      duration_ms: 2.783313
+      type: 'test'
+      ...
+    # Subtest: crm-3: a backlog of permanent failures must not starve newer unknown_outcome events out of the scan window
+    ok 3 - crm-3: a backlog of permanent failures must not starve newer unknown_outcome events out of the scan window
+      ---
+      duration_ms: 23.975929
+      type: 'test'
+      ...
+    # Subtest: crm-2: an expired CRM credential is retried, not dead-lettered on the first attempt
+    ok 4 - crm-2: an expired CRM credential is retried, not dead-lettered on the first attempt
+      ---
+      duration_ms: 5.899823
+      type: 'test'
+      ...
+    # Subtest: crm-2: after the credential is fixed, reconcile requeues the auth/transport dead-letters in bulk and leaves superseded and rejected events alone
+    ok 5 - crm-2: after the credential is fixed, reconcile requeues the auth/transport dead-letters in bulk and leaves superseded and rejected events alone
+      ---
+      duration_ms: 5.387017
+      type: 'test'
+      ...
+    # Subtest: crm-8: delivered_at only ever records a read-back-confirmed delivery
+    ok 6 - crm-8: delivered_at only ever records a read-back-confirmed delivery
+      ---
+      duration_ms: 3.850774
+      type: 'test'
+      ...
+    1..6
+ok 26 - CRM outbox fixes: reconciliation honesty, starvation, credential failures, delivered_at
+  ---
+  duration_ms: 173.67025
+  type: 'suite'
+  ...
+# Subtest: crosscut — login throttle (round-3 reviewer problems 2 and 3)
+    # Subtest: guessing cannot flood the map and keep its own hard ceiling down at the same time
+    ok 1 - guessing cannot flood the map and keep its own hard ceiling down at the same time
+      ---
+      duration_ms: 2.117016
+      type: 'test'
+      ...
+    # Subtest: one flooding source cannot spend the whole account budget and lock the holder out
+    ok 2 - one flooding source cannot spend the whole account budget and lock the holder out
+      ---
+      duration_ms: 1174.853226
+      type: 'test'
+      ...
+    # Subtest: a malformed credential answers 401, as the published route contract says
+    ok 3 - a malformed credential answers 401, as the published route contract says
+      ---
+      duration_ms: 113.343091
+      type: 'test'
+      ...
+    1..3
+ok 27 - crosscut — login throttle (round-3 reviewer problems 2 and 3)
+  ---
+  duration_ms: 1291.931884
+  type: 'suite'
+  ...
+# Subtest: crosscut — a send interrupted mid-dispatch (ops-5, outbox-2)
+    # Subtest: shutdown drains the in-flight tick instead of abandoning the provider call
+    ok 1 - shutdown drains the in-flight tick instead of abandoning the provider call
+      ---
+      duration_ms: 1772.247525
+      type: 'test'
+      ...
+    # Subtest: a row abandoned in 'sending' is never re-dispatched: it is reclaimed for an operator
+    ok 2 - a row abandoned in 'sending' is never re-dispatched: it is reclaimed for an operator
+      ---
+      duration_ms: 120.994341
+      type: 'test'
+      ...
+    # Subtest: a message whose recipient was erased cannot be requeued by the operator
+    ok 3 - a message whose recipient was erased cannot be requeued by the operator
+      ---
+      duration_ms: 104.660647
+      type: 'test'
+      ...
+    1..3
+ok 28 - crosscut — a send interrupted mid-dispatch (ops-5, outbox-2)
+  ---
+  duration_ms: 1998.387332
+  type: 'suite'
+  ...
+# Subtest: crosscut — round-two leftovers in files nobody owned
+    # Subtest: GET /api/qr publishes the media type it actually returns, and is not sniffable
+    ok 1 - GET /api/qr publishes the media type it actually returns, and is not sniffable
+      ---
+      duration_ms: 165.126581
+      type: 'test'
+      ...
+    1..1
+ok 29 - crosscut — round-two leftovers in files nobody owned
+  ---
+  duration_ms: 165.391226
+  type: 'suite'
+  ...
+# Subtest: crosscut — a second reviewer decision must reach the participant (pipeline-7)
+    # Subtest: a receipt credited on the reviewer's second look is told so, not left on 'does not qualify'
+    ok 1 - a receipt credited on the reviewer's second look is told so, not left on 'does not qualify'
+      ---
+      duration_ms: 792.863538
+      type: 'test'
+      ...
+    1..1
+ok 30 - crosscut — a second reviewer decision must reach the participant (pipeline-7)
+  ---
+  duration_ms: 793.184723
+  type: 'suite'
+  ...
+# Subtest: crosscut — an inbound event with no addressable sender (schema-3)
+    # Subtest: is ignored with the raw id kept, not dead-lettered after five retries
+    ok 1 - is ignored with the raw id kept, not dead-lettered after five retries
+      ---
+      duration_ms: 102.149955
+      type: 'test'
+      ...
+    1..1
+ok 31 - crosscut — an inbound event with no addressable sender (schema-3)
+  ---
+  duration_ms: 102.490694
+  type: 'suite'
+  ...
+# Subtest: crosscut — the technical admin has no prize or review authority (authz-6)
+    # Subtest: platform_admin cannot unmask a national ID or move an entry in or out of the draw pool
+    ok 1 - platform_admin cannot unmask a national ID or move an entry in or out of the draw pool
+      ---
+      duration_ms: 1108.277919
+      type: 'test'
+      ...
+    1..1
+ok 32 - crosscut — the technical admin has no prize or review authority (authz-6)
+  ---
+  duration_ms: 1108.473929
+  type: 'suite'
+  ...
+# Subtest: crosscut — an unsigned audit checkpoint says so (ops-4)
+    # Subtest: no AUDIT_CHECKPOINT_KEY means no signature, and nothing reports it as verified
+    ok 1 - no AUDIT_CHECKPOINT_KEY means no signature, and nothing reports it as verified
+      ---
+      duration_ms: 55.676103
+      type: 'test'
+      ...
+    1..1
+ok 33 - crosscut — an unsigned audit checkpoint says so (ops-4)
+  ---
+  duration_ms: 55.785838
+  type: 'suite'
+  ...
+# Subtest: crosscut — swapping the live rules is an activation too (ops-7)
+    # Subtest: a production campaign's rules cannot be replaced by a version that fails the content/rules checks
+    ok 1 - a production campaign's rules cannot be replaced by a version that fails the content/rules checks
+      ---
+      duration_ms: 636.514232
+      type: 'test'
+      ...
+    1..1
+ok 34 - crosscut — swapping the live rules is an activation too (ops-7)
+  ---
+  duration_ms: 636.706791
+  type: 'suite'
+  ...
+# Subtest: crosscut — one national ID on several phones is detected (tests-3)
+    # Subtest: a second registration with an ID already on file raises an operator alert and is audited
+    ok 1 - a second registration with an ID already on file raises an operator alert and is audited
+      ---
+      duration_ms: 546.454335
+      type: 'test'
+      ...
+    1..1
+ok 35 - crosscut — one national ID on several phones is detected (tests-3)
+  ---
+  duration_ms: 546.559722
+  type: 'suite'
+  ...
+# Subtest: crosscut — handoff really does suspend automated outbound (conversation-7)
+    # Subtest: a receipt outcome decided during a support handoff is held, then delivered when the operator releases
+    ok 1 - a receipt outcome decided during a support handoff is held, then delivered when the operator releases
+      ---
+      duration_ms: 857.418773
+      type: 'test'
+      ...
+    1..1
+ok 36 - crosscut — handoff really does suspend automated outbound (conversation-7)
+  ---
+  duration_ms: 857.618549
+  type: 'suite'
+  ...
+# Subtest: crosscut — housekeeping consistency checks (round2-worker-review-check, schema-4 residue)
+    # Subtest: a receipt stuck in REVIEW_REQUIRED with no open review task is reported to operators
+    ok 1 - a receipt stuck in REVIEW_REQUIRED with no open review task is reported to operators
+      ---
+      duration_ms: 733.464301
+      type: 'test'
+      ...
+    # Subtest: planner statistics are refreshed by housekeeping, not only at a boot that saw an empty database
+    ok 2 - planner statistics are refreshed by housekeeping, not only at a boot that saw an empty database
+      ---
+      duration_ms: 515.802534
+      type: 'test'
+      ...
+    1..2
+ok 37 - crosscut — housekeeping consistency checks (round2-worker-review-check, schema-4 residue)
+  ---
+  duration_ms: 1249.528214
+  type: 'suite'
+  ...
+# Subtest: docs: documentation matches the code it describes
+    # Subtest: request-logging claims match the LOG_LEVEL gate in src/server.mjs
+    ok 1 - request-logging claims match the LOG_LEVEL gate in src/server.mjs
+      ---
+      duration_ms: 2.550541
+      type: 'test'
+      ...
+    # Subtest: the request-logging guard also fires when the code stops gating on debug
+    ok 2 - the request-logging guard also fires when the code stops gating on debug
+      ---
+      duration_ms: 0.217703
+      type: 'test'
+      ...
+    # Subtest: the production simulator-transport claim matches validateConfig
+    ok 3 - the production simulator-transport claim matches validateConfig
+      ---
+      duration_ms: 1.099639
+      type: 'test'
+      ...
+    # Subtest: architecture.md claims only the draws constraints that exist in db/migrations
+    ok 4 - architecture.md claims only the draws constraints that exist in db/migrations
+      ---
+      duration_ms: 0.76946
+      type: 'test'
+      ...
+    # Subtest: every migration file is documented in docs/release/migrations.md
+    ok 5 - every migration file is documented in docs/release/migrations.md
+      ---
+      duration_ms: 0.442523
+      type: 'test'
+      ...
+    # Subtest: the rollback runbook accounts for every migration a rollback would step over
+    ok 6 - the rollback runbook accounts for every migration a rollback would step over
+      ---
+      duration_ms: 0.351257
+      type: 'test'
+      ...
+    # Subtest: no document describes migration 008 as a rebuild of draws
+    ok 7 - no document describes migration 008 as a rebuild of draws
+      ---
+      duration_ms: 0.462572
+      type: 'test'
+      ...
+    # Subtest: the readiness statement's migration range covers every migration on disk
+    ok 8 - the readiness statement's migration range covers every migration on disk
+      ---
+      duration_ms: 1.448409
+      type: 'test'
+      ...
+    # Subtest: every environment variable the boot path reads is in CONFIG_SCHEMA or documented as outside it
+    ok 9 - every environment variable the boot path reads is in CONFIG_SCHEMA or documented as outside it
+      ---
+      duration_ms: 1.030515
+      type: 'test'
+      ...
+    # Subtest: configuration.md counts the out-of-schema variables as the code actually reads them
+    ok 10 - configuration.md counts the out-of-schema variables as the code actually reads them
+      ---
+      duration_ms: 0.87109
+      type: 'test'
+      ...
+    # Subtest: .env.example lists every CONFIG_SCHEMA name, as configuration.md says it does
+    ok 11 - .env.example lists every CONFIG_SCHEMA name, as configuration.md says it does
+      ---
+      duration_ms: 0.462285
+      type: 'test'
+      ...
+    # Subtest: .env.example does not silently switch off the volume guard it documents
+    ok 12 - .env.example does not silently switch off the volume guard it documents
+      ---
+      duration_ms: 0.517164
+      type: 'test'
+      ...
+    # Subtest: documents citing the recorded test evidence say it does not cover this tree
+    ok 13 - documents citing the recorded test evidence say it does not cover this tree
+      ---
+      duration_ms: 0.837533
+      type: 'test'
+      ...
+    # Subtest: the staleness qualifier is released by a real `npm test` regeneration
+    ok 14 - the staleness qualifier is released by a real `npm test` regeneration
+      ---
+      duration_ms: 2.30325
+      type: 'test'
+      ...
+    # Subtest: every commit a delivery document cites is in this branch's history
+    ok 15 - every commit a delivery document cites is in this branch's history
+      ---
+      duration_ms: 18.744636
+      type: 'test'
+      ...
+    1..15
+ok 38 - docs: documentation matches the code it describes
+  ---
+  duration_ms: 33.744618
+  type: 'suite'
+  ...
+# Subtest: docs: claims checked against a running server
+    # Subtest: api.md promises a correlation id only where one is actually sent
+    ok 1 - api.md promises a correlation id only where one is actually sent
+      ---
+      duration_ms: 28.886034
+      type: 'test'
+      ...
+    # Subtest: the post-deploy verification query matches what schema_meta reports
+    ok 2 - the post-deploy verification query matches what schema_meta reports
+      ---
+      duration_ms: 0.540666
+      type: 'test'
+      ...
+    1..2
+ok 39 - docs: claims checked against a running server
+  ---
+  duration_ms: 152.811167
+  type: 'suite'
+  ...
+# Subtest: domain fixes
+    # Subtest: outlet master edits write an audit row naming the actor and the before/after
+    ok 1 - outlet master edits write an audit row naming the actor and the before/after
+      ---
+      duration_ms: 3.024927
+      type: 'test'
+      ...
+    # Subtest: POST /api/outlets attributes the audit row to the signed-in campaign manager
+    ok 2 - POST /api/outlets attributes the audit row to the signed-in campaign manager
+      ---
+      duration_ms: 151.176812
+      type: 'test'
+      ...
+    # Subtest: product master edits write an audit row with the previous row
+    ok 3 - product master edits write an audit row with the previous row
+      ---
+      duration_ms: 2.874911
+      type: 'test'
+      ...
+    # Subtest: a no-op upsert writes no audit row
+    ok 4 - a no-op upsert writes no audit row
+      ---
+      duration_ms: 1.50674
+      type: 'test'
+      ...
+    # Subtest: anonymisation erases the phone, the conversation and the national ID everywhere
+    ok 5 - anonymisation erases the phone, the conversation and the national ID everywhere
+      ---
+      duration_ms: 93.535758
+      type: 'test'
+      ...
+    # Subtest: a published winner can still be erased, and the public list stops naming them
+    ok 6 - a published winner can still be erased, and the public list stops naming them
+      ---
+      duration_ms: 49.648987
+      type: 'test'
+      ...
+    # Subtest: erasure after a support phone correction leaves nothing under the old number
+    ok 7 - erasure after a support phone correction leaves nothing under the old number
+      ---
+      duration_ms: 53.859137
+      type: 'test'
+      ...
+    # Subtest: erasure cancels queued inbound work instead of replying to a dead number
+    ok 8 - erasure cancels queued inbound work instead of replying to a dead number
+      ---
+      duration_ms: 45.904531
+      type: 'test'
+      ...
+    # Subtest: re-enrolling MFA cannot silently disable it, and enrolment is audited
+    ok 9 - re-enrolling MFA cannot silently disable it, and enrolment is audited
+      ---
+      duration_ms: 60.322217
+      type: 'test'
+      ...
+    # Subtest: POST /api/mfa/enroll on an enabled account is rejected by the API
+    ok 10 - POST /api/mfa/enroll on an enabled account is rejected by the API
+      ---
+      duration_ms: 137.207322
+      type: 'test'
+      ...
+    1..10
+ok 40 - domain fixes
+  ---
+  duration_ms: 1227.056793
+  type: 'suite'
+  ...
+# Subtest: migrations and indexes
+    # Subtest: schema_version reflects the highest applied migration and the dead retention keys are gone
+    ok 1 - schema_version reflects the highest applied migration and the dead retention keys are gone
+      ---
+      duration_ms: 60.908915
+      type: 'test'
+      ...
+    # Subtest: a second migrator that applies a pending file first does not crash the boot
+    ok 2 - a second migrator that applies a pending file first does not crash the boot
+      ---
+      duration_ms: 57.751455
+      type: 'test'
+      ...
+    # Subtest: duplicate detection and the draw barrier have indexes to work with
+    ok 3 - duplicate detection and the draw barrier have indexes to work with
+      ---
+      duration_ms: 73.151182
+      type: 'test'
+      ...
+    # Subtest: a transient ledger read failure inside a migration aborts instead of truncating schema_meta
+    ok 4 - a transient ledger read failure inside a migration aborts instead of truncating schema_meta
+      ---
+      duration_ms: 57.311678
+      type: 'test'
+      ...
+    1..4
+ok 41 - migrations and indexes
+  ---
+  duration_ms: 250.785459
+  type: 'suite'
+  ...
+# Subtest: drawwin audit fixes
+    # Subtest: draw-9: a period config that overrides only some fields keeps the campaign's prize tiers
+    ok 1 - draw-9: a period config that overrides only some fields keeps the campaign's prize tiers
+      ---
+      duration_ms: 1.015095
+      type: 'test'
+      ...
+    # Subtest: draw-6: a campaign with no prize plan is blocked, and a zero-winner bundle does not verify
+    ok 2 - draw-6: a campaign with no prize plan is blocked, and a zero-winner bundle does not verify
+      ---
+      duration_ms: 79.648363
+      type: 'test'
+      ...
+    # Subtest: draw-5: the user who froze the candidate pool cannot approve (or reject) the draw
+    ok 3 - draw-5: the user who froze the candidate pool cannot approve (or reject) the draw
+      ---
+      duration_ms: 4.029509
+      type: 'test'
+      ...
+    # Subtest: crosscut-4/6: withdrawn and erased participants are recorded as exclusions, and the rules versions are disclosed
+    ok 4 - crosscut-4/6: withdrawn and erased participants are recorded as exclusions, and the rules versions are disclosed
+      ---
+      duration_ms: 6.03893
+      type: 'test'
+      ...
+    # Subtest: draw-8: a frozen bundle (the pre-commitment evidence) verifies
+    ok 5 - draw-8: a frozen bundle (the pre-commitment evidence) verifies
+      ---
+      duration_ms: 65.043215
+      type: 'test'
+      ...
+    # Subtest: draw-4: one actor cannot void an executed draw and re-roll; the replacement discloses its predecessor
+    ok 6 - draw-4: one actor cannot void an executed draw and re-roll; the replacement discloses its predecessor
+      ---
+      duration_ms: 72.279082
+      type: 'test'
+      ...
+    # Subtest: draw-3: editing an exported audit event's attribution no longer verifies
+    ok 7 - draw-3: editing an exported audit event's attribution no longer verifies
+      ---
+      duration_ms: 194.089779
+      type: 'test'
+      ...
+    # Subtest: draw-7: reconstruct-draw recomputes a genuine draw from its snapshot
+    ok 8 - draw-7: reconstruct-draw recomputes a genuine draw from its snapshot
+      ---
+      duration_ms: 73.012689
+      type: 'test'
+      ...
+    # Subtest: winners-7: collection is refused at an outlet this campaign excludes
+    ok 9 - winners-7: collection is refused at an outlet this campaign excludes
+      ---
+      duration_ms: 10.968195
+      type: 'test'
+      ...
+    # Subtest: winners-4: withdrawal reaches the public winner list, and an erased participant cannot be published
+    ok 10 - winners-4: withdrawal reaches the public winner list, and an erased participant cannot be published
+      ---
+      duration_ms: 33.585946
+      type: 'test'
+      ...
+    # Subtest: winners-1: a winner whose notification never left is not auto-expired
+    ok 11 - winners-1: a winner whose notification never left is not auto-expired
+      ---
+      duration_ms: 4.090038
+      type: 'test'
+      ...
+    # Subtest: winners-3/crm-6: a disqualified entry cannot advance or be promoted, and a promotion reaches the CRM
+    ok 12 - winners-3/crm-6: a disqualified entry cannot advance or be promoted, and a promotion reaches the CRM
+      ---
+      duration_ms: 5.382041
+      type: 'test'
+      ...
+    # Subtest: winners-1 (round 2): the expiry run reports every skipped winner, and a send in backoff does not block expiry
+    ok 13 - winners-1 (round 2): the expiry run reports every skipped winner, and a send in backoff does not block expiry
+      ---
+      duration_ms: 7.0574
+      type: 'test'
+      ...
+    1..13
+ok 42 - drawwin audit fixes
+  ---
+  duration_ms: 4333.645715
+  type: 'suite'
+  ...
+# Subtest: drawwin audit fixes: the winner lifecycle's two silent gaps
+    # Subtest: winners-2: accepting a winner tells them where to collect, without reissuing the claim reference
+    ok 1 - winners-2: accepting a winner tells them where to collect, without reissuing the claim reference
+      ---
+      duration_ms: 8.860746
+      type: 'test'
+      ...
+    # Subtest: winners-6: voiding a draw takes its winners out through the lifecycle, not behind it
+    ok 2 - winners-6: voiding a draw takes its winners out through the lifecycle, not behind it
+      ---
+      duration_ms: 13.929875
+      type: 'test'
+      ...
+    1..2
+ok 43 - drawwin audit fixes: the winner lifecycle's two silent gaps
+  ---
+  duration_ms: 1494.834889
+  type: 'suite'
+  ...
+# Subtest: remote-smoke participant identities (scripts/remote-smoke.mjs)
+    # Subtest: the two smoke participants are two different phone numbers
+    ok 1 - the two smoke participants are two different phone numbers
+      ---
+      duration_ms: 1.114245
+      type: 'test'
+      ...
+    # Subtest: replaying the script's own journey leaves P1's two receipts inside the menu-7 status copy
+    ok 2 - replaying the script's own journey leaves P1's two receipts inside the menu-7 status copy
+      ---
+      duration_ms: 1551.229165
+      type: 'test'
+      ...
+    1..2
+ok 44 - remote-smoke participant identities (scripts/remote-smoke.mjs)
+  ---
+  duration_ms: 1553.59032
+  type: 'suite'
+  ...
+# Subtest: extract: OCR worker failures are contained and the worker is never shared with a zombie job
+    # Subtest: extract-3: concurrent callers get ONE worker (a probe racing the first receipt leaked a 56 MB thread per call)
+    ok 1 - extract-3: concurrent callers get ONE worker (a probe racing the first receipt leaked a 56 MB thread per call)
+      ---
+      duration_ms: 245.956089
+      type: 'test'
+      ...
+# Error in pixReadStream: Unknown format: no pix returned
+# Error in pixRead: pix not read
+# Image file /input cannot be read!
+    # Subtest: extract-2: an image the engine cannot read fails that call instead of killing the process
+    ok 2 - extract-2: an image the engine cannot read fails that call instead of killing the process
+      ---
+      duration_ms: 204.364962
+      type: 'test'
+      ...
+    # Subtest: extract-2: an error event on the worker thread rejects the in-flight receipt and drops the worker
+    ok 3 - extract-2: an error event on the worker thread rejects the in-flight receipt and drops the worker
+      ---
+      duration_ms: 358.655717
+      type: 'test'
+      ...
+    # Subtest: extract-3: the next receipt rebuilds the worker and OCR still reads the pixels
+    ok 4 - extract-3: the next receipt rebuilds the worker and OCR still reads the pixels
+      ---
+      duration_ms: 1299.701776
+      type: 'test'
+      ...
+    1..4
+ok 45 - extract: OCR worker failures are contained and the worker is never shared with a zombie job
+  ---
+  duration_ms: 2111.225721
+  type: 'suite'
+  ...
+# Subtest: extract: timeouts, serialisation and the retry budget
+    # Subtest: extract-4: a timed-out job does not keep the worker — the next receipt gets a fresh one
+    ok 1 - extract-4: a timed-out job does not keep the worker — the next receipt gets a fresh one
+      ---
+      duration_ms: 463.360886
+      type: 'test'
+      ...
+    # Subtest: extract-4: a call takes its place in the chain at once, and a timed-out one releases it only after the worker is gone
+    ok 2 - extract-4: a call takes its place in the chain at once, and a timed-out one releases it only after the worker is gone
+      ---
+      duration_ms: 1002.794545
+      type: 'test'
+      ...
+    # Subtest: extract-8: the retry budget measures the OCR pass, not the time the receipt spent queued
+    ok 3 - extract-8: the retry budget measures the OCR pass, not the time the receipt spent queued
+      ---
+      duration_ms: 502.698527
+      type: 'test'
+      ...
+    # Subtest: extract-3: health() reports what the engine last did instead of ok:true for any live-looking handle
+    ok 4 - extract-3: health() reports what the engine last did instead of ok:true for any live-looking handle
+      ---
+      duration_ms: 122.675151
+      type: 'test'
+      ...
+    1..4
+ok 46 - extract: timeouts, serialisation and the retry budget
+  ---
+  duration_ms: 2092.357099
+  type: 'suite'
+  ...
+# Subtest: extract-3: a worker that dies while it is being BUILT must not wedge the extractor for ever
+    # Subtest: a thread error during the build fails the waiting caller instead of hanging every later call
+    ok 1 - a thread error during the build fails the waiting caller instead of hanging every later call
+      ---
+      duration_ms: 21.75841
+      type: 'test'
+      ...
+    # Subtest: a build that never finishes is bounded: /health/ready answers instead of hanging
+    ok 2 - a build that never finishes is bounded: /health/ready answers instead of hanging
+      ---
+      duration_ms: 302.28644
+      type: 'test'
+      ...
+    # Subtest: close() racing a build does not leave a worker thread behind
+    ok 3 - close() racing a build does not leave a worker thread behind
+      ---
+      duration_ms: 30.875138
+      type: 'test'
+      ...
+    1..3
+ok 47 - extract-3: a worker that dies while it is being BUILT must not wedge the extractor for ever
+  ---
+  duration_ms: 355.475598
+  type: 'suite'
+  ...
+# Subtest: extract-7: the vision provider type-checks every value it is given
+    # Subtest: a malformed line item is refused instead of crashing the extractor
+    ok 1 - a malformed line item is refused instead of crashing the extractor
+      ---
+      duration_ms: 3.216437
+      type: 'test'
+      ...
+    # Subtest: a shape another OpenAI-compatible endpoint commonly sends is coerced, not sent to review
+    ok 2 - a shape another OpenAI-compatible endpoint commonly sends is coerced, not sent to review
+      ---
+      duration_ms: 5.454125
+      type: 'test'
+      ...
+    # Subtest: a non-string transaction field never reaches the facts
+    ok 3 - a non-string transaction field never reaches the facts
+      ---
+      duration_ms: 0.29747
+      type: 'test'
+      ...
+    # Subtest: a well-formed response is still extracted, and is marked as model-transcribed evidence
+    ok 4 - a well-formed response is still extracted, and is marked as model-transcribed evidence
+      ---
+      duration_ms: 1.142996
+      type: 'test'
+      ...
+    1..4
+ok 48 - extract-7: the vision provider type-checks every value it is given
+  ---
+  duration_ms: 10.349546
+  type: 'suite'
+  ...
+# Subtest: extract-5: perceptual hashes are evidence, so they must not match unrelated receipts
+    # Subtest: a featureless capture produces no hash instead of one every flat image matches
+    ok 1 - a featureless capture produces no hash instead of one every flat image matches
+      ---
+      duration_ms: 51.349379
+      type: 'test'
+      ...
+    # Subtest: the shipped fixtures: fewer unrelated pairs flagged, and a re-photographed receipt now found
+    ok 2 - the shipped fixtures: fewer unrelated pairs flagged, and a re-photographed receipt now found
+      ---
+      duration_ms: 336.016582
+      type: 'test'
+      ...
+    1..2
+ok 49 - extract-5: perceptual hashes are evidence, so they must not match unrelated receipts
+  ---
+  duration_ms: 387.711264
+  type: 'suite'
+  ...
+# Subtest: extract-9: media reuse is scoped to the campaign and to bytes that still exist
+    # Subtest: the same image in the same campaign is still stored once
+    ok 1 - the same image in the same campaign is still stored once
+      ---
+      duration_ms: 214.929139
+      type: 'test'
+      ...
+    # Subtest: a purged asset is never handed to a new receipt (its bytes are gone: the receipt would be lost in 'delayed')
+    ok 2 - a purged asset is never handed to a new receipt (its bytes are gone: the receipt would be lost in 'delayed')
+      ---
+      duration_ms: 212.903733
+      type: 'test'
+      ...
+    # Subtest: the same image in another campaign gets its own asset, key and retention clock
+    ok 3 - the same image in another campaign gets its own asset, key and retention clock
+      ---
+      duration_ms: 244.193176
+      type: 'test'
+      ...
+    # Subtest: reuse pushes the retention clock out so the second submitter's reviewer still has the image
+    ok 4 - reuse pushes the retention clock out so the second submitter's reviewer still has the image
+      ---
+      duration_ms: 14.903655
+      type: 'test'
+      ...
+    1..4
+ok 50 - extract-9: media reuse is scoped to the campaign and to bytes that still exist
+  ---
+  duration_ms: 1229.264084
+  type: 'suite'
+  ...
+# Subtest: http surface: throttling, webhook authentication, status codes, headers
+    # Subtest: the login throttle cannot be shaken off by rotating X-Forwarded-For
+    ok 1 - the login throttle cannot be shaken off by rotating X-Forwarded-For
+      ---
+      duration_ms: 72.605647
+      type: 'test'
+      ...
+    # Subtest: a wrong-password flood cannot hold a named account out of the console
+    ok 2 - a wrong-password flood cannot hold a named account out of the console
+      ---
+      duration_ms: 479.790936
+      type: 'test'
+      ...
+    # Subtest: the attempt map is bounded, and bounding it is not a scan per attempt
+    ok 3 - the attempt map is bounded, and bounding it is not a scan per attempt
+      ---
+      duration_ms: 57.606639
+      type: 'test'
+      ...
+    # Subtest: the contract does not advertise a request-body check the server does not make
+    ok 4 - the contract does not advertise a request-body check the server does not make
+      ---
+      duration_ms: 12.518639
+      type: 'test'
+      ...
+    # Subtest: MFA verification is throttled, so the second factor cannot be brute-forced
+    ok 5 - MFA verification is throttled, so the second factor cannot be brute-forced
+      ---
+      duration_ms: 8.593903
+      type: 'test'
+      ...
+    # Subtest: paged endpoints answer 400 for a non-integer limit/offset instead of 500
+    ok 6 - paged endpoints answer 400 for a non-integer limit/offset instead of 500
+      ---
+      duration_ms: 6.541364
+      type: 'test'
+      ...
+    # Subtest: a malformed path parameter is a 400 in the documented envelope, not a bare 500
+    ok 7 - a malformed path parameter is a 400 in the documented envelope, not a bare 500
+      ---
+      duration_ms: 2.361735
+      type: 'test'
+      ...
+    # Subtest: an error escaping before the router still answers in the documented envelope
+    ok 8 - an error escaping before the router still answers in the documented envelope
+      ---
+      duration_ms: 1.784433
+      type: 'test'
+      ...
+    # Subtest: ordinary operator mistakes are 400/404, not 500 INTERNAL with the reason suppressed
+    ok 9 - ordinary operator mistakes are 400/404, not 500 INTERNAL with the reason suppressed
+      ---
+      duration_ms: 9.545949
+      type: 'test'
+      ...
+    # Subtest: CSV exports carry the same no-store/nosniff baseline as every other response
+    ok 10 - CSV exports carry the same no-store/nosniff baseline as every other response
+      ---
+      duration_ms: 269.210086
+      type: 'test'
+      ...
+    # Subtest: GET /api/readiness no longer hands the staff roster to every signed-in role
+    ok 11 - GET /api/readiness no longer hands the staff roster to every signed-in role
+      ---
+      duration_ms: 6.16424
+      type: 'test'
+      ...
+    # Subtest: a platform_admin cannot grant itself draw authority, and one account cannot hold both draw roles
+    ok 12 - a platform_admin cannot grant itself draw authority, and one account cannot hold both draw roles
+      ---
+      duration_ms: 8.58451
+      type: 'test'
+      ...
+    # Subtest: readiness reports a stopped worker as not ready
+    ok 13 - readiness reports a stopped worker as not ready
+      ---
+      duration_ms: 1.911894
+      type: 'test'
+      ...
+    # Subtest: the generated contract describes the webhook, the health probes and the non-JSON routes
+    ok 14 - the generated contract describes the webhook, the health probes and the non-JSON routes
+      ---
+      duration_ms: 5.307771
+      type: 'test'
+      ...
+    1..14
+ok 51 - http surface: throttling, webhook authentication, status codes, headers
+  ---
+  duration_ms: 1629.939048
+  type: 'suite'
+  ...
+# Subtest: provider webhook authentication
+    # Subtest: the unsigned webhook demands the shared secret outside developer environments
+    ok 1 - the unsigned webhook demands the shared secret outside developer environments
+      ---
+      duration_ms: 12.452337
+      type: 'test'
+      ...
+    # Subtest: local/test harnesses keep their open webhook
+    ok 2 - local/test harnesses keep their open webhook
+      ---
+      duration_ms: 479.915948
+      type: 'test'
+      ...
+    # Subtest: a process configured for production refuses the simulator webhook even when the database says staging
+    ok 3 - a process configured for production refuses the simulator webhook even when the database says staging
+      ---
+      duration_ms: 111.620818
+      type: 'test'
+      ...
+    1..3
+ok 52 - provider webhook authentication
+  ---
+  duration_ms: 1093.329572
+  type: 'suite'
+  ...
+# Subtest: simulator transcript
+    # Subtest: the transcript dump is refused in production like its inbound twin
+    ok 1 - the transcript dump is refused in production like its inbound twin
+      ---
+      duration_ms: 149.843472
+      type: 'test'
+      ...
+    1..1
+ok 53 - simulator transcript
+  ---
+  duration_ms: 149.991182
+  type: 'suite'
+  ...
+# Subtest: legacy desk fixes
+    # Subtest: refuses the support-only NL branches with 403 and does not touch the desk queue
+    ok 1 - refuses the support-only NL branches with 403 and does not touch the desk queue
+      ---
+      duration_ms: 26.740401
+      type: 'test'
+      ...
+    # Subtest: answers an unauthorised NL command with 403 rather than 200 and an apology
+    ok 2 - answers an unauthorised NL command with 403 rather than 200 and an apology
+      ---
+      duration_ms: 3.057173
+      type: 'test'
+      ...
+    # Subtest: leaves the branches that mirror roles:any routes open
+    ok 3 - leaves the branches that mirror roles:any routes open
+      ---
+      duration_ms: 15.000717
+      type: 'test'
+      ...
+    # Subtest: GET /api/desk/messages returns the message list instead of 500
+    ok 4 - GET /api/desk/messages returns the message list instead of 500
+      ---
+      duration_ms: 5.802254
+      type: 'test'
+      ...
+    # Subtest: treats a non-numeric limit as a 400, not a 500
+    ok 5 - treats a non-numeric limit as a 400, not a 500
+      ---
+      duration_ms: 61.140582
+      type: 'test'
+      ...
+    # Subtest: the NL review shortcut finds receipts in the real review disposition
+    ok 6 - the NL review shortcut finds receipts in the real review disposition
+      ---
+      duration_ms: 3.662166
+      type: 'test'
+      ...
+    # Subtest: attributes an NL send in the audit chain and keys it by message body
+    ok 7 - attributes an NL send in the audit chain and keys it by message body
+      ---
+      duration_ms: 7.163748
+      type: 'test'
+      ...
+    # Subtest: rate limits the AI-spending NL commands per account
+    ok 8 - rate limits the AI-spending NL commands per account
+      ---
+      duration_ms: 638.213422
+      type: 'test'
+      ...
+    1..8
+ok 54 - legacy desk fixes
+  ---
+  duration_ms: 1717.935763
+  type: 'suite'
+  ...
+# Subtest: linked-device transport fixes
+    # Subtest: files an inbound text and hands it to the conversation
+    ok 1 - files an inbound text and hands it to the conversation
+      ---
+      duration_ms: 0.881182
+      type: 'test'
+      ...
+    # Subtest: resolves a group chat name from the socket
+    ok 2 - resolves a group chat name from the socket
+      ---
+      duration_ms: 0.315026
+      type: 'test'
+      ...
+    # Subtest: downloads receipt image bytes with the real baileys API
+    ok 3 - downloads receipt image bytes with the real baileys API
+      ---
+      duration_ms: 1.436687
+      type: 'test'
+      ...
+    # Subtest: still prompts for a re-upload when the download fails, and says so
+    ok 4 - still prompts for a re-upload when the download fails, and says so
+      ---
+      duration_ms: 0.552361
+      type: 'test'
+      ...
+    1..4
+ok 55 - linked-device transport fixes
+  ---
+  duration_ms: 3.396766
+  type: 'suite'
+  ...
+# Subtest: ai draft prompt bounds
+    # Subtest: does not forward an unbounded caller-supplied instruction to the model
+    ok 1 - does not forward an unbounded caller-supplied instruction to the model
+      ---
+      duration_ms: 0.513938
+      type: 'test'
+      ...
+    1..1
+ok 56 - ai draft prompt bounds
+  ---
+  duration_ms: 0.581092
+  type: 'suite'
+  ...
+# Subtest: ops package fixes
+    # Subtest: docs-2: `migrate --dry` lists pending migrations without applying them
+    ok 1 - docs-2: `migrate --dry` lists pending migrations without applying them
+      ---
+      duration_ms: 276.543673
+      type: 'test'
+      ...
+    # Subtest: ops-3/ops-4: production refuses the simulator transport, a typo'd transport and a missing AUDIT_CHECKPOINT_KEY
+    ok 2 - ops-3/ops-4: production refuses the simulator transport, a typo'd transport and a missing AUDIT_CHECKPOINT_KEY
+      ---
+      duration_ms: 1.313944
+      type: 'test'
+      ...
+    # Subtest: ops-9: a data directory without the volume marker fails validation until it is provisioned
+    ok 3 - ops-9: a data directory without the volume marker fails validation until it is provisioned
+      ---
+      duration_ms: 1.754552
+      type: 'test'
+      ...
+    # Subtest: ops-8: preflight validates the configuration from the env file, not the defaults
+    ok 4 - ops-8: preflight validates the configuration from the env file, not the defaults
+      ---
+      duration_ms: 109.191359
+      type: 'test'
+      ...
+    # Subtest: privacy-6: the restore rehearsal deletes its restored copy and prunes old backups
+    ok 5 - privacy-6: the restore rehearsal deletes its restored copy and prunes old backups
+      ---
+      duration_ms: 388.005424
+      type: 'test'
+      ...
+# [bootstrap] /tmp/wpp-ops-boot-OnmCfH carries no .volume-id marker and holds no database any service has run against: the persistent volume is not mounted there. Refusing to create a database in ephemeral storage. Provision once with VOLUME_INIT=true, or set VOLUME_PATH= to disable this check.
+# [bootstrap] /tmp/wpp-ops-boot-OnmCfH carries no .volume-id marker and holds no database any service has run against: the persistent volume is not mounted there. Refusing to create a database in ephemeral storage. Provision once with VOLUME_INIT=true, or set VOLUME_PATH= to disable this check.
+    # Subtest: durability-2: runPopulatedSeed backdates only its own entries while a tester is using the same campaign
+    ok 6 - durability-2: runPopulatedSeed backdates only its own entries while a tester is using the same campaign
+      ---
+      duration_ms: 8261.494237
+      type: 'test'
+      ...
+    # Subtest: ops-9 (bootstrap): the deploy entrypoint refuses a directory only preflight/migrate touched, and still adopts a live one
+    ok 7 - ops-9 (bootstrap): the deploy entrypoint refuses a directory only preflight/migrate touched, and still adopts a live one
+      ---
+      duration_ms: 726.190571
+      type: 'test'
+      ...
+    # Subtest: with a running app
+        # Subtest: durability-2 (unit): the seed's selectors return only seed-owned rows
+        ok 1 - durability-2 (unit): the seed's selectors return only seed-owned rows
+          ---
+          duration_ms: 503.730697
+          type: 'test'
+          ...
+        # Subtest: durability-6: an interrupted sample seed reports INCOMPLETE instead of 'already present'
+        ok 2 - durability-6: an interrupted sample seed reports INCOMPLETE instead of 'already present'
+          ---
+          duration_ms: 1.483971
+          type: 'test'
+          ...
+        # Subtest: ops-10: reset:sample keeps activation evidence, anonymised participants and unrelated jobs/CRM refs
+        ok 3 - ops-10: reset:sample keeps activation evidence, anonymised participants and unrelated jobs/CRM refs
+          ---
+          duration_ms: 61.121189
+          type: 'test'
+          ...
+        1..3
+    ok 8 - with a running app
+      ---
+      duration_ms: 1063.909217
+      type: 'suite'
+      ...
+    1..8
+ok 57 - ops package fixes
+  ---
+  duration_ms: 10834.224508
+  type: 'suite'
+  ...
+# Subtest: pipeline audit fixes
+    # Subtest: a receipt that returns to REVIEW_REQUIRED after a reprocess is back in the queue and still decidable
+    ok 1 - a receipt that returns to REVIEW_REQUIRED after a reprocess is back in the queue and still decidable
+      ---
+      duration_ms: 306.294384
+      type: 'test'
+      ...
+    # Subtest: reinstating an entry carries the controls that removed it, and the CRM is told
+    ok 2 - reinstating an entry carries the controls that removed it, and the CRM is told
+      ---
+      duration_ms: 258.327905
+      type: 'test'
+      ...
+    # Subtest: a reviewer's QUALIFIED on a purchase already credited elsewhere is refused by name, not silently rewritten to DUPLICATE
+    ok 3 - a reviewer's QUALIFIED on a purchase already credited elsewhere is refused by name, not silently rewritten to DUPLICATE
+      ---
+      duration_ms: 505.264341
+      type: 'test'
+      ...
+    # Subtest: a purchase whose total was unreadable on one photograph is credited once, not twice
+    ok 4 - a purchase whose total was unreadable on one photograph is credited once, not twice
+      ---
+      duration_ms: 500.559638
+      type: 'test'
+      ...
+    # Subtest: pausing the campaign while a receipt is queued does not retro-reject it as 'the promotion was not open'
+    ok 5 - pausing the campaign while a receipt is queued does not retro-reject it as 'the promotion was not open'
+      ---
+      duration_ms: 257.477832
+      type: 'test'
+      ...
+    # Subtest: a non-retryable extraction failure alerts the operator immediately instead of re-queueing OCR for an hour
+    ok 6 - a non-retryable extraction failure alerts the operator immediately instead of re-queueing OCR for an hour
+      ---
+      duration_ms: 244.132496
+      type: 'test'
+      ...
+    # Subtest: two purchases at one branch on one day that share a till number are kept apart, and a reviewer can credit the second
+    ok 7 - two purchases at one branch on one day that share a till number are kept apart, and a reviewer can credit the second
+      ---
+      duration_ms: 501.974832
+      type: 'test'
+      ...
+    # Subtest: reinstatement checks the disqualification it actually reverses, not a random one from the same millisecond
+    ok 8 - reinstatement checks the disqualification it actually reverses, not a random one from the same millisecond
+      ---
+      duration_ms: 500.895758
+      type: 'test'
+      ...
+    # Subtest: an operator reprocess does not consume the delayed-receipt retry budget
+    ok 9 - an operator reprocess does not consume the delayed-receipt retry budget
+      ---
+      duration_ms: 256.747457
+      type: 'test'
+      ...
+    # Subtest: no entry is awarded into a period whose draw is already frozen
+    ok 10 - no entry is awarded into a period whose draw is already frozen
+      ---
+      duration_ms: 300.199772
+      type: 'test'
+      ...
+    1..10
+ok 58 - pipeline audit fixes
+  ---
+  duration_ms: 4158.073568
+  type: 'suite'
+  ...
+# Subtest: fix-queue: durable intake
+    # Subtest: durability-1: events/jobs abandoned mid-processing at the attempts cap are dead-lettered, alerted and recoverable
+    ok 1 - durability-1: events/jobs abandoned mid-processing at the attempts cap are dead-lettered, alerted and recoverable
+      ---
+      duration_ms: 9.153415
+      type: 'test'
+      ...
+    # Subtest: durability-1: an operator can recover a row still stranded in 'processing' before the sweep runs
+    ok 2 - durability-1: an operator can recover a row still stranded in 'processing' before the sweep runs
+      ---
+      duration_ms: 9.441351
+      type: 'test'
+      ...
+    # Subtest: durability-1: work a live worker is holding right now is not counted as backlog
+    ok 3 - durability-1: work a live worker is holding right now is not counted as backlog
+      ---
+      duration_ms: 522.976143
+      type: 'test'
+      ...
+    # Subtest: durability-1: one attempts cap governs the selector and the sweeper, so no row falls between them
+    ok 4 - durability-1: one attempts cap governs the selector and the sweeper, so no row falls between them
+      ---
+      duration_ms: 510.222746
+      type: 'test'
+      ...
+    1..4
+ok 59 - fix-queue: durable intake
+  ---
+  duration_ms: 1575.746206
+  type: 'suite'
+  ...
+# Subtest: fix-queue: outbound envelope, policy and delivery status
+    # Subtest: outbox-3: internal routing metadata never reaches the provider payload
+    ok 1 - outbox-3: internal routing metadata never reaches the provider payload
+      ---
+      duration_ms: 6.148251
+      type: 'test'
+      ...
+    # Subtest: outbox-1: outside the 24h window every free-form text is held, not only winner contact
+    ok 2 - outbox-1: outside the 24h window every free-form text is held, not only winner contact
+      ---
+      duration_ms: 6.552397
+      type: 'test'
+      ...
+    # Subtest: outbox-4: a message held by policy eventually terminates and the hold is alerted
+    ok 3 - outbox-4: a message held by policy eventually terminates and the hold is alerted
+      ---
+      duration_ms: 527.350031
+      type: 'test'
+      ...
+    # Subtest: outbox-5: a non-production deployment on a live provider sends nothing until recipients are allowlisted
+    ok 4 - outbox-5: a non-production deployment on a live provider sends nothing until recipients are allowlisted
+      ---
+      duration_ms: 500.855139
+      type: 'test'
+      ...
+    # Subtest: outbox-7: consent is re-checked at dispatch; a withdrawn participant gets no more campaign messages
+    ok 5 - outbox-7: consent is re-checked at dispatch; a withdrawn participant gets no more campaign messages
+      ---
+      duration_ms: 43.954573
+      type: 'test'
+      ...
+    # Subtest: outbox-8: a late 'failed' cannot overwrite a proven read, and provider codes keep one shape
+    ok 6 - outbox-8: a late 'failed' cannot overwrite a proven read, and provider codes keep one shape
+      ---
+      duration_ms: 4.630382
+      type: 'test'
+      ...
+    # Subtest: outbox-7: a withdrawal blocks the message without raising a provider-outage alert
+    ok 7 - outbox-7: a withdrawal blocks the message without raising a provider-outage alert
+      ---
+      duration_ms: 522.903271
+      type: 'test'
+      ...
+    # Subtest: outbox-4: a paused campaign is held without paging, but a hold nobody can clear is alerted
+    ok 8 - outbox-4: a paused campaign is held without paging, but a hold nobody can clear is alerted
+      ---
+      duration_ms: 514.570378
+      type: 'test'
+      ...
+    # Subtest: outbox-8: a delivery status for an unknown provider message id is counted, not silently dropped
+    ok 9 - outbox-8: a delivery status for an unknown provider message id is counted, not silently dropped
+      ---
+      duration_ms: 2.320936
+      type: 'test'
+      ...
+    1..9
+ok 60 - fix-queue: outbound envelope, policy and delivery status
+  ---
+  duration_ms: 2622.817915
+  type: 'suite'
+  ...
+# Subtest: fix-queue: worker scheduling and watchdog
+    # Subtest: durability-7: housekeeping runs on the wall clock, not on a tick counter
+    ok 1 - durability-7: housekeeping runs on the wall clock, not on a tick counter
+      ---
+      duration_ms: 2.946788
+      type: 'test'
+      ...
+    # Subtest: crm-4: unknown_outcome CRM events are reconciled by the worker and the backlog is alerted
+    ok 2 - crm-4: unknown_outcome CRM events are reconciled by the worker and the backlog is alerted
+      ---
+      duration_ms: 1.79378
+      type: 'test'
+      ...
+    # Subtest: crm-4: reconcile is not attempted when no CRM provider is configured
+    ok 3 - crm-4: reconcile is not attempted when no CRM provider is configured
+      ---
+      duration_ms: 1.225824
+      type: 'test'
+      ...
+    # Subtest: durability-5: a tick wedged on a never-settling await is reported and alerted
+    ok 4 - durability-5: a tick wedged on a never-settling await is reported and alerted
+      ---
+      duration_ms: 62.156593
+      type: 'test'
+      ...
+    1..4
+ok 61 - fix-queue: worker scheduling and watchdog
+  ---
+  duration_ms: 588.477994
+  type: 'suite'
+  ...
+# Subtest: fix-queue: Cloud API transport
+    # Subtest: outbox-10: the webhook handshake answers 403 for any token, including multi-byte ones
+    ok 1 - outbox-10: the webhook handshake answers 403 for any token, including multi-byte ones
+      ---
+      duration_ms: 0.708572
+      type: 'test'
+      ...
+    # Subtest: outbox-9: a media url that is not really a Meta host is never fetched with the access token
+    ok 2 - outbox-9: a media url that is not really a Meta host is never fetched with the access token
+      ---
+      duration_ms: 1.487339
+      type: 'test'
+      ...
+    # Subtest: durability-5: the response body is read under the same deadline as the request
+    ok 3 - durability-5: the response body is read under the same deadline as the request
+      ---
+      duration_ms: 40.936045
+      type: 'test'
+      ...
+    1..3
+ok 62 - fix-queue: Cloud API transport
+  ---
+  duration_ms: 43.410122
+  type: 'suite'
+  ...
+# Subtest: rules package — deterministic parser and eligibility engine
+    # Subtest: rules-8: a partial nested rule override keeps its sibling thresholds instead of wiping them
+    ok 1 - rules-8: a partial nested rule override keeps its sibling thresholds instead of wiping them
+      ---
+      duration_ms: 8.236078
+      type: 'test'
+      ...
+    # Subtest: rules-5: a tax component is never the total, and a grouped total is read whole
+    ok 2 - rules-5: a tax component is never the total, and a grouped total is read whole
+      ---
+      duration_ms: 0.618181
+      type: 'test'
+      ...
+    # Subtest: rules-5: the total is the receipt's own total, not a trailing tender/VAT/discount line
+    ok 3 - rules-5: the total is the receipt's own total, not a trailing tender/VAT/discount line
+      ---
+      duration_ms: 1.061754
+      type: 'test'
+      ...
+    # Subtest: rules-3: the receipt number is the best-labelled number on the page, never a phone number or a date
+    ok 4 - rules-3: the receipt number is the best-labelled number on the page, never a phone number or a date
+      ---
+      duration_ms: 0.33126
+      type: 'test'
+      ...
+    # Subtest: rules-4: a cancellation that names no product cancels the line it follows, and returns boilerplate cancels nothing
+    ok 5 - rules-4: a cancellation that names no product cancels the line it follows, and returns boilerplate cancels nothing
+      ---
+      duration_ms: 2.232385
+      type: 'test'
+      ...
+    # Subtest: rules-6: the most specific catalogue key wins and an unstated pack size is never assumed to be the qualifying one
+    ok 6 - rules-6: the most specific catalogue key wins and an unstated pack size is never assumed to be the qualifying one
+      ---
+      duration_ms: 1.253144
+      type: 'test'
+      ...
+    # Subtest: rules-1: a location-only merchant match is a candidate for a reviewer, never automatic acceptance
+    ok 7 - rules-1: a location-only merchant match is a candidate for a reviewer, never automatic acceptance
+      ---
+      duration_ms: 0.698341
+      type: 'test'
+      ...
+    # Subtest: rules-2: an unreadable item section goes to a reviewer; a readable one that matches nothing is still rejected
+    ok 8 - rules-2: an unreadable item section goes to a reviewer; a readable one that matches nothing is still rejected
+      ---
+      duration_ms: 1.134705
+      type: 'test'
+      ...
+    # Subtest: rules-7: the purchase window is compared as whole days in the zone the window was written in
+    ok 9 - rules-7: the purchase window is compared as whole days in the zone the window was written in
+      ---
+      duration_ms: 1.543753
+      type: 'test'
+      ...
+    1..9
+ok 63 - rules package — deterministic parser and eligibility engine
+  ---
+  duration_ms: 18.548537
+  type: 'suite'
+  ...
+# Subtest: rules package — through the whole pipeline
+    # Subtest: rules-3: two different receipts from a store whose header prints its phone number are both credited
+    ok 1 - rules-3: two different receipts from a store whose header prints its phone number are both credited
+      ---
+      duration_ms: 498.113608
+      type: 'test'
+      ...
+    # Subtest: rules-5: the credited identity carries the receipt's own total, not the cash tendered
+    ok 2 - rules-5: the credited identity carries the receipt's own total, not the cash tendered
+      ---
+      duration_ms: 224.508484
+      type: 'test'
+      ...
+    # Subtest: rules-1: selecting a different retailer that only shares the town is reviewed, not credited
+    ok 3 - rules-1: selecting a different retailer that only shares the town is reviewed, not credited
+      ---
+      duration_ms: 222.228988
+      type: 'test'
+      ...
+    # Subtest: rules-4: a receipt whose qualifying line was voided at the till earns no entry
+    ok 4 - rules-4: a receipt whose qualifying line was voided at the till earns no entry
+      ---
+      duration_ms: 222.62046
+      type: 'test'
+      ...
+    # Subtest: rules-2: an unreadable item section reaches a reviewer instead of telling the buyer there was no product
+    ok 5 - rules-2: an unreadable item section reaches a reviewer instead of telling the buyer there was no product
+      ---
+      duration_ms: 220.65076
+      type: 'test'
+      ...
+    # Subtest: rules-6: a truncated description at the 1kg price is reviewed, not credited as the qualifying pack
+    ok 6 - rules-6: a truncated description at the 1kg price is reviewed, not credited as the qualifying pack
+      ---
+      duration_ms: 442.670341
+      type: 'test'
+      ...
+    1..6
+ok 64 - rules package — through the whole pipeline
+  ---
+  duration_ms: 2438.672382
+  type: 'suite'
+  ...
+# Subtest: rules package — a partial rule patch on a live campaign
+    # Subtest: rules-8: a prospective version that only changes min_packs keeps the rest of the rule set
+    ok 1 - rules-8: a prospective version that only changes min_packs keeps the rest of the rule set
+      ---
+      duration_ms: 788.682597
+      type: 'test'
+      ...
+    1..1
+ok 65 - rules package — a partial rule patch on a live campaign
+  ---
+  duration_ms: 788.932544
+  type: 'suite'
+  ...
+# Subtest: crosscut — a prospective patch over a CUSTOMISED rule set (round2-version-merge)
+    # Subtest: editing one nested threshold does not revert its customised siblings to the platform defaults
+    ok 1 - editing one nested threshold does not revert its customised siblings to the platform defaults
+      ---
+      duration_ms: 520.699754
+      type: 'test'
+      ...
+    1..1
+ok 66 - crosscut — a prospective patch over a CUSTOMISED rule set (round2-version-merge)
+  ---
+  duration_ms: 520.811435
+  type: 'suite'
+  ...
+# Subtest: receipt benchmark gate (bench/run.mjs)
+    # Subtest: a total parser regression fails the release gate instead of exiting 0
+    ok 1 - a total parser regression fails the release gate instead of exiting 0
+      ---
+      duration_ms: 0.863793
+      type: 'test'
+      ...
+    # Subtest: a fixture rejected for the WRONG reason fails, even with the right disposition
+    ok 2 - a fixture rejected for the WRONG reason fails, even with the right disposition
+      ---
+      duration_ms: 1.570961
+      type: 'test'
+      ...
+    # Subtest: still honours the existing expectations (dispositions, duplicates, parsed fields)
+    ok 3 - still honours the existing expectations (dispositions, duplicates, parsed fields)
+      ---
+      duration_ms: 0.269188
+      type: 'test'
+      ...
+    1..3
+ok 67 - receipt benchmark gate (bench/run.mjs)
+  ---
+  duration_ms: 3.669915
+  type: 'suite'
+  ...
+# Subtest: load benchmark integrity gate (bench/load.mjs)
+    # Subtest: counts ONE purchase credited under two canonical identities (the shape the old query could not see)
+    ok 1 - counts ONE purchase credited under two canonical identities (the shape the old query could not see)
+      ---
+      duration_ms: 308.820508
+      type: 'test'
+      ...
+    # Subtest: reports a clean run as clean
+    ok 2 - reports a clean run as clean
+      ---
+      duration_ms: 997.543741
+      type: 'test'
+      ...
+    # Subtest: reports — but does not fail the run on — a purchase credited twice when OCR read NO receipt number
+    ok 3 - reports — but does not fail the run on — a purchase credited twice when OCR read NO receipt number
+      ---
+      duration_ms: 743.15004
+      type: 'test'
+      ...
+    # Subtest: two distinct unreadable purchases are not reported as one — including when their totals are equal
+    ok 4 - two distinct unreadable purchases are not reported as one — including when their totals are equal
+      ---
+      duration_ms: 962.733497
+      type: 'test'
+      ...
+    # Subtest: two distinct purchases with the SAME total and no number do not fail the run
+    ok 5 - two distinct purchases with the SAME total and no number do not fail the run
+      ---
+      duration_ms: 954.96911
+      type: 'test'
+      ...
+    # Subtest: receipt numbers stay unique across participants however many slips each uploads
+    ok 6 - receipt numbers stay unique across participants however many slips each uploads
+      ---
+      duration_ms: 39.341935
+      type: 'test'
+      ...
+    # Subtest: the corpus is mostly unique purchases, with a shared slip and a self-duplicate cohort
+    ok 7 - the corpus is mostly unique purchases, with a shared slip and a self-duplicate cohort
+      ---
+      duration_ms: 232.495855
       type: 'test'
       ...
     1..7
-ok 3 - draws, winners and publication
+ok 68 - load benchmark integrity gate (bench/load.mjs)
   ---
-  duration_ms: 2896.286016
+  duration_ms: 4750.146183
+  type: 'suite'
+  ...
+# Subtest: MFA: the pending-challenge branch (src/auth.mjs) and the public route
+    # Subtest: a valid code with no password login behind it issues nothing
+    ok 1 - a valid code with no password login behind it issues nothing
+      ---
+      duration_ms: 0.496737
+      type: 'test'
+      ...
+    # Subtest: POST /api/login/mfa refuses a valid code until the password step has run, then consumes the challenge
+    ok 2 - POST /api/login/mfa refuses a valid code until the password step has run, then consumes the challenge
+      ---
+      duration_ms: 80.740584
+      type: 'test'
+      ...
+    1..2
+ok 69 - MFA: the pending-challenge branch (src/auth.mjs) and the public route
+  ---
+  duration_ms: 231.94368
+  type: 'suite'
+  ...
+# Subtest: audit checkpoint: the negative branch no test ever observed
+    # Subtest: a checkpoint that names a head the chain does not hold does not verify
+    ok 1 - a checkpoint that names a head the chain does not hold does not verify
+      ---
+      duration_ms: 42.049116
+      type: 'test'
+      ...
+    1..1
+ok 70 - audit checkpoint: the negative branch no test ever observed
+  ---
+  duration_ms: 42.276466
+  type: 'suite'
+  ...
+# Subtest: remote-smoke evidence rows (scripts/remote-smoke.mjs)
+    # Subtest: every conditional check is named once and records its own SKIP row when its block does not run
+    ok 1 - every conditional check is named once and records its own SKIP row when its block does not run
+      ---
+      duration_ms: 2.031201
+      type: 'test'
+      ...
+    # Subtest: the operations and support rows assert content, not just HTTP 200
+    ok 2 - the operations and support rows assert content, not just HTTP 200
+      ---
+      duration_ms: 978.490557
+      type: 'test'
+      ...
+    # Subtest: menu 7: the count is only readable off its own label, and the copy lists just the three most recent receipts
+    ok 3 - menu 7: the count is only readable off its own label, and the copy lists just the three most recent receipts
+      ---
+      duration_ms: 1223.920368
+      type: 'test'
+      ...
+    # Subtest: the two participant phones are DIFFERENT numbers, and every reference the menu-7 row accepts is one of P1's own last three uploads
+    ok 4 - the two participant phones are DIFFERENT numbers, and every reference the menu-7 row accepts is one of P1's own last three uploads
+      ---
+      duration_ms: 0.753204
+      type: 'test'
+      ...
+    1..4
+ok 71 - remote-smoke evidence rows (scripts/remote-smoke.mjs)
+  ---
+  duration_ms: 2205.495063
   type: 'suite'
   ...
 # Subtest: participant journeys (T-01, T-02, T-03, T-05, T-06, T-13, T-16)
     # Subtest: T-01: a greeting from a new phone returns the campaign menu (no registration prompt)
     ok 1 - T-01: a greeting from a new phone returns the campaign menu (no registration prompt)
       ---
-      duration_ms: 9.46394
+      duration_ms: 7.573396
       type: 'test'
       ...
     # Subtest: T-16: an unregistered participant can read mechanics, terms, prizes and winners
     ok 2 - T-16: an unregistered participant can read mechanics, terms, prizes and winners
       ---
-      duration_ms: 21.879187
+      duration_ms: 15.937293
       type: 'test'
       ...
     # Subtest: T-02: registration captures all five fields with confirmation, correction, terms; returning user is recognised
     ok 3 - T-02: registration captures all five fields with confirmation, correction, terms; returning user is recognised
       ---
-      duration_ms: 53.985688
+      duration_ms: 57.464216
       type: 'test'
       ...
     # Subtest: T-03: outlet selection is hierarchical over all 80 branches, searchable, and always ends in a canonical id
     ok 4 - T-03: outlet selection is hierarchical over all 80 branches, searchable, and always ends in a canonical id
       ---
-      duration_ms: 52.473338
+      duration_ms: 73.27658
       type: 'test'
       ...
     # Subtest: T-05/T-06/T-13: first receipt awards one entry; second unique receipt awards another without re-registration; same receipt again (same and other phone, replayed webhook) never credits twice
     ok 5 - T-05/T-06/T-13: first receipt awards one entry; second unique receipt awards another without re-registration; same receipt again (same and other phone, replayed webhook) never credits twice
       ---
-      duration_ms: 719.73977
+      duration_ms: 789.302998
       type: 'test'
       ...
     # Subtest: global navigation: MENU, HELP, CANCEL, BACK from every state; unsupported input never qualifies
     ok 6 - global navigation: MENU, HELP, CANCEL, BACK from every state; unsupported input never qualifies
       ---
-      duration_ms: 23.720171
+      duration_ms: 31.217372
       type: 'test'
       ...
     # Subtest: support handoff suspends automation until an operator releases it
     ok 7 - support handoff suspends automation until an operator releases it
       ---
-      duration_ms: 7.737788
+      duration_ms: 11.770432
       type: 'test'
       ...
     1..7
-ok 4 - participant journeys (T-01, T-02, T-03, T-05, T-06, T-13, T-16)
+ok 72 - participant journeys (T-01, T-02, T-03, T-05, T-06, T-13, T-16)
   ---
-  duration_ms: 1335.472699
+  duration_ms: 1510.193303
+  type: 'suite'
+  ...
+# Subtest: one purchase, one entry — whatever outlet the participant picks
+    # Subtest: the same printed receipt against a second branch is never auto-credited
+    ok 1 - the same printed receipt against a second branch is never auto-credited
+      ---
+      duration_ms: 1057.070386
+      type: 'test'
+      ...
+    1..1
+ok 73 - one purchase, one entry — whatever outlet the participant picks
+  ---
+  duration_ms: 1057.40217
+  type: 'suite'
+  ...
+# Subtest: image limits
+    # Subtest: a ribbon-shaped image is refused before any pixel work
+    ok 1 - a ribbon-shaped image is refused before any pixel work
+      ---
+      duration_ms: 233.006349
+      type: 'test'
+      ...
+    # Subtest: normalisation bounds the working image even for an image that slipped through
+    ok 2 - normalisation bounds the working image even for an image that slipped through
+      ---
+      duration_ms: 299.638142
+      type: 'test'
+      ...
+    # Subtest: a normal receipt photo is still upscaled for OCR
+    ok 3 - a normal receipt photo is still upscaled for OCR
+      ---
+      duration_ms: 340.799902
+      type: 'test'
+      ...
+    # Subtest: aspect ratios a real receipt can have are accepted
+    ok 4 - aspect ratios a real receipt can have are accepted
+      ---
+      duration_ms: 61.570363
+      type: 'test'
+      ...
+    1..4
+ok 74 - image limits
+  ---
+  duration_ms: 936.584484
   type: 'suite'
   ...
 # Subtest: MFA (DEF-02)
     # Subtest: TOTP generates consistent codes and verifies within one window skew
     ok 1 - TOTP generates consistent codes and verifies within one window skew
       ---
-      duration_ms: 1.899256
+      duration_ms: 2.245269
       type: 'test'
       ...
     # Subtest: generates a valid base32 secret and otpauth URI
     ok 2 - generates a valid base32 secret and otpauth URI
       ---
-      duration_ms: 0.344448
+      duration_ms: 0.283438
       type: 'test'
       ...
     # Subtest: login with MFA enabled returns pending challenge; token only after valid code
     ok 3 - login with MFA enabled returns pending challenge; token only after valid code
       ---
-      duration_ms: 159.376774
+      duration_ms: 183.700999
       type: 'test'
       ...
     # Subtest: login without MFA enabled still works directly
     ok 4 - login without MFA enabled still works directly
       ---
-      duration_ms: 114.596316
+      duration_ms: 126.259955
       type: 'test'
       ...
     1..4
-ok 5 - MFA (DEF-02)
+ok 75 - MFA (DEF-02)
   ---
-  duration_ms: 277.501187
+  duration_ms: 313.765001
   type: 'suite'
   ...
 # Subtest: natural-language commands (nlp.mjs)
     # Subtest: parses dashboard/status/review/entries intents
     ok 1 - parses dashboard/status/review/entries intents
       ---
-      duration_ms: 1.424292
+      duration_ms: 3.820884
       type: 'test'
       ...
     # Subtest: extracts a draw period from plain English
     ok 2 - extracts a draw period from plain English
       ---
-      duration_ms: 0.596943
+      duration_ms: 0.45356
       type: 'test'
       ...
     # Subtest: parses send with a phone and message body
     ok 3 - parses send with a phone and message body
       ---
-      duration_ms: 0.898774
+      duration_ms: 0.950577
       type: 'test'
       ...
     # Subtest: classify and help
     ok 4 - classify and help
       ---
-      duration_ms: 0.351548
+      duration_ms: 1.355843
       type: 'test'
       ...
     1..4
-ok 6 - natural-language commands (nlp.mjs)
+ok 76 - natural-language commands (nlp.mjs)
   ---
-  duration_ms: 4.697825
+  duration_ms: 8.685317
+  type: 'suite'
+  ...
+# Subtest: the two consoles keep their component names apart
+    # Subtest: no component name is shared with the technical console
+    ok 1 - no component name is shared with the technical console
+      ---
+      duration_ms: 10.072379
+      type: 'test'
+      ...
+    1..1
+ok 77 - the two consoles keep their component names apart
+  ---
+  duration_ms: 11.007754
+  type: 'suite'
+  ...
+# Subtest: promotion console
+    # Subtest: the overview answers 'is anything waiting for me' without a single code
+    ok 1 - the overview answers 'is anything waiting for me' without a single code
+      ---
+      duration_ms: 6.152171
+      type: 'test'
+      ...
+    # Subtest: every entry row names the shop, the town, the packs and how many receipts that person sent
+    ok 2 - every entry row names the shop, the town, the packs and how many receipts that person sent
+      ---
+      duration_ms: 4.788422
+      type: 'test'
+      ...
+    # Subtest: the four filters actually narrow the list
+    ok 3 - the four filters actually narrow the list
+      ---
+      duration_ms: 22.165355
+      type: 'test'
+      ...
+    # Subtest: a receipt that never became an entry still says why, in plain words
+    ok 4 - a receipt that never became an entry still says why, in plain words
+      ---
+      duration_ms: 4.756053
+      type: 'test'
+      ...
+    # Subtest: the detail view explains which checks were met without naming a rule key
+    ok 5 - the detail view explains which checks were met without naming a rule key
+      ---
+      duration_ms: 4.810431
+      type: 'test'
+      ...
+    # Subtest: an assistant can read and answer, but cannot take an entry away
+    ok 6 - an assistant can read and answer, but cannot take an entry away
+      ---
+      duration_ms: 7.631742
+      type: 'test'
+      ...
+    # Subtest: a disqualification by the promotion administrator goes through the audited path
+    ok 7 - a disqualification by the promotion administrator goes through the audited path
+      ---
+      duration_ms: 16.535496
+      type: 'test'
+      ...
+    # Subtest: the technical roles do not reach this surface, and the promotion roles do not reach theirs
+    ok 8 - the technical roles do not reach this surface, and the promotion roles do not reach theirs
+      ---
+      duration_ms: 5.946922
+      type: 'test'
+      ...
+    # Subtest: queries list the people waiting, so nobody has to know a phone number to find them
+    ok 9 - queries list the people waiting, so nobody has to know a phone number to find them
+      ---
+      duration_ms: 15.038297
+      type: 'test'
+      ...
+    # Subtest: the promotion team can open the receipt photo with their own session
+    ok 10 - the promotion team can open the receipt photo with their own session
+      ---
+      duration_ms: 6.585785
+      type: 'test'
+      ...
+    # Subtest: the quantity is recorded on the receipt, not recomputed for the console
+    ok 11 - the quantity is recorded on the receipt, not recomputed for the console
+      ---
+      duration_ms: 0.255852
+      type: 'test'
+      ...
+    1..11
+ok 78 - promotion console
+  ---
+  duration_ms: 1982.032541
   type: 'suite'
   ...
 # Subtest: QR renderer (linked-device)
     # Subtest: produces a scannable-size SVG with sane module count (no 30k-px bug)
     ok 1 - produces a scannable-size SVG with sane module count (no 30k-px bug)
       ---
-      duration_ms: 37.984968
+      duration_ms: 23.642317
       type: 'test'
       ...
     # Subtest: renders different inputs differently (not a blank/stub)
     ok 2 - renders different inputs differently (not a blank/stub)
       ---
-      duration_ms: 2.912022
+      duration_ms: 2.713034
       type: 'test'
       ...
     1..2
-ok 7 - QR renderer (linked-device)
+ok 79 - QR renderer (linked-device)
   ---
-  duration_ms: 41.996924
+  duration_ms: 27.43902
   type: 'suite'
   ...
 # Subtest: real OCR receipt processing
     # Subtest: T-04: a new valid two-pack image is read from pixels, qualifies, and awards exactly one entry with the right message
     ok 1 - T-04: a new valid two-pack image is read from pixels, qualifies, and awards exactly one entry with the right message
       ---
-      duration_ms: 1299.832648
+      duration_ms: 1365.892484
       type: 'test'
       ...
     # Subtest: T-10: quantity rules — one pack rejected with reason, three packs still one award, 2KG text is not a quantity, void lines excluded, wrong SKU rejected, alt sizes need the combination rule
     ok 2 - T-10: quantity rules — one pack rejected with reason, three packs still one award, 2KG text is not a quantity, void lines excluded, wrong SKU rejected, alt sizes need the combination rule
       ---
-      duration_ms: 6142.414306
+      duration_ms: 6087.651466
       type: 'test'
       ...
     # Subtest: T-11: dates and outlets — outside window rejected, ambiguous date reviewed, merchant mismatch reviewed, cropped header reviewed
     ok 3 - T-11: dates and outlets — outside window rejected, ambiguous date reviewed, merchant mismatch reviewed, cropped header reviewed
       ---
-      duration_ms: 4221.912872
+      duration_ms: 4219.495565
       type: 'test'
       ...
     # Subtest: T-08/T-09: random photo, instruction-laden paper, blur and darkness never qualify; re-upload guidance given; bounded processing
     ok 4 - T-08/T-09: random photo, instruction-laden paper, blur and darkness never qualify; re-upload guidance given; bounded processing
       ---
-      duration_ms: 31079.743321
+      duration_ms: 31369.649022
       type: 'test'
       ...
     # Subtest: T-07/T-14: re-photographed, cropped, rotated and recompressed copies of a credited receipt are blocked; a different phone cannot re-use it; a clearer re-upload of an unreadable attempt stays possible
     ok 5 - T-07/T-14: re-photographed, cropped, rotated and recompressed copies of a credited receipt are blocked; a different phone cannot re-use it; a clearer re-upload of an unreadable attempt stays possible
       ---
-      duration_ms: 9355.095488
+      duration_ms: 9829.59775
       type: 'test'
       ...
     # Subtest: T-12: the same purchase submitted concurrently by two participants credits at most once; the loser gets a stable duplicate outcome
     ok 6 - T-12: the same purchase submitted concurrently by two participants credits at most once; the loser gets a stable duplicate outcome
       ---
-      duration_ms: 1743.968218
+      duration_ms: 1747.107513
       type: 'test'
       ...
     # Subtest: reviewer resolves an uncertain receipt through the same integrity path and the participant is told
     ok 7 - reviewer resolves an uncertain receipt through the same integrity path and the participant is told
       ---
-      duration_ms: 5.950046
+      duration_ms: 6.703539
       type: 'test'
       ...
     1..7
-ok 8 - real OCR receipt processing
+ok 80 - real OCR receipt processing
   ---
-  duration_ms: 54366.143462
+  duration_ms: 55238.83574
   type: 'suite'
   ...
 # Subtest: security, RBAC, privacy, audit
-    # Subtest: T-29: unauthenticated and under-privileged calls are denied server-side; technical admin cannot run or approve draws
-    ok 1 - T-29: unauthenticated and under-privileged calls are denied server-side; technical admin cannot run or approve draws
+    # Subtest: a reviewer can actually open the receipt image: signed media needs the session, and the console sends it
+    ok 1 - a reviewer can actually open the receipt image: signed media needs the session, and the console sends it
       ---
-      duration_ms: 154.685216
+      duration_ms: 16.861655
+      type: 'test'
+      ...
+    # Subtest: a handled error inside a transaction does not poison the connection or lose later writes
+    ok 2 - a handled error inside a transaction does not poison the connection or lose later writes
+      ---
+      duration_ms: 10.868141
+      type: 'test'
+      ...
+    # Subtest: the router refuses a route that does not declare its roles (deny by default)
+    ok 3 - the router refuses a route that does not declare its roles (deny by default)
+      ---
+      duration_ms: 0.320486
+      type: 'test'
+      ...
+    # Subtest: T-29: unauthenticated and under-privileged calls are denied server-side; technical admin cannot run or approve draws
+    ok 4 - T-29: unauthenticated and under-privileged calls are denied server-side; technical admin cannot run or approve draws
+      ---
+      duration_ms: 154.357894
       type: 'test'
       ...
     # Subtest: T-30: signed media links expire and are role-gated; identity numbers are masked everywhere and reveal is audited
-    ok 2 - T-30: signed media links expire and are role-gated; identity numbers are masked everywhere and reveal is audited
+    ok 5 - T-30: signed media links expire and are role-gated; identity numbers are masked everywhere and reveal is audited
       ---
-      duration_ms: 20.113804
+      duration_ms: 21.93605
       type: 'test'
       ...
     # Subtest: audit chain stays intact across all writers and verifies; checkpoints sign the head
-    ok 3 - audit chain stays intact across all writers and verifies; checkpoints sign the head
+    ok 6 - audit chain stays intact across all writers and verifies; checkpoints sign the head
       ---
-      duration_ms: 5.999495
+      duration_ms: 6.49056
       type: 'test'
       ...
     # Subtest: T-15: concurrent reviewer decisions — stale version conflicts; only one credit
-    ok 4 - T-15: concurrent reviewer decisions — stale version conflicts; only one credit
+    ok 7 - T-15: concurrent reviewer decisions — stale version conflicts; only one credit
       ---
-      duration_ms: 244.665792
+      duration_ms: 287.89647
       type: 'test'
       ...
     # Subtest: T-31: withdrawal and anonymisation remove personal data but keep ledger references
-    ok 5 - T-31: withdrawal and anonymisation remove personal data but keep ledger references
+    ok 8 - T-31: withdrawal and anonymisation remove personal data but keep ledger references
       ---
-      duration_ms: 4.283153
+      duration_ms: 9.242316
       type: 'test'
       ...
     # Subtest: T-36: production activation preflight fails precisely on sample configuration and open decisions; non-production is unaffected
-    ok 6 - T-36: production activation preflight fails precisely on sample configuration and open decisions; non-production is unaffected
+    ok 9 - T-36: production activation preflight fails precisely on sample configuration and open decisions; non-production is unaffected
       ---
-      duration_ms: 8.92108
+      duration_ms: 11.920827
       type: 'test'
       ...
     # Subtest: login rate limiting and temporary-password gate
-    ok 7 - login rate limiting and temporary-password gate
+    ok 10 - login rate limiting and temporary-password gate
       ---
-      duration_ms: 199.927325
+      duration_ms: 235.154471
       type: 'test'
       ...
-    1..7
-ok 9 - security, RBAC, privacy, audit
+    1..10
+ok 81 - security, RBAC, privacy, audit
   ---
-  duration_ms: 2305.308325
+  duration_ms: 2578.059089
   type: 'suite'
   ...
-1..9
-# tests 46
-# suites 9
-# pass 46
+# Subtest: the simulator tells the truth about delivery
+    # Subtest: a reply blocked by the allowlist is reported as such, not shown as a normal answer
+    ok 1 - a reply blocked by the allowlist is reported as such, not shown as a normal answer
+      ---
+      duration_ms: 15.552781
+      type: 'test'
+      ...
+    # Subtest: the server transcript carries the reason too, so the status is never a dead end
+    ok 2 - the server transcript carries the reason too, so the status is never a dead end
+      ---
+      duration_ms: 12.546424
+      type: 'test'
+      ...
+    # Subtest: once the number is allowlisted the same conversation delivers
+    ok 3 - once the number is allowlisted the same conversation delivers
+      ---
+      duration_ms: 8.849736
+      type: 'test'
+      ...
+    1..3
+ok 82 - the simulator tells the truth about delivery
+  ---
+  duration_ms: 733.448269
+  type: 'suite'
+  ...
+1..82
+# tests 333
+# suites 83
+# pass 333
 # fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 66539.136515
+# duration_ms 149506.355901
 exit=0

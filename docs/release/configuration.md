@@ -1,11 +1,26 @@
 # Configuration and release identity
 
-- Configuration schema: `src/config.mjs` (`CONFIG_SCHEMA`) → `.env.example` (names + descriptions only). Preflight: `npm run preflight` (never prints secret values).
+- Configuration schema: `src/config.mjs` (`CONFIG_SCHEMA`) → `.env.example` (names + descriptions only; they match one for one). Preflight: `npm run preflight` (never prints secret values) — it iterates `CONFIG_SCHEMA`, so the names listed under *Read outside the schema* below are checked by nobody.
 - Environment: `ENVIRONMENT=local|test|staging|production`. The database records it at first boot (`schema_meta.environment`); the value governs activation gates, sample-data refusals, simulator availability and the outbound recipient allowlist.
 - Required outside local: `ADMIN_PASSWORD` (≥12), `IDENTITY_KEY`, and for production `AUDIT_CHECKPOINT_KEY`, Meta credentials, `WHATSAPP_TRANSPORT=cloud-api`, a real extractor (`tesseract` or `vision` with key).
 - Secrets live in the host's variable store (Railway variables); never in the repo. Rotate `META_ACCESS_TOKEN`, `IDENTITY_KEY` (re-encryption job required — not built; treat as a break-glass procedure), `AUDIT_CHECKPOINT_KEY` (older checkpoints verify with the older key).
 - Artifact identity: git commit SHA of the deployed branch + `package-lock.json` hash; Railway builds with Nixpacks from `Procfile` (`src/bootstrap.mjs`). The console bundle is committed (`src/web-console-dist/`) and rebuilt with `npm run web:build`.
 - Environment separation: separate Railway services/volumes per environment, separate Meta numbers, separate databases; test recipients allowlisted outside production.
+
+## Read outside the schema (preflight does not check these)
+
+`npm run preflight` iterates `CONFIG_SCHEMA` only, so a variable the code reads but the schema does not list is never reported, and an operator cannot discover it from `.env.example`. Seven such names are read on the boot path (`src/config.mjs`, `src/bootstrap.mjs`, `src/server.mjs`, `src/demo-seed.mjs`) and the table below is the whole list for that path — the *Read by* column, not the count, is what tells you where each one lands. The count is scoped deliberately: the operational scripts read a few variables of their own that never reach the service (`BACKUP_DIR`/`BACKUP_KEEP` in `scripts/backup-restore-rehearsal.mjs`, `BASE_URL` in `scripts/remote-smoke.mjs`, `CRM_RECEIVER_*` in `scripts/crm-receiver.mjs`). Boot-path names matter most on a host where one variable group is shared between services (Railway), because a value meant for a different service is inherited silently.
+
+| Name | Read by | Effect if it is set |
+|---|---|---|
+| `OPENAI_API_KEY` **[secret]** | `src/config.mjs` → `cfg.ai.openaiKey`, taken **before** the documented `AI_PROVIDER_API_KEY` | Turns the quarantined legacy desk AI wrapper on. `src/ai.mjs` decides it is configured from the presence of a key alone (`hasKey = !!key`) and never consults `AI_PROVIDER`, so the documented `AI_PROVIDER=none` switch does **not** hold it off: live calls go to `api.openai.com` and the public, unauthenticated `GET /api/config` starts advertising `features.ai: true`. The routes that can spend are role-gated to `support`/`platform_admin`, so this is a cost and data-egress exposure, not an open door. Keep this name out of the service's variable group and use `AI_PROVIDER_API_KEY`; preflight will not warn you either way |
+| `OPENAI_MODEL` / `AI_MODEL` | `src/config.mjs` → `cfg.ai.openaiModel` (default `gpt-4o-mini`) | Chooses the legacy wrapper's model. Not the receipt extractor — that is `RECEIPT_PROVIDER_OPENAI_MODEL` |
+| `AI_PROVIDER_BASE_URL` | `src/config.mjs` → `cfg.ai.baseUrl` (default `https://api.openai.com/v1`) | Redirects the legacy wrapper's calls to another OpenAI-compatible endpoint |
+| `SEED_CLOCK` | `src/demo-seed.mjs` (`ensureDemoSeed`) | Pins the sample seed's clock (an ISO date) so the TEST ONLY sample campaign replays deterministically. Sample data is refused in production regardless |
+| `VOLUME_INIT` | `src/config.mjs` (`ensureDataVolume`), passed in by `src/bootstrap.mjs` | One-shot provisioning flag: writes the `.volume-id` marker into `VOLUME_PATH` so the boot accepts it as the real persistent volume. Leave it unset afterwards |
+| `TRUSTED_PROXY_HOPS` | `src/server.mjs` | How many `X-Forwarded-For` hops the per-IP login rate limiter may trust, counted from the right; `0` (the default) keys on the connection's own address. Setting it higher than the number of proxies that actually rewrite the header lets a caller mint a fresh rate-limit bucket per request |
+
+None of these gets an assignment line in `.env.example` by design — giving `OPENAI_API_KEY` one would document a second spelling of a secret the schema already has — but they are named in a comment block at the end of that file so an inherited value is recognisable. The durable fix is to drop the bare `OPENAI_*`/`AI_MODEL` fallbacks from `src/config.mjs` and gate `createAi` on `cfg.ai.provider !== "none"`; until that lands, treat this table as the checklist.
 
 ## Sample journeys at boot (`SEED_POPULATED`)
 

@@ -27,3 +27,26 @@ export async function api(path, { method = "GET", body, auth = true, timeout = 0
     return { ok: false, status: 0, data: { error: "network" } };
   }
 }
+
+/**
+ * Fetch a protected binary resource (receipt images, export bundles) with the
+ * bearer header and hand back an object URL.
+ *
+ * A plain <img src="/api/media/..."> sends no Authorization header, so every
+ * receipt image in the review workspace returned 401 and reviewers could not
+ * see the photo they were being asked to judge. Putting the session token in
+ * the URL instead would leak a live credential into browser history, Referer
+ * headers and every reverse-proxy access log, so it is fetched properly.
+ * The caller owns the returned url and must URL.revokeObjectURL it.
+ */
+export async function apiBlob(path) {
+  const t = getToken();
+  try {
+    const res = await fetch(BASE + path, { headers: t ? { authorization: `Bearer ${t}` } : {} });
+    if (!res.ok) {
+      if (res.status === 401 && t) { setToken(""); unauthCb?.(); }
+      return { ok: false, status: res.status, url: null };
+    }
+    return { ok: true, status: res.status, url: URL.createObjectURL(await res.blob()), blob: true };
+  } catch { return { ok: false, status: 0, url: null }; }
+}

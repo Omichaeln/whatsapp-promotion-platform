@@ -1,3 +1,5 @@
+import { defaultRules } from "./eligibility.mjs";
+
 /**
  * Production activation validator (spec §5, T-36). Server-side, independent of
  * any UI flag. A campaign may go live in a production environment only when
@@ -8,6 +10,36 @@
  */
 export const DECISION_IDS = ["D-01", "D-02", "D-03", "D-04", "D-05", "D-06", "D-07", "D-08", "D-09", "D-10", "D-11", "D-12", "D-13", "D-14", "D-15", "D-16", "D-17", "D-18", "D-19", "D-20", "D-21", "D-22"];
 const SAMPLE_MARKERS = /test only|sample promotion|fictional|goldcane|sunrise supermarket|valuemart|kwikshop/i;
+
+/**
+ * The CONTENT/RULES subset of the checks above, applied to a CANDIDATE version —
+ * the draft about to be installed — instead of the campaign's active one.
+ *
+ * POST /api/campaigns/:id/versions/:vid/activate bypassed the activation gate
+ * completely: a campaign that had passed every production check could have its
+ * live rules replaced afterwards (primary_rule.min_packs = 1, terms_url dropped,
+ * sample product aliases reintroduced) and nothing re-ran. validateActivation
+ * cannot be reused as-is for two reasons: it reads the ACTIVE version, so it
+ * would validate the version being REPLACED and pass while the swap loosens the
+ * rules; and it also fails on TRANSPORT_HEALTH / EXTRACTOR / CRM / evidence,
+ * none of which relate to the version being installed, so a legitimate
+ * mid-campaign typo fix would be refused whenever a provider was briefly
+ * unhealthy. This is deliberately only the four checks the version can break.
+ */
+export function validateVersionContentRules({ domain, campaignId, version }) {
+  const f = [];
+  const fail = (code, message) => f.push({ code, message, blocking: true });
+  const campaign = domain.getCampaign(campaignId);
+  if (!campaign) return { ok: false, failures: [{ code: "CAMPAIGN_NOT_FOUND", message: "campaign not found", blocking: true }] };
+  let content = {}, rules = {};
+  try { content = JSON.parse(version?.content_json || "{}"); } catch { fail("CONTENT_UNPARSEABLE", "version content is not valid JSON"); }
+  try { rules = defaultRules(JSON.parse(version?.rules_json || "{}")); } catch { fail("RULES_UNPARSEABLE", "version rules are not valid JSON"); }
+  if (SAMPLE_MARKERS.test(`${JSON.stringify(content)} ${JSON.stringify(rules.products || [])}`)) fail("SAMPLE_CONFIGURATION", "version content or products carry TEST ONLY / sample markers");
+  if (!content.terms_url || !content.terms_version || !content.privacy_version) fail("CONTENT_TERMS", "terms_url, terms_version and privacy_version are required");
+  if (!(rules.products || []).length) fail("RULES_PRODUCTS", "no qualifying products configured");
+  if (!(JSON.parse(campaign.draw_config_json || "{}").prizes || []).length && !domain.listPeriods(campaignId).some((p) => (JSON.parse(p.prize_config_json || "{}").prizes || []).length)) fail("PRIZES_EMPTY", "no prize allocation configured");
+  return { ok: f.length === 0, campaignId, versionId: version?.id || null, failures: f, checkedAt: new Date().toISOString() };
+}
 
 export async function validateActivation({ domain, auth, campaignId, cfg, extractor, transport, crm, db }) {
   const env = domain.environment();

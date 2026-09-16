@@ -1,6 +1,8 @@
 # WhatsApp Promotion Platform
 
-A WhatsApp-first consumer promotion platform: registration and consent, controlled outlet selection, receipt upload with **real OCR** and deterministic qualification, canonical-receipt duplicate prevention, an immutable entry ledger, crash-safe and independently verifiable draws, winner/claim lifecycle, privacy-safe publication, CRM outbox with read-back, and a role-based staff console.
+A WhatsApp-first consumer promotion platform: registration and consent, controlled outlet selection, receipt upload with **real OCR** and deterministic qualification, canonical-receipt duplicate prevention, an immutable entry ledger, crash-safe and independently verifiable draws, winner/claim lifecycle, privacy-safe publication, CRM outbox with read-back, and two role-based consoles: a technical one for the platform team and a
+simplified **promotion desk** for the client's own promotion administrator and
+assistants (`docs/promotion-console.md`).
 
 Readiness (10 September 2026 build): **locally testable** end to end; **integrated client testing** needs the client's WhatsApp Cloud API assets (and optionally a vision-LLM key and CRM sandbox); **production** additionally needs the approved client decisions. Details: `docs/TEST_READINESS.md`.
 
@@ -43,7 +45,7 @@ Sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD` from `.env` (defaults: `admin@exam
 
 ## Deployment (Railway)
 
-`Procfile` → `src/bootstrap.mjs` (migrate → non-production sample seed → server + worker → optional `SEED_POPULATED=true` journeys). Mount a volume at `/app/data`. Full procedure and live test: `docs/release/railway-deploy.md`. Set `ENVIRONMENT`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `IDENTITY_KEY`, `AUDIT_CHECKPOINT_KEY`; for the client's number set `WHATSAPP_TRANSPORT=cloud-api` and the `META_*` variables (`docs/integrations/whatsapp.md`). Production refuses the simulator transport/extractor, sample seeding and dev keys.
+`Procfile` → `src/bootstrap.mjs` (migrate → non-production sample seed → server + worker → optional `SEED_POPULATED=true` journeys). Mount a volume at `/app/data`. Full procedure and live test: `docs/release/railway-deploy.md`. Set `ENVIRONMENT`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `IDENTITY_KEY`, `AUDIT_CHECKPOINT_KEY`; for the client's number set `WHATSAPP_TRANSPORT=cloud-api` and the `META_*` variables (`docs/integrations/whatsapp.md`). Production refuses the simulator transport and extractor, sample seeding and dev keys at boot: `validateConfig` requires `WHATSAPP_TRANSPORT=cloud-api` (with `PUBLIC_BASE_URL`) and `AUDIT_CHECKPOINT_KEY` when `ENVIRONMENT=production`, and the server throws on any of those rather than starting — so a production service left on the simulator fails its deploy with the reason in the log instead of reporting healthy. Sample seeding is refused by `src/bootstrap.mjs` and the sample-data guard.
 
 ## License
 

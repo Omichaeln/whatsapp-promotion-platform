@@ -45,10 +45,18 @@ function extractPeriod(text) {
   return null;
 }
 
+/**
+ * The recipient is taken ONLY from an explicit trailing "to <number>" (the same
+ * anchor the body stripper below uses). Taking the first 9+ digit run anywhere
+ * in the text delivered support messages to whatever number happened to be
+ * quoted in the body — a callback line, a receipt number, a claim reference or
+ * an ID — i.e. one participant's claim details went to a stranger's WhatsApp.
+ * No trailing recipient means no recipient: the command is refused instead.
+ */
 function extractPhone(text) {
-  const m = text.match(/(?:\+?\d[\d\s()-]{8,})/);
+  const m = String(text).match(/\s(?:to|@)\s*(\+?\d[\d\s()-]{8,})\s*$/i);
   if (!m) return null;
-  return normalizePhone(m[0]);
+  return normalizePhone(m[1]);
 }
 
 function extractTextChunk(text, strippedStart) {
@@ -59,12 +67,35 @@ function extractTextChunk(text, strippedStart) {
   return rest;
 }
 
+const KEYWORD_RE = new Map();
+/**
+ * Keywords match on WORD BOUNDARIES. Plain substring matching made every
+ * keyword a prefix of longer words: "unlink my phone" contains "link", so the
+ * revocation command was answered with a pairing QR while the lost device
+ * stayed authorised on the business number (and UNLINK was unreachable for
+ * every input). The old `low.includes(name)` clause is gone too — it made each
+ * intent NAME a hidden keyword with the same substring problem.
+ */
+function keywordHit(low, keyword) {
+  const k = keyword.trim();
+  let re = KEYWORD_RE.get(k);
+  // A trailing plural/gerund still counts as the same keyword. Word boundaries
+  // alone reclassified every inflected form the old substring matcher routed:
+  // "reports" / "show me the reports" lost the dashboard, "run the draws" lost
+  // the draw, and /api/nl answers a null action with the generic help text, so
+  // those console command-bar phrases stopped doing anything at all. The suffix
+  // is OUTSIDE the keyword and still anchored by \b, so "unlink" is still not
+  // "link".
+  if (!re) { re = new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:s|es|ing)?\\b`, "i"); KEYWORD_RE.set(k, re); }
+  return re.test(low);
+}
+
 export function parseCommand(text) {
   const t = String(text || "").trim();
   const low = t.toLowerCase();
   let intent = null;
   for (const [name, keys] of Object.entries(INTENTS)) {
-    if (keys.some((k) => low.startsWith(k) || low.includes(k) || low.includes(name.toLowerCase()))) { intent = name; break; }
+    if (keys.some((k) => keywordHit(low, k))) { intent = name; break; }
   }
 
   switch (intent) {

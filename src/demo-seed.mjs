@@ -28,8 +28,32 @@ export function sampleOutlets() {
   return out;
 }
 
+/** The database records its own environment; that value, not a variable, decides. */
+export function recordedEnvironment(db) {
+  try { return db.prepare(`select value from schema_meta where key='environment'`).get()?.value || null; } catch { return null; }
+}
+
+/**
+ * Sample data must never reach a production database.
+ *
+ * The callers used to guard on cfg.environment, which comes from the
+ * ENVIRONMENT variable and falls back to "staging" on Railway when the variable
+ * is missing or mistyped. A renamed variable on a redeploy was therefore enough
+ * to seed the TEST ONLY campaign — active, with 80 TEST outlets and seven staff
+ * logins whose temporary passwords are printed in the deploy log, including both
+ * halves of the draw separation of duties — into the live database. The
+ * conversation picks the most recently created active campaign, so real
+ * consumers would have been served the sample promotion.
+ */
+export function refuseSampleDataInProduction(db, what) {
+  if (recordedEnvironment(db) === "production") {
+    throw Object.assign(new Error(`refusing to ${what}: this database is recorded as production`), { code: "FORBIDDEN" });
+  }
+}
+
 export function ensureDemoSeed(db, { force = false, clock = process.env.SEED_CLOCK || null, log = console } = {}) {
   migrate(db, undefined, () => {});
+  refuseSampleDataInProduction(db, "seed sample data");
   const domain = createDomain(db, process.env.IDENTITY_KEY || "dev-only-key");
   let campaign = domain.getCampaignByCode(SAMPLE_CODE);
   if (campaign && !force) return { campaign, seeded: false };
@@ -100,7 +124,8 @@ export function ensureDemoSeed(db, { force = false, clock = process.env.SEED_CLO
 }
 
 /** Sample staff accounts (non-production only). Returns temporary passwords once, to stdout, never stored. */
-export function ensureSampleStaff(auth, { log = console } = {}) {
+export function ensureSampleStaff(auth, { db = null, log = console } = {}) {
+  if (db) refuseSampleDataInProduction(db, "create sample staff accounts");
   const wanted = [["manager@example.test", "Sample Campaign Manager", ["campaign_manager"]], ["reviewer@example.test", "Sample Reviewer", ["reviewer"]], ["support@example.test", "Sample Support", ["support"]], ["draw@example.test", "Sample Draw Officer", ["draw_officer"]], ["approver@example.test", "Sample Draw Approver", ["draw_approver", "auditor"]], ["fulfilment@example.test", "Sample Fulfilment", ["winner_ops"]], ["auditor@example.test", "Sample Auditor", ["auditor"]]];
   const created = [];
   for (const [email, name, roles] of wanted) {

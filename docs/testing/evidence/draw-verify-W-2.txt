@@ -1,5 +1,5 @@
 {
-  "draw": "drw_9268216f2fc3d6907570a89f",
+  "draw": "drw_49708b974d87b034268b9f45",
   "status": "published",
   "verified": true,
   "checks": [
@@ -11,7 +11,7 @@
     {
       "name": "snapshot digest",
       "pass": true,
-      "detail": "fb7091fc9c2b0d15b017c3fdf5d093124a8f8da396f0fea18fd42bf9963594d8"
+      "detail": "0d51323520f102878e14467d76b88a0b921832480d59fb987d6502530f64fcc9"
     },
     {
       "name": "snapshot names this draw",
@@ -23,20 +23,30 @@
       "detail": 8
     },
     {
+      "name": "disclosed candidate rules versions cover every candidate",
+      "pass": true,
+      "detail": "80030cad4d3ae2cb61a68954c25069be6f670085f46d98e07a9c3b1ae901803b:8"
+    },
+    {
       "name": "seed present",
       "pass": true
     },
     {
+      "name": "seed matches the commitment made at freeze",
+      "pass": true,
+      "detail": "3f74f0d1dfa3232c2096a7d620c4ab409e8beb9e8d0f0751b5fefff348dc0ff3"
+    },
+    {
       "name": "output digest",
       "pass": true,
-      "detail": "a0e8aca15451269f3e8f79ce9cf3ad22d6a6e734028bc5fc439c233da25b25c2"
+      "detail": "2e8d4f9ed4a95406be76591ffc621ac117026dfba4321beaa43f3ea74b16f2a9"
     },
     {
       "name": "stored output equals recomputation",
       "pass": true
     },
     {
-      "name": "winner count matches plan",
+      "name": "winner count within a plan that awards prizes",
       "pass": true,
       "detail": "5/5"
     },
@@ -63,7 +73,7 @@
     {
       "name": "approver differs from operator",
       "pass": true,
-      "detail": "adm_16918f5281d003a7664a525b / adm_ee5fa5f563318be424809651"
+      "detail": "adm_b4f302c487a46b1c91e3f203 / adm_f6b5109d72e77a8389de9978"
     },
     {
       "name": "approval after execution",
@@ -75,19 +85,65 @@
       "detail": 4
     },
     {
-      "name": "audit trail has freeze+execute(+approve)",
-      "pass": true
+      "name": "audit event attribution matches the signed body",
+      "pass": true,
+      "detail": "all events signed with attribution"
+    },
+    {
+      "name": "snapshot digest matches the signed freeze event",
+      "pass": true,
+      "detail": "0d51323520f102878e14467d76b88a0b921832480d59fb987d6502530f64fcc9"
+    },
+    {
+      "name": "seed commitment matches the signed freeze event",
+      "pass": true,
+      "detail": "recorded before any result existed"
+    },
+    {
+      "name": "output digest matches the signed execute event",
+      "pass": true,
+      "detail": "2e8d4f9ed4a95406be76591ffc621ac117026dfba4321beaa43f3ea74b16f2a9"
+    },
+    {
+      "name": "audit trail has frozen+executed+approved",
+      "pass": true,
+      "detail": "status published"
+    },
+    {
+      "name": "approval is attributable in the signed chain",
+      "pass": true,
+      "detail": "adm_f6b5109d72e77a8389de9978"
+    },
+    {
+      "name": "signed approver matches the draw record",
+      "pass": true,
+      "detail": "adm_f6b5109d72e77a8389de9978 / adm_f6b5109d72e77a8389de9978"
+    },
+    {
+      "name": "signed approver differs from the operator",
+      "pass": true,
+      "detail": "adm_b4f302c487a46b1c91e3f203 / adm_f6b5109d72e77a8389de9978"
+    },
+    {
+      "name": "signed approver differs from the user who froze the pool",
+      "pass": true,
+      "detail": "adm_b4f302c487a46b1c91e3f203 / adm_f6b5109d72e77a8389de9978"
     },
     {
       "name": "audit checkpoint signature",
       "pass": true,
-      "detail": "unsigned key (set --checkpoint-key)"
+      "detail": "keyed"
+    },
+    {
+      "name": "audit events anchored to the signed checkpoint",
+      "pass": true,
+      "detail": "4 event(s) committed before the head was signed"
     }
   ]
 }
 
 == tampered copy (one winner entryId altered) ==
-    {
       "name": "stored output equals recomputation",
       "pass": false
+    },
 exit=1

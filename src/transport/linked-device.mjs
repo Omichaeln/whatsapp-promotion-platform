@@ -68,7 +68,7 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
     this.desk = opts.deskStore;
     this.onActivity = opts.onActivity;
     this.log = opts.log || console;
-    this.state = { ready: false, me: null, qr: false, received: 0, dropped: 0, startedAt: nowIso(), lastError: null, linkedAs: null, lastLinkedAt: null, dropCount: 0, hasSession: hasCreds(opts.authDir) };
+    this.state = { ready: false, me: null, qr: false, received: 0, dropped: 0, startedAt: nowIso(), lastError: null, lastMediaError: null, linkedAs: null, lastLinkedAt: null, dropCount: 0, hasSession: hasCreds(opts.authDir) };
     this.lastQr = null;
     this.sock = null;
     this.stopping = false;
@@ -111,14 +111,6 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
     });
     this.sock = sock;
 
-    const chatNameOf = async (jid, pushName) => {
-      if (!jid.endsWith("@g.us")) return pushName || jid.split("@")[0];
-      if (this.groupNames.has(jid)) return this.groupNames.get(jid);
-      try { const md = await sock.groupMetadata(jid); this.groupNames.set(jid, md.subject || jid.split("@")[0]); }
-      catch { this.groupNames.set(jid, jid.split("@")[0]); }
-      return this.groupNames.get(jid);
-    };
-
     sock.ev.on("creds.update", saveCreds);
     sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
       if (qr) {
@@ -135,7 +127,7 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
         const me = sock.user?.id?.split(":")[0] || sock.user?.name || null;
         this.state.me = me; this.state.linkedAs = me; this.state.lastLinkedAt = nowIso(); this.state.dropCount = 0; this.state.hasSession = true;
         this.opts.onActivity?.("link", `WhatsApp linked as ${me}`, { me });
-        this.log(`[linked] linked as ${me}`);
+        this.logLine(`[linked] linked as ${me}`);
       }
       if (connection === "close") {
         this.state.ready = false;
@@ -157,9 +149,26 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
 
     sock.ev.on("messages.upsert", async ({ messages }) => {
       for (const m of messages) {
-        try { await this.fileMessage(m, sock); } catch (e) { this.log(`[linked] could not file message: ${e.message}`); }
+        try { await this.fileMessage(m, sock); } catch (e) { this.logLine(`[linked] could not file message: ${e.message}`); }
       }
     });
+  }
+
+  /** Log through whatever the caller injected (a function here, a console-like
+   *  object from the server) — a logging failure must never break intake. */
+  logLine(msg) { try { const l = this.log; if (typeof l === "function") l(msg); else l?.log?.(msg); } catch { /* logging is best effort */ } }
+
+  /** Display name for a chat. This is a METHOD because fileMessage runs outside
+   *  connect()'s closure, where it used to live: every inbound text hit
+   *  "ReferenceError: chatNameOf is not defined", was swallowed by the
+   *  messages.upsert catch, and nothing was filed and onTextMessage never fired
+   *  — so a linked phone could not register or enter at all. */
+  async chatNameOf(jid, pushName, sock = this.sock) {
+    if (!jid.endsWith("@g.us")) return pushName || jid.split("@")[0];
+    if (this.groupNames.has(jid)) return this.groupNames.get(jid);
+    try { const md = await sock.groupMetadata(jid); this.groupNames.set(jid, md.subject || jid.split("@")[0]); }
+    catch { this.groupNames.set(jid, jid.split("@")[0]); }
+    return this.groupNames.get(jid);
   }
 
   async fileMessage(m, sock) {
@@ -180,10 +189,24 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
     if (media) {
       // Receipt images from the linked phone go into the promotion pipeline.
       let mediaBytes = null;
-      try { mediaBytes = await sock.downloadMedia(m); } catch { mediaBytes = null; }
+      try {
+        // baileys v7 has no sock.downloadMedia — the call threw TypeError into
+        // a bare catch, so every receipt photo from a linked phone reached the
+        // pipeline with no bytes at all. downloadMediaMessage is the real API.
+        const download = (this.baileys || await import("baileys")).downloadMediaMessage;
+        mediaBytes = await download(m, "buffer", {}, { logger: pino({ level: "silent" }), reuploadRequest: sock?.updateMediaMessage?.bind?.(sock) });
+      } catch (e) {
+        // Keep emitting below with null bytes: that is what produces the
+        // participant's "send the photo again" prompt. But a swallowed failure
+        // left the operator's feed asserting a receipt arrived, so say so.
+        mediaBytes = null;
+        this.state.lastMediaError = `media download failed: ${String(e?.message || e).slice(0, 200)}`;
+        this.logLine(`[linked] ${this.state.lastMediaError}`);
+        this.opts?.onActivity?.("error", `Could not download a receipt image from ${sender || phoneUid}`, { chat: jid, error: String(e?.message || e).slice(0, 200) });
+      }
       this.state.received += 1;
       await this.onImageMessage?.({ phoneUid, providerMessageId: `ld_${m.key?.id}`, inlineMediaB64: mediaBytes ? Buffer.from(mediaBytes).toString("base64") : null, mime: media.mimetype || "image/jpeg", text: text || "" });
-      this.opts?.onActivity?.("message", `Receipt image from ${sender || phoneUid}`, { chat: jid });
+      this.opts?.onActivity?.("message", `Receipt image from ${sender || phoneUid}${mediaBytes ? "" : " (no image bytes — re-upload requested)"}`, { chat: jid, downloaded: !!mediaBytes });
       return;
     }
 
@@ -191,7 +214,7 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
       message_sid: `${jid}:${m.key?.id}`,
       chat_type: isGroup ? "group" : "direct",
       chat_id: jid,
-      chat_name: await chatNameOf(jid, m.pushName),
+      chat_name: await this.chatNameOf(jid, m.pushName, sock),
       sender_name: sender,
       message_text: String(text || "").slice(0, 4000),
       timestamp: ts,
@@ -236,7 +259,7 @@ export class LinkedDeviceTransport extends WhatsAppTransport {
   health() {
     return {
       ok: this.state.ready, mode: "dev-only", provider: "linked-device", ready: this.state.ready, me: this.state.me, qr: this.state.qr,
-      lastError: this.state.lastError, received: this.state.received, dropped: this.state.dropped,
+      lastError: this.state.lastError, lastMediaError: this.state.lastMediaError, received: this.state.received, dropped: this.state.dropped,
       linkedAs: this.state.linkedAs, lastLinkedAt: this.state.lastLinkedAt, dropCount: this.state.dropCount,
       hasSession: hasCreds(this.authDir) || this.state.hasSession,
     };

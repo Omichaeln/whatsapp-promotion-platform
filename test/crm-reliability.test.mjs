@@ -50,6 +50,83 @@ describe("CRM integration and reliability", () => {
     const v2 = h.db.prepare(`select status, last_error from crm_events where entity_id=? and entity_version=2`).get(ev.entity_id); assert.equal(v2.status, "permanent_failure"); assert.match(v2.last_error, /superseded/);
     const back = await (await fetch(`${base}/records/entry/${encodeURIComponent(ev.external_key)}`)).json(); assert.equal(back.entity_version, 3);
   });
+  it("a reviewer's decision reaches the CRM as its own version, and a genuine version collision is never silent", async () => {
+    // The submission event used to be versioned by the EXTRACTION attempt, which
+    // a reviewer's decision does not increment, so INSERT OR IGNORE swallowed
+    // every human decision and the CRM kept the receipt as REVIEW_REQUIRED.
+    const phone = "263771900777";
+    await h.register(phone, { first: "Rev", last: "Crm", identity: "TESTRVCRM1" });
+    h.domain.setPauseFlags(h.campaign.id, { auto_qualify: true }, "test");
+    const r = await h.submit(phone, await h.simImage(h.simReceipt({ no: "CRM-REVIEW-1" })));
+    h.domain.setPauseFlags(h.campaign.id, { auto_qualify: false }, "test");
+    assert.equal(r.receipt.status, "REVIEW_REQUIRED");
+    const subs = () => h.db.prepare(`select entity_version, payload_json from crm_events where entity_type='submission' and entity_id=? order by entity_version`).all(r.receiptId)
+      .map((x) => ({ v: x.entity_version, status: JSON.parse(x.payload_json).status }));
+    const before = subs();
+    assert.equal(before.length, 1, "the automatic pass emits one submission event");
+    assert.equal(before[0].status, "REVIEW_REQUIRED");
+
+    const reviewer = h.app.auth.listUsers().find((u) => u.email === "reviewer@example.test");
+    const out = h.app.pipeline.review(r.receiptId, { reviewer: reviewer.id, decision: "QUALIFIED", note: "branch confirmed" });
+    assert.equal(out.decision, "QUALIFIED");
+    const after = subs();
+    assert.equal(after.length, 2, `the reviewer's decision must reach the CRM, got ${JSON.stringify(after)}`);
+    assert.equal(after[1].status, "QUALIFIED");
+    assert.ok(after[1].v > after[0].v, "the decision carries a later version so it is not treated as stale");
+
+    // Re-emitting the SAME input payload is a benign idempotent repeat.
+    const alertsBefore = h.db.prepare(`select count(*) n from alerts where kind='crm.event_dropped'`).get().n;
+    const input = { participantId: "p_probe", status: "REVIEW_REQUIRED", reference: "R-PROBE" };
+    const first = h.app.crm.emit({ entityType: "submission", entityId: "rcpt_probe", entityVersion: 7, payload: input });
+    assert.ok(first.id, "the first emit stores the event");
+    const repeat = h.app.crm.emit({ entityType: "submission", entityId: "rcpt_probe", entityVersion: 7, payload: { ...input } });
+    assert.equal(repeat.existed, true);
+    assert.equal(repeat.collision, false, "an identical repeat is not a collision");
+    assert.equal(h.db.prepare(`select count(*) n from alerts where kind='crm.event_dropped'`).get().n, alertsBefore, "an identical repeat must not raise an alert");
+
+    // A DIFFERENT payload under a version already used is data loss: be loud.
+    // payload_hash used to be a base64 prefix of the payload, so two different
+    // events for one entity always compared equal and this went unnoticed.
+    const clash = h.app.crm.emit({ entityType: "submission", entityId: "rcpt_probe", entityVersion: 7, payload: { participantId: "someone_else", status: "NOT_QUALIFIED", reference: "R-DIFFERENT" } });
+    assert.equal(clash.collision, true, "a differing payload on a used version must report a collision");
+    assert.equal(h.db.prepare(`select count(*) n from crm_events where entity_id='rcpt_probe'`).get().n, 1, "the colliding event is still not stored");
+    const raised = h.db.prepare(`select severity, message from alerts where kind='crm.event_dropped' order by created_at desc limit 1`).get();
+    assert.ok(raised, "a dropped CRM event must raise an alert");
+    assert.equal(raised.severity, "critical");
+  });
+
+  it("retention actually runs: the duplicate image copy, the raw identifier, expired images and old OCR text all go", async () => {
+    // media.purge and the facts sweep existed but nothing ever enqueued them,
+    // so images and extracted text were kept for ever against a documented
+    // 90/180-day commitment; channel_events also kept a second base64 copy of
+    // every receipt and the national ID in cleartext.
+    const phone = "263771960777";
+    await h.register(phone, { first: "Ret", last: "Probe", identity: "TESTRETN99" });
+    const r = await h.submit(phone, await h.simImage(h.simReceipt({ no: "RETN-1" })));
+    assert.ok(r.receiptId);
+    const img = h.db.prepare(`select payload_json from channel_events where event_kind='message.image' order by received_at desc limit 1`).get();
+    assert.equal(JSON.parse(img.payload_json).inlineMediaB64, null, "the second full copy of the image must not be retained");
+    assert.equal(h.db.prepare(`select count(*) n from channel_events where payload_json like '%TESTRETN99%'`).get().n, 0,
+      "the national ID must not survive in the inbound message log");
+
+    h.db.prepare(`update media_assets set expires_at='2000-01-01T00:00:00.000Z'`).run();
+    h.db.prepare(`update validation_results set created_at='2000-01-01T00:00:00.000Z'`).run();
+    h.app.worker.housekeeping();
+    const kinds = h.db.prepare(`select kind from jobs`).all().map((x) => x.kind);
+    assert.ok(kinds.includes("media.purge"), `media.purge must be scheduled, got ${kinds.join(",")}`);
+    assert.ok(kinds.includes("retention.scrub"), `retention.scrub must be scheduled, got ${kinds.join(",")}`);
+    // housekeeping schedules these once a day by design, so drive the effect
+    // from explicit jobs rather than depending on what earlier tests consumed.
+    const at = new Date().toISOString();
+    for (const [jid, kind] of [["job_purge_probe", "media.purge"], ["job_facts_probe", "retention.scrub"]]) {
+      h.db.prepare(`insert or ignore into jobs (id, kind, payload_json, status, run_after, created_at) values (?,?,'{}','pending',?,?)`).run(jid, kind, at, at);
+    }
+    await h.app.intake.drain();
+    assert.equal(h.db.prepare(`select count(*) n from media_assets where status='stored'`).get().n, 0, "expired images are purged");
+    assert.equal(h.db.prepare(`select count(*) n from validation_results where ocr_text is not null`).get().n, 0, "old OCR text is scrubbed");
+    assert.equal(h.db.prepare(`select count(*) n from alerts where kind='worker.housekeeping_failed'`).get().n, 0, "housekeeping did not fail silently");
+  });
+
   it("not_configured provider: events queue visibly and nothing is marked delivered", async () => {
     const h2 = await buildApp({ extractor: "simulator" });
     try { await h2.register("263771000503", { first: "Nina", last: "Cee", identity: "TESTNC0X" }); await h2.app.worker.tick(); const s = h2.app.crm.reconcileView(); assert.equal(s.provider, "none"); assert.ok(s.pending >= 1); assert.equal(s.delivered, 0); assert.equal((await h2.app.crm.health()).mode, "not_configured"); }
